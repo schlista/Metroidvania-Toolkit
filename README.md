@@ -81,4 +81,4 @@ section lists what else helps.
 
 ## License
 
-Free for personal, non-commercial use. Selling or monetizing a game made with the toolkit requires a paid Commercial License: see [`LICENSE`](LICENSE), or email MVTK@swishermail.com. The included art, music and sound are for demonstration only; replace them before you release a game.
+Free for personal, non-commercial use. Selling or monetizing a game made with the toolkit requires a paid Commercial License, one per person: [buy one on itch.io](https://schlista.itch.io/metroidvania-toolkit-commercial-license). Terms: [`COMMERCIAL_LICENSE.txt`](COMMERCIAL_LICENSE.txt) and [`LICENSE`](LICENSE). Questions: MVTK@swishermail.com. The included art, music and sound are for demonstration only; replace them before you release a game.
