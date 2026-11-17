@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Warp Statue" type="warp_statue" width="64" height="96">
+  <properties>
+   <property name="statue_id" type="string" value="" />
+   <property name="label" type="string" value="Return to checkpoint" />
+   <property name="range" type="float" value="96" />
+   <property name="access" type="class" propertytype="warp_statue_access">
+    <properties>
+     <property name="requires_flag" type="string" value="" />
+     <property name="cost_currency" type="int" value="0" />
+     <property name="cooldown" type="float" value="1" />
+    </properties>
+   </property>
+   <property name="transition" type="class" propertytype="warp_statue_transition">
+    <properties>
+     <property name="fade_out" type="float" value="0.5" />
+     <property name="fade_in" type="float" value="0.5" />
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="warp_statue_feedback">
+    <properties>
+     <property name="sound_warp" type="string" value="fast_travel" propertytype="sound_effects" />
+     <property name="sound_fail" type="string" value="gate_locked" propertytype="sound_effects" />
+     <property name="show_toast" type="bool" value="true" />
+     <property name="toast_success" type="string" value="Returned to your checkpoint" />
+     <property name="toast_fail" type="string" value="No checkpoint to return to" />
+     <property name="toast_cost" type="string" value="" />
+     <property name="toast_blocked" type="string" value="You cannot return right now" />
+     <property name="set_flag" type="string" value="" />
+    </properties>
+   </property>
+   <property name="art_item" type="string" value="" />
+   <property name="art_feedback" type="class" propertytype="warp_statue_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" value="none" propertytype="particle_effects" />
+     <property name="interact_effect" type="string" value="none" propertytype="particle_effects" />
+     <property name="effect_offset_x" type="float" value="0" />
+     <property name="effect_offset_y" type="float" value="0" />
+     <property name="effect_scale" type="float" value="1" />
+     <property name="effect_cooldown" type="float" value="0" />
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0" />
+  </properties>
+ </object>
+</template>

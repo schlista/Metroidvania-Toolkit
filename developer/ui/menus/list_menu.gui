@@ -1,0 +1,361 @@
+script: "/developer/ui/menus/list_menu.gui_script"
+fonts { name: "main" font: "/developer/assets/fonts/ui_text.font" }
+textures { name: "input_icons" texture: "/developer/assets/atlas/input_icons.atlas" }
+textures { name: "gameplay_visuals" texture: "/developer/assets/atlas/gameplay_visuals.atlas" }
+textures { name: "enemy" texture: "/developer/assets/atlas/enemy.atlas" }
+nodes {
+  position { x: 960.0 y: 540.0 }
+  size { x: 1920.0 y: 1080.0 }
+  type: TYPE_BOX
+  id: "backdrop"
+  adjust_mode: ADJUST_MODE_FIT
+  layer: "base"
+}
+nodes {
+  position { x: 960.0 y: 540.0 }
+  size { x: 1920.0 y: 1080.0 }
+  type: TYPE_BOX
+  id: "root"
+  adjust_mode: ADJUST_MODE_FIT
+  alpha: 0.0
+  layer: "base"
+}
+nodes {
+  position { x: 0.0 y: 0.0 }
+  size { x: 1440.0 y: 860.0 }
+  type: TYPE_BOX
+  id: "panel"
+  parent: "root"
+  layer: "base"
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: -650.0 y: 350.0 }
+  size { x: 466.666666563 y: 38.888888880 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "title"
+  parent: "root"
+  pivot: PIVOT_W
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: -650.0 y: 305.0 }
+  size { x: 699.999999912 y: 27.999999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "subtitle"
+  parent: "root"
+  pivot: PIVOT_W
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 650.0 y: 350.0 }
+  size { x: 393.749999951 y: 34.999999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "header_right"
+  parent: "root"
+  pivot: PIVOT_E
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: -560.0 y: 270.0 }
+  size { x: 160.0 y: 40.0 }
+  type: TYPE_BOX
+  id: "tab_highlight"
+  parent: "root"
+  layer: "rows_bg"
+}
+nodes {
+  position { x: -560.0 y: 270.0 }
+  size { x: 139.999999983 y: 33.249999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "tab_template"
+  parent: "root"
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: -300.0 y: -10.0 }
+  size { x: 720.0 y: 520.0 }
+  type: TYPE_BOX
+  id: "list_area"
+  parent: "root"
+  alpha: 0.0
+  layer: "content"
+}
+nodes {
+  position { x: 0.0 y: 0.0 }
+  size { x: 720.0 y: 46.0 }
+  type: TYPE_BOX
+  id: "row_bg"
+  parent: "list_area"
+  layer: "rows_bg"
+}
+nodes {
+  position { x: -290.0 y: 0.0 }
+  size { x: 272.222222162 y: 31.111111104 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "row_label"
+  parent: "list_area"
+  pivot: PIVOT_W
+  scale { x: 1.285714286 y: 1.285714286 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 160.0 y: 0.0 }
+  size { x: 54.444444432 y: 31.111111104 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "row_value"
+  parent: "list_area"
+  pivot: PIVOT_E
+  scale { x: 1.285714286 y: 1.285714286 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 330.0 y: 0.0 }
+  size { x: 97.999999978 y: 31.111111104 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "row_cost"
+  parent: "list_area"
+  pivot: PIVOT_E
+  scale { x: 1.285714286 y: 1.285714286 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: -330.0 y: 0.0 }
+  size { x: 32.0 y: 32.0 }
+  type: TYPE_BOX
+  id: "row_icon"
+  parent: "list_area"
+  layer: "content"
+}
+nodes {
+  position { x: 170.0 y: 215.0 }
+  size { x: 388.888888802 y: 38.888888880 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "detail_title"
+  parent: "root"
+  pivot: PIVOT_NW
+  scale { x: 1.285714286 y: 1.285714286 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 170.0 y: 150.0 }
+  size { x: 437.499999945 y: 341.249999957 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "detail_body"
+  parent: "root"
+  pivot: PIVOT_NW
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.0 y: -285.0 }
+  size { x: 783.999999902 y: 22.049999997 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "status"
+  parent: "root"
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: -300.0 y: -315.0 }
+  size { x: 227.499999972 y: 17.062499998 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "page_text"
+  parent: "root"
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "content"
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.0 y: 0.0 }
+  size { x: 700.0 y: 240.0 }
+  type: TYPE_BOX
+  id: "confirm_panel"
+  parent: "root"
+  layer: "modal"
+}
+nodes {
+  position { x: 0.0 y: 55.0 }
+  size { x: 542.499999932 y: 87.499999989 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "confirm_text"
+  parent: "confirm_panel"
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "modal"
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: -140.0 y: -60.0 }
+  size { x: 155.555555521 y: 38.888888880 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "confirm_yes"
+  parent: "confirm_panel"
+  line_break: true
+  layer: "modal"
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: 140.0 y: -60.0 }
+  size { x: 155.555555521 y: 38.888888880 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "confirm_no"
+  parent: "confirm_panel"
+  line_break: true
+  layer: "modal"
+
+  font_size: 14
+}
+nodes {
+  position { x: -620.0 y: -365.0 }
+  size { x: 32.0 y: 32.0 }
+  type: TYPE_BOX
+  id: "prompt_confirm_icon"
+  parent: "root"
+  layer: "prompts"
+}
+nodes {
+  position { x: -590.0 y: -365.0 }
+  size { x: 227.499999972 y: 34.999999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "prompt_confirm_label"
+  parent: "root"
+  pivot: PIVOT_W
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "prompts"
+
+  font_size: 14
+}
+nodes {
+  position { x: -300.0 y: -365.0 }
+  size { x: 32.0 y: 32.0 }
+  type: TYPE_BOX
+  id: "prompt_back_icon"
+  parent: "root"
+  layer: "prompts"
+}
+nodes {
+  position { x: -270.0 y: -365.0 }
+  size { x: 227.499999972 y: 34.999999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "prompt_back_label"
+  parent: "root"
+  pivot: PIVOT_W
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "prompts"
+
+  font_size: 14
+}
+nodes {
+  position { x: 40.0 y: -365.0 }
+  size { x: 32.0 y: 32.0 }
+  type: TYPE_BOX
+  id: "prompt_tabs_icon"
+  parent: "root"
+  layer: "prompts"
+}
+nodes {
+  position { x: 70.0 y: -365.0 }
+  size { x: 524.999999934 y: 34.999999996 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "prompt_tabs_label"
+  parent: "root"
+  pivot: PIVOT_W
+  scale { x: 1.142857143 y: 1.142857143 }
+  line_break: true
+  layer: "prompts"
+
+  font_size: 14
+}
+nodes {
+  position { x: 620.0 y: 90.0 }
+  size { x: 160.0 y: 160.0 }
+  type: TYPE_BOX
+  id: "detail_portrait"
+  parent: "root"
+  layer: "content"
+  enabled: false
+}
+layers { name: "base" }
+layers { name: "rows_bg" }
+layers { name: "content" }
+layers { name: "modal" }
+layers { name: "prompts" }
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 128

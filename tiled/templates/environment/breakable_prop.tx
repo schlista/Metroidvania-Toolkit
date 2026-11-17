@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Breakable Prop" type="breakable_prop" width="64" height="64">
+  <properties>
+   <property name="prop_id" type="string" value=""/>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="target_id" type="string" value=""/>
+   <property name="durability" type="class" propertytype="breakable_prop_durability">
+    <properties>
+     <property name="health" type="int" value="1"/>
+     <property name="required_ability" type="string" propertytype="optional_abilities" value="none"/>
+     <property name="break_on_interact" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="persistence" type="class" propertytype="breakable_prop_persistence">
+    <properties><property name="stays_broken" type="bool" value="false"/></properties>
+   </property>
+   <property name="rewards" type="class" propertytype="breakable_prop_rewards">
+    <properties>
+     <property name="drop_collectible" type="string" propertytype="collectibles" value="none"/>
+     <property name="drop_count" type="int" value="1"/>
+     <property name="drop_chance" type="float" value="1.0"/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="tiles" type="class" propertytype="breakable_prop_tiles">
+    <properties><property name="painted_layer" type="string" value=""/></properties>
+   </property>
+   <property name="feedback" type="class" propertytype="breakable_prop_feedback">
+    <properties>
+     <property name="label" type="string" value="Search"/>
+     <property name="sound_break" type="string" propertytype="sound_effects" value="wall_break"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="breakable_prop_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

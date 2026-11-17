@@ -1,0 +1,94 @@
+-- Baked player-only current. Keep the sensor alive while off so switching on
+-- works for a player already inside; overlapping body parts share one post.
+local PU = require "mvtk.prefabs.prefab_utils"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local SwitchState = require "mvtk.world.switch_state"
+local Presentation = require "mvtk.tiled.object_presentation"
+
+go.property("current_id", "")
+go.property("direction", "right")
+go.property("wind_mode", "push")
+go.property("push_speed", 300)
+go.property("angle", 0)
+go.property("lift_gravity_multiple", 1.6)
+go.property("max_rise_speed", 600)
+go.property("on_seconds", 0)
+go.property("off_seconds", 0)
+go.property("start_delay", 0)
+go.property("enabled", true)
+go.property("room_id", "")
+
+local function refresh(self)
+    local blowing = self.enabled and self.clock >= 0
+    if blowing and self.on_seconds > 0 and self.off_seconds > 0 then
+        blowing = self.clock % (self.on_seconds + self.off_seconds) < self.on_seconds
+    end
+    if self.blowing ~= blowing then
+        self.blowing = blowing
+        Presentation.visible(blowing)
+    end
+end
+
+local function apply_enabled(self, enabled)
+    self.enabled = enabled
+    refresh(self)
+end
+
+-- Live signals and stored channel replay use the same transition.
+local function apply_signal(self, message_id, message)
+    if message_id == hash("activate") then apply_enabled(self, true)
+    elseif message_id == hash("deactivate") then apply_enabled(self, false)
+    elseif message_id == hash("toggle") then apply_enabled(self, not self.enabled)
+    elseif not ToggleMessages.handle(self, message_id, message, apply_enabled, {truthy = true}) then
+        return false
+    end
+    return true
+end
+
+function init(self)
+    self.parts = {}
+    self.clock = -math.max(0, self.start_delay)
+    self.current_key = PU.resolve_id(self.current_id) or tostring(go.get_id())
+    refresh(self)
+    TriggerBus.register(self.current_key, msg.url())
+    SwitchState.replay(require("mvtk.core.flags"), self.current_key, function(on, text)
+        local signal = text ~= "" and text or (on and "activate" or "deactivate")
+        apply_signal(self, hash(signal), {replayed = true})
+    end)
+end
+
+function update(self, dt)
+    if self._room_hidden then return end
+    if require("mvtk.core.pause").get() then return end
+    if self.enabled then self.clock = self.clock + dt end
+    refresh(self)
+    if not self.blowing or not next(self.parts) then return end
+    if self.wind_mode == "lift" then
+        msg.post(PU.get_player_url(), "mvtk_env_lift", {
+            gravity_multiple = self.lift_gravity_multiple,
+            max_rise_speed = self.max_rise_speed,
+            dir = self.direction == "down" and -1 or 1,
+        })
+    else
+        local vx, vy = require("mvtk.player.surface_effects").conveyor_vector(self.direction, self.push_speed)
+        if self.angle ~= 0 then
+            local radians = math.rad(self.angle)
+            vx, vy = math.cos(radians) * self.push_speed, math.sin(radians) * self.push_speed
+        end
+        msg.post(PU.get_player_url(), "mvtk_env_push", {vx = vx, vy = vy})
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if (message.other_group or message.group) ~= hash("player") or not message.other_id then return end
+        self.parts[message.other_id] = message.enter and true or nil
+    else
+        apply_signal(self, message_id, message)
+    end
+end
+
+function final(self)
+    TriggerBus.unregister(self.current_key, msg.url())
+end

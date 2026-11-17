@@ -1,0 +1,27 @@
+-- Static feature registry. Add literal requires here so the engine bundles
+-- every feature. The host loads this list only when a hook is first needed.
+return {
+    require "mvtk.player.player_interaction",
+    require "mvtk.player.features.hold_toggle_feature",
+    require "mvtk.player.features.ability_reset",
+    require "mvtk.player.features.zipline_feature",
+    require "mvtk.player.features.hazard_return_feature",
+    require "mvtk.player.features.environment_contacts_feature",
+    require "mvtk.player.features.hang_climb_feature",
+    require "mvtk.player.features.launch_feature",
+    require "mvtk.player.features.movement_zone_feature",
+    require "mvtk.player.features.carry_feature",
+    require "mvtk.player.features.blink_feature",
+    require "mvtk.player.features.grapple_hook_feature",
+    require "mvtk.player.features.intangible_dash_feature",
+    require "mvtk.player.features.super_jump_feature",
+    require "mvtk.player.features.compact_form_feature",
+    require "mvtk.player.features.bomb_feature",
+    require "mvtk.player.features.reveal_lens_feature",
+    require "mvtk.player.features.aim_stance_feature",
+    require "mvtk.player.features.guard_recoil_feature",
+    require "mvtk.player.features.loadout_feature",
+    require "mvtk.player.features.healing_feature",
+    require "mvtk.player.features.air_pocket_feature",
+    require "mvtk.player.features.vehicle_ride_feature",
+}

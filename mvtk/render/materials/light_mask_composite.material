@@ -1,0 +1,12 @@
+name: "light_mask_composite"
+tags: "fullscreen_quad"
+vertex_program: "/mvtk/render/materials/fullscreen_quad.vp"
+fragment_program: "/mvtk/render/materials/light_mask_composite.fp"
+vertex_space: VERTEX_SPACE_LOCAL
+samplers {
+  name: "light_mask"
+  wrap_u: WRAP_MODE_CLAMP_TO_EDGE
+  wrap_v: WRAP_MODE_CLAMP_TO_EDGE
+  filter_min: FILTER_MODE_MIN_LINEAR
+  filter_mag: FILTER_MODE_MAG_LINEAR
+}

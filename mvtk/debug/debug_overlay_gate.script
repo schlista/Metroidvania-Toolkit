@@ -1,0 +1,13 @@
+-- Deletion belongs to a gameobject script: GUI scripts have no go API.
+local Prefab = require "mvtk.prefabs.prefab_utils"
+local Config = require "developer.config.debug_config"
+
+function init(self)
+    if not Prefab.is_dev_build() or not (Config.dev_tools and Config.dev_tools.enabled) then
+        go.delete()
+        return
+    end
+    if Config.dev_tools.trace_zero_rays ~= false then
+        require("mvtk.debug.ray_trace").install()
+    end
+end

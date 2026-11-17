@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Enemy" type="enemy">
+  <properties>
+   <property name="enemy_type" propertytype="enemies" value="default"/>
+   <property name="art" type="file" value=""/>
+   <property name="archetype" propertytype="enemy_archetypes" value="none"/>
+   <property name="rank" type="class" propertytype="enemy_rank">
+    <properties>
+     <property name="champion" type="bool" value="false"/>
+     <property name="champion_name" value=""/>
+     <property name="champion_bar" type="bool" value="true"/>
+     <property name="champion_seal" type="bool" value="true"/>
+     <property name="champion_engage_range" type="float" value="-1"/>
+     <property name="champion_music" propertytype="boss_music_tracks" value="none"/>
+     <property name="champion_reward" value=""/>
+     <property name="champion_enrage_below" type="float" value="-1"/>
+     <property name="champion_enrage_pattern" propertytype="enemy_attack_patterns" value="none"/>
+    </properties>
+   </property>
+   <property name="death_effects" type="class" propertytype="enemy_death_effects">
+    <properties>
+     <property name="death_behavior" propertytype="enemy_death_behaviors" value="type_default"/>
+     <property name="death_burst_count" type="int" value="-1"/>
+     <property name="death_burst_speed" type="float" value="-1"/>
+     <property name="split_type" propertytype="enemy_skins" value="none"/>
+     <property name="split_archetype" propertytype="enemy_archetypes" value="none"/>
+     <property name="split_count" type="int" value="-1"/>
+     <property name="death_hazard_type" propertytype="hazards" value="spikes"/>
+     <property name="death_hazard_time" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="defense" type="class" propertytype="enemy_defense">
+    <properties>
+     <property name="guard" propertytype="enemy_guards" value="type_default"/>
+     <property name="guard_break" propertytype="attack_tags" value=""/>
+     <property name="guard_hits" type="int" value="-1"/>
+     <property name="guard_open_time" type="float" value="-1"/>
+     <property name="armor_hits" type="int" value="-1"/>
+     <property name="armor_requires" propertytype="attack_tags" value=""/>
+     <property name="rear_damage_mult" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="elements" type="class" propertytype="enemy_elements">
+    <properties>
+     <property name="weak_to" propertytype="damage_type_flags" value=""/>
+     <property name="resist_to" propertytype="damage_type_flags" value=""/>
+     <property name="immune_to" propertytype="damage_type_flags" value=""/>
+     <property name="vulnerable_to" propertytype="damage_type_flags" value=""/>
+     <property name="damage_type" propertytype="damage_types" value="none"/>
+     <property name="status_immune" propertytype="status_effect_flags" value=""/>
+     <property name="status_on_hit" propertytype="status_effects" value="none"/>
+     <property name="status_chance" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="movement_and_attacks" type="class" propertytype="enemy_movement_and_attacks">
+    <properties>
+     <property name="aim_mount" propertytype="enemy_mounts" value="type_default"/>
+     <property name="attack_pattern" propertytype="enemy_attack_patterns" value="type_default"/>
+     <property name="attack_pattern2" propertytype="enemy_attack_patterns" value="type_default"/>
+     <property name="chase_speed" type="float" value="-1"/>
+     <property name="chase_speed_mult" type="float" value="-1"/>
+     <property name="detection_range" type="float" value="-1"/>
+     <property name="facing" type="int" value="0"/>
+     <property name="hover_height" type="float" value="-1"/>
+     <property name="movement" propertytype="enemy_movement" value="type_default"/>
+     <property name="patrol_distance" type="float" value="-1"/>
+     <property name="patrol_height" type="float" value="-1"/>
+     <property name="patrol_route" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+   <property name="on_defeat" type="class" propertytype="enemy_on_defeat">
+    <properties>
+     <property name="defeat_flag" value=""/>
+     <property name="species" value=""/>
+     <property name="in_bestiary" type="bool" value="true"/>
+     <property name="respawn" propertytype="enemy_respawn_policies" value="type_default"/>
+    </properties>
+   </property>
+   <property name="rewards" type="class" propertytype="enemy_rewards">
+    <properties>
+     <property name="xp_value" type="int" value="-1"/>
+     <property name="drops" value=""/>
+     <property name="loot_table" value=""/>
+    </properties>
+   </property>
+   <property name="special_movement" type="class" propertytype="enemy_special_movement">
+    <properties>
+     <property name="crawl_speed" type="float" value="-1"/>
+     <property name="cling_side" propertytype="enemy_mounts" value="type_default"/>
+     <property name="ambush_style" propertytype="enemy_ambush_styles" value="type_default"/>
+     <property name="ambush_range" type="float" value="-1"/>
+     <property name="ambush_trigger_id" value=""/>
+     <property name="swim_speed" type="float" value="-1"/>
+     <property name="hop_height" type="float" value="-1"/>
+     <property name="hop_interval" type="float" value="-1"/>
+     <property name="leash_distance" type="float" value="-1"/>
+     <property name="leash_time" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="stats" type="class" propertytype="enemy_stats">
+    <properties>
+     <property name="ally_detection_range" type="float" value="-1"/>
+     <property name="contact_damage" type="float" value="-1"/>
+     <property name="contact_damage_cooldown" type="float" value="-1"/>
+     <property name="damage_mult" type="float" value="-1"/>
+     <property name="difficulty" propertytype="difficulty" value="none"/>
+     <property name="elite" type="bool" value="false"/>
+     <property name="faction" value=""/>
+     <property name="group_id" value=""/>
+     <property name="health_mult" type="float" value="-1"/>
+     <property name="iframes_on_hit" type="float" value="-1"/>
+     <property name="knockback_force" type="float" value="-1"/>
+     <property name="ledge_behavior" propertytype="enemy_ledge_behaviors" value="type_default"/>
+     <property name="required_action" propertytype="actions" value="none"/>
+     <property name="size" type="float" value="-1"/>
+     <property name="speed_mult" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="summon" type="class" propertytype="enemy_summon">
+    <properties>
+     <property name="summon_enemy_type" propertytype="enemy_skins" value="none"/>
+     <property name="summon_archetype" propertytype="enemy_archetypes" value="none"/>
+     <property name="summon_count" type="int" value="-1"/>
+     <property name="summon_interval" type="float" value="-1"/>
+     <property name="summon_max_alive" type="int" value="-1"/>
+     <property name="summon_max_total" type="int" value="-1"/>
+    </properties>
+   </property>
+   <property name="tuning" type="class" propertytype="enemy_tuning">
+    <properties>
+     <property name="attack_cooldown" type="float" value="-1"/>
+     <property name="attack_detection_range" type="float" value="-1"/>
+     <property name="attack_height" type="float" value="-1"/>
+     <property name="attack_parryable" type="bool" value="false"/>
+     <property name="attack_range" type="float" value="-1"/>
+     <property name="attack_windup" type="float" value="-1"/>
+     <property name="charge_cooldown" type="float" value="-1"/>
+     <property name="charge_distance" type="float" value="-1"/>
+     <property name="charge_duration" type="float" value="-1"/>
+     <property name="charge_speed" type="float" value="-1"/>
+     <property name="dart_interval" type="float" value="-1"/>
+     <property name="dart_speed" type="float" value="-1"/>
+     <property name="dart_vertical_speed" type="float" value="-1"/>
+     <property name="projectile_damage" type="float" value="-1"/>
+     <property name="projectile_deflect" propertytype="projectile_deflect_modes" value="inherit"/>
+     <property name="reflect_damage_mult" type="float" value="-1"/>
+     <property name="projectile_speed" type="float" value="-1"/>
+     <property name="rise_height" type="float" value="-1"/>
+     <property name="rise_range" type="float" value="-1"/>
+     <property name="rise_speed" type="float" value="-1"/>
+     <property name="shoot_cooldown" type="float" value="-1"/>
+     <property name="spike_offset" type="float" value="0"/>
+     <property name="swoop_detection_range" type="float" value="-1"/>
+     <property name="swoop_duration" type="float" value="-1"/>
+     <property name="swoop_speed" type="float" value="-1"/>
+    </properties>
+   </property>
+  </properties>
+  <point/>
+ </object>
+</template>

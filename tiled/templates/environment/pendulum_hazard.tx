@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Pendulum Hazard" type="pendulum_hazard" width="64" height="256">
+  <properties>
+   <property name="pendulum_id" type="string" value=""/>
+   <property name="swing" type="class" propertytype="pendulum_hazard_swing">
+    <properties>
+     <property name="arc_degrees" type="float" value="70"/>
+     <property name="swing_seconds" type="float" value="1.2"/>
+     <property name="start_delay" type="float" value="0"/>
+     <property name="start_from_right" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="blade" type="class" propertytype="pendulum_hazard_blade">
+    <properties>
+     <property name="blade_width" type="float" value="0"/>
+     <property name="blade_height" type="float" value="48"/>
+    </properties>
+   </property>
+   <property name="damage_and_knockback" type="class" propertytype="pendulum_hazard_damage_and_knockback">
+    <properties>
+     <property name="damage_type" propertytype="damage_types" value="none"/>
+     <property name="damage" type="int" value="1"/>
+     <property name="damage_cooldown" type="float" value="0.5"/>
+     <property name="stun_t" type="float" value="-1"/>
+     <property name="knockback_force" type="int" value="300"/>
+     <property name="knockback_lift" type="int" value="150"/>
+     <property name="on_contact" type="string" propertytype="hazard_contact_modes" value="type_default"/>
+     <property name="return_damage" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="pendulum_hazard_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

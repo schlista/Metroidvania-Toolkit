@@ -1,0 +1,479 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+-- developer/ui/game/dialogue.gui_script
+-- ============================================================================
+-- Dialogue GUI Controller
+-- ============================================================================
+-- Displays dialogue sequences with support for:
+--   - Linear lines (speaker + text)
+--   - Player choices (up to 4 options)
+--   - Conditional lines (flag / ability gates)
+--   - Flag setting (triggers game state changes)
+--   - Goto / next (branching to other dialogue sequences)
+--
+-- Config format (developer/config/narrative/dialogues.lua):
+--   {
+--     my_dialogue = {
+--       { speaker = "NPC", text = "Hello!" },
+--       { speaker = "NPC", text = "Only if flag set", condition = { flag = "has_key" } },
+--       { speaker = "NPC", text = "Only if no flag",  condition = { flag = "has_key", invert = true } },
+--       { speaker = "NPC", text = "Only with ability", condition = { ability = "double_jump" } },
+--       { speaker = "NPC", text = "Pick a path", choices = {
+--           { text = "Go left",  goto = "left_path" },
+--           { text = "Go right", goto = "right_path" },
+--           { text = "Nevermind" },  -- closes dialogue
+--       }},
+--       { speaker = "NPC", text = "Sets a flag", set_flag = "talked_to_npc" },
+--       { speaker = "NPC", text = "Jumps to another sequence", next = "other_dialogue" },
+--     },
+--   }
+-- ============================================================================
+
+local Input = require "mvtk.rooms.input_controller"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local DisplayText = require "mvtk.ui.display_text"
+local Pause = require "mvtk.core.pause"
+local DialogueRegistry = require "mvtk.dialogue.dialogue_registry"
+local DialogueLogic = require "mvtk.dialogue.dialogue_logic"
+
+local Reading = require "mvtk.ui.reading_text"
+
+local MAX_CHOICES = 4
+local PANEL_SIZE_FALLBACK = vmath.vector3(1040, 220, 0)
+local SPEAKER_OFFSET = vmath.vector3(-480, 170, 0)
+local TEXT_OFFSET = vmath.vector3(-480, 126, 0)
+local CONTINUE_OFFSET = vmath.vector3(480, 18, 0)
+local CHOICE_OFFSETS = {
+  vmath.vector3(-480, 90, 0),
+  vmath.vector3(-480, 62, 0),
+  vmath.vector3(-480, 34, 0),
+  vmath.vector3(-480, 6, 0),
+}
+
+local function n(id)
+  local ok, node = pcall(gui.get_node, id)
+  return ok and node or nil
+end
+
+local function set_text(node, s, prefix)
+  if node then
+    local text = require("mvtk.ui.menu_text").render(s, DisplayText)
+    gui.set_text(node, prefix and DisplayText.ui(prefix, {text=text}) or text)
+  end
+end
+
+local function layout_dialogue(self)
+  local w, h = Viewport.design_size()
+  local panel_size = self.panel_base or (self.panel and gui.get_size(self.panel)) or PANEL_SIZE_FALLBACK
+  local panel_pos = vmath.vector3(w * 0.5, (h * 0.5) - (panel_size.y * 0.5), 0)
+
+  if self.panel then gui.set_position(self.panel, panel_pos) end
+  if self.speaker then gui.set_position(self.speaker, panel_pos + SPEAKER_OFFSET) end
+  if self.text then gui.set_position(self.text, panel_pos + TEXT_OFFSET) end
+  if self.continue_node then gui.set_position(self.continue_node, panel_pos + CONTINUE_OFFSET) end
+  for i = 1, MAX_CHOICES do
+    local node = self.choice_nodes and self.choice_nodes[i]
+    local offset = CHOICE_OFFSETS[i]
+    if node and offset then
+      gui.set_position(node, panel_pos + offset)
+    end
+  end
+end
+
+-- ============================================================================
+-- INIT
+-- ============================================================================
+
+function init(self)
+    gui.set_render_order(RenderLayers.popups)
+  self.panel   = n("panel")
+  self.speaker = n("speaker")
+  self.text    = n("text")
+  self.continue_node = n("continue")
+  if self.continue_node then gui.set_text(self.continue_node, DisplayText.ui("dialogue.continue")) end
+  self.choice_nodes = {}
+  for i = 1, MAX_CHOICES do
+    self.choice_nodes[i] = n("choice_" .. i)
+  end
+  self.panel_base = gui.get_size(self.panel)
+  self.text_size = gui.get_size(self.text)
+  self.text_base = gui.get_scale(self.text)
+  self.choice_bases = {}
+  for i, node in ipairs(self.choice_nodes) do self.choice_bases[i] = gui.get_scale(node) end
+  self.active  = false
+  self.id      = nil
+  self.meta    = nil
+  self.idx     = 0
+  self.lines   = {}
+  self.choices_active = false
+  self.choice_index   = 1
+  self.current_choices = nil
+  if self.panel then
+    layout_dialogue(self)
+    gui.set_visible(self.panel, false)
+  end
+  if self.speaker then gui.set_visible(self.speaker, false) end
+  if self.text then gui.set_visible(self.text, false) end
+  if self.continue_node then gui.set_visible(self.continue_node, false) end
+  for i = 1, MAX_CHOICES do
+    if self.choice_nodes[i] then gui.set_visible(self.choice_nodes[i], false) end
+  end
+end
+
+local function block_input(on)
+  Input.set_blocked(on)
+end
+
+-- ============================================================================
+-- LINE DISPLAY
+-- ============================================================================
+
+local function hide_choices(self)
+  self.choices_active = false
+  self.current_choices = nil
+  self.choice_index = 1
+  for i = 1, MAX_CHOICES do
+    if self.choice_nodes[i] then gui.set_visible(self.choice_nodes[i], false) end
+  end
+end
+
+local function show_choices(self, choices)
+  self.choices_active = true
+  self.current_choices = choices
+  self.choice_index = 1
+  for i = 1, MAX_CHOICES do
+    local node = self.choice_nodes[i]
+    if node then
+      if choices[i] then
+        local prefix = (i == self.choice_index) and "dialogue.choice_selected" or "dialogue.choice"
+        set_text(node, choices[i].text, prefix)
+        gui.set_visible(node, true)
+      else
+        gui.set_visible(node, false)
+      end
+    end
+  end
+  if self.continue_node then gui.set_visible(self.continue_node, false) end
+end
+
+local function update_choice_highlight(self)
+  if not self.current_choices then return end
+  for i = 1, MAX_CHOICES do
+    local node = self.choice_nodes[i]
+    if node and self.current_choices[i] then
+      local prefix = (i == self.choice_index) and "dialogue.choice_selected" or "dialogue.choice"
+      set_text(node, self.current_choices[i].text, prefix)
+    end
+  end
+end
+
+local function current_line(self)
+  return self.lines and self.lines[self.idx] or nil
+end
+
+-- Rebuild presentation independently of authored actions (settings/language refresh).
+local function render_page(self)
+  local line = current_line(self)
+  local final = self.page == #self.pages
+  gui.set_text(self.text, self.pages[self.page])
+  hide_choices(self)
+  if final and line.choices and #line.choices > 0 then show_choices(self, line.choices) end
+  if self.continue_node then
+    gui.set_visible(self.continue_node, not self.choices_active and
+      (not final or self.idx < #self.lines or line.next ~= nil))
+  end
+end
+
+local function paginate(self, reset)
+  local line = current_line(self)
+  if not line then return end
+  local scale = Reading.scale()
+  local width = self.text_size.x * self.text_base.x
+  local panel_size = self.panel_base
+  gui.set_size(self.panel, panel_size)
+  local panel_pos = gui.get_position(self.panel)
+  -- Speaker occupies the top band; a bottom inset keeps reading text off the edge.
+  local top, bottom, choice_height = panel_size.y - 72, 12, 0
+  for i, choice in ipairs(line.choices or {}) do
+    if i > MAX_CHOICES then break end
+    local node = self.choice_nodes[i]
+    Reading.resize(gui, node, self.choice_bases[i], scale, 900, 28)
+    local text = DisplayText.ui("dialogue.choice_selected", {
+      text = require("mvtk.ui.menu_text").render(choice.text, DisplayText) })
+    local _, height = Reading.metrics(gui, resource, node, text, 900)
+    local plain = DisplayText.ui("dialogue.choice", {
+      text = require("mvtk.ui.menu_text").render(choice.text, DisplayText) })
+    local _, plain_height = Reading.metrics(gui, resource, node, plain, 900)
+    height = math.max(height, plain_height)
+    height = math.max(28, height + 4)
+    self.choice_heights = self.choice_heights or {}
+    self.choice_heights[i] = height
+    choice_height = choice_height + height
+  end
+  -- Extremely tall translated choices grow the panel rather than overlap its text.
+  local needed = choice_height + 72 + bottom + 24 * scale
+  if needed > panel_size.y then
+    gui.set_size(self.panel, vmath.vector3(panel_size.x, needed, 0))
+    top = needed - 72
+  end
+  gui.set_position(self.speaker, panel_pos + vmath.vector3(SPEAKER_OFFSET.x, top + 22, 0))
+  Reading.resize(gui, self.text, self.text_base, scale, width, top - bottom)
+  gui.set_pivot(self.text, gui.PIVOT_NW)
+  gui.set_position(self.text, panel_pos + vmath.vector3(TEXT_OFFSET.x, top, 0))
+  local function fits(text, height)
+    if text == "" then return true end
+    local w, h = Reading.metrics(gui, resource, self.text, text, width)
+    return w <= width and h <= height
+  end
+  local text = require("mvtk.ui.menu_text").render(line.text, DisplayText)
+  self.pages = Reading.pages(text, fits, top - bottom, top - bottom - choice_height)
+  self.page = reset and 1 or math.min(self.page or 1, #self.pages)
+  local y = bottom + choice_height
+  for i, choice in ipairs(line.choices or {}) do
+    if i > MAX_CHOICES then break end
+    local node = self.choice_nodes[i]
+    gui.set_pivot(node, gui.PIVOT_NW)
+    gui.set_position(node, panel_pos + vmath.vector3(TEXT_OFFSET.x, y, 0))
+    y = y - self.choice_heights[i]
+  end
+  -- Preserve the authored single-page picture at the default reading size.
+  if scale == 1 and #self.pages == 1 and needed <= panel_size.y then
+    gui.set_size(self.text, self.text_size)
+    gui.set_pivot(self.text, gui.PIVOT_W)
+    gui.set_position(self.text, panel_pos + TEXT_OFFSET)
+    for i, node in ipairs(self.choice_nodes) do
+      gui.set_pivot(node, gui.PIVOT_W)
+      gui.set_position(node, panel_pos + CHOICE_OFFSETS[i])
+    end
+  end
+  self._prompt_revision = DisplayText.revision()
+  self._reading_revision = Reading.revision()
+  render_page(self)
+end
+
+local function apply_line(self)
+  local L = current_line(self)
+  if not L then return end
+  set_text(self.speaker, L.speaker or (self.meta and self.meta.npc_name) or "")
+  if self.panel then gui.set_visible(self.panel, true) end
+  if self.speaker then gui.set_visible(self.speaker, true) end
+  if self.text then gui.set_visible(self.text, true) end
+  DialogueLogic.process_line_actions(L)
+  paginate(self, true)
+end
+
+-- ============================================================================
+-- SEQUENCE NAVIGATION
+-- ============================================================================
+
+-- Advance to next valid line, skipping lines whose conditions fail.
+-- Returns true if a valid line was found, false if sequence ended.
+local function advance_to_next_line(self)
+  while true do
+    self.idx = self.idx + 1
+    if self.idx > #(self.lines or {}) then
+      return false
+    end
+    local L = current_line(self)
+    if L and DialogueLogic.eval_condition(L.condition) then
+      return true
+    end
+  end
+end
+
+-- Jump to a different dialogue sequence by ID
+local function goto_sequence(self, seq_id)
+  if not seq_id then return false end
+  local seq = DialogueRegistry.get(seq_id)
+  if not seq then return false end
+  self.id = seq_id
+  self.lines = seq
+  self.idx = 0
+  hide_choices(self)
+  -- Advance to first valid line
+  if advance_to_next_line(self) then
+    apply_line(self)
+    return true
+  end
+  return false
+end
+
+-- ============================================================================
+-- OPEN / CLOSE
+-- ============================================================================
+
+local function close_dialogue(self)
+  local closed_id = self.id
+  local closed_meta = self.meta or {}
+  local from_cutscene = closed_meta.from_cutscene and true or false
+
+  self.active = false
+  msg.post(".", "release_input_focus")
+  self.id = nil
+  self.idx = 0
+  hide_choices(self)
+  -- Hide dialogue elements
+  if self.panel then gui.set_visible(self.panel, false) end
+  if self.speaker then gui.set_visible(self.speaker, false) end
+  if self.text then gui.set_visible(self.text, false) end
+  if self.continue_node then gui.set_visible(self.continue_node, false) end
+  self.lines = {}
+  set_text(self.speaker, "")
+  set_text(self.text, "")
+  if not from_cutscene then
+    block_input(false)
+    Pause.set(false)
+  end
+  -- Notify manager/caller
+  pcall(msg.post, msg.url("main:/dialogue_manager#dialogue"), hash("dialogue_closed"), { id = closed_id, npc_id = closed_meta.npc_id })
+  self.meta = nil
+  pcall(msg.post, msg.url("main:/cutscene_manager#cutscene"), hash("dlg_closed"), { id = closed_id, token = closed_meta.token })
+end
+
+local function open_dialogue(self, id, meta)
+  self._menu_stick_guard = nil
+  print(string.format("[DIALOGUE_GUI] open_dialogue called: id='%s'", tostring(id)))
+  local seq = DialogueRegistry.get(id)
+  print(string.format("[DIALOGUE_GUI] DialogueRegistry.get('%s') = %s", tostring(id), seq and ("table["..#seq.."]") or "nil"))
+  if not seq then
+    print(string.format("[DIALOGUE_GUI] ERROR: no sequence found for id='%s' — dialogue will not open", tostring(id)))
+    return
+  end
+  local info = meta or {}
+  local from_cutscene = info.from_cutscene and true or false
+  self.active = true
+  -- The player may have acquired focus since this GUI was initialised.
+  -- Consume Back above it so one press cannot also toggle Pause.
+  msg.post(".", "acquire_input_focus")
+  self.id = id
+  self.meta = {
+    npc_id = info.npc_id,
+    npc_name = info.npc_name,
+    from_cutscene = from_cutscene,
+    token = info.token,
+  }
+  self.lines = seq
+  self.idx = 0
+  hide_choices(self)
+  layout_dialogue(self)
+  if not from_cutscene then
+    block_input(true)
+    Pause.set(true)
+  end
+  -- Advance to first valid line (skipping failed conditions)
+  if advance_to_next_line(self) then
+    apply_line(self)
+    -- Tell the manager the line is on screen, so its watchdog stops counting
+    -- while the player reads. Cutscene dialogue is not the manager's.
+    if not from_cutscene then
+      pcall(msg.post, msg.url("main:/dialogue_manager#dialogue"), hash("dialogue_opened"), { id = id, npc_id = info.npc_id })
+    end
+  else
+    -- No valid lines at all — close immediately
+    close_dialogue(self)
+  end
+end
+
+-- ============================================================================
+-- MESSAGES & INPUT
+-- ============================================================================
+
+function on_message(self, message_id, message, sender)
+  print(string.format("[DIALOGUE_GUI] on_message: msg=%s active=%s", tostring(message_id), tostring(self.active)))
+  if message_id == hash("open_dialogue") and message and message.id then
+    print(string.format("[DIALOGUE_GUI] open_dialogue: id='%s' npc_id='%s'", tostring(message.id), tostring(message.npc_id)))
+    open_dialogue(self, tostring(message.id), { npc_id = message.npc_id, npc_name = message.npc_name, from_cutscene = message.from_cutscene, token = message.token })
+  elseif message_id == hash("start_dialogue") and message and (message.dialogue_id or message.id) then
+    -- start_dialogue is used by NPCManager and npc.script; id field may be dialogue_id or id
+    local seq_id = message.dialogue_id or message.id
+    print(string.format("[DIALOGUE_GUI] start_dialogue: seq_id='%s' npc_id='%s'", tostring(seq_id), tostring(message.npc_id)))
+    open_dialogue(self, tostring(seq_id), { npc_id = message.npc_id, npc_name = message.npc_name })
+  elseif message_id == hash("close_dialogue") then
+    close_dialogue(self)
+  else
+    print(string.format("[DIALOGUE_GUI] unhandled message: %s", tostring(message_id)))
+  end
+end
+
+local function refresh_text(self)
+  if self.active and (self._prompt_revision ~= DisplayText.revision()
+      or self._reading_revision ~= Reading.revision()) then
+    if self.continue_node then gui.set_text(self.continue_node, DisplayText.ui("dialogue.continue")) end
+    local line = current_line(self)
+    if line then
+      set_text(self.speaker, line.speaker or (self.meta and self.meta.npc_name))
+      local selected = self.choice_index
+      paginate(self, false)
+      if self.choices_active then
+        self.choice_index = math.min(selected, #self.current_choices)
+        update_choice_highlight(self)
+      end
+    end
+  end
+end
+
+function update(self, dt)
+  refresh_text(self)
+end
+
+function on_input(self, action_id, action)
+  if Input and Input.note_device then Input.note_device(action_id, action) end
+  local menu_pressed = require("mvtk.ui.menu_nav").pressed(self, action_id, action)
+  refresh_text(self)
+  if not self.active then return end
+
+  -- Choice navigation: up/down to move selection
+  if self.choices_active then
+    if InputPrompts.menu_matches("up", action_id) and menu_pressed then
+      self.choice_index = math.max(1, self.choice_index - 1)
+      update_choice_highlight(self)
+      return true
+    elseif InputPrompts.menu_matches("down", action_id) and menu_pressed then
+      local count = self.current_choices and #self.current_choices or 0
+      self.choice_index = math.min(count, self.choice_index + 1)
+      update_choice_highlight(self)
+      return true
+    end
+  end
+
+  if InputPrompts.menu_matches("confirm", action_id) and menu_pressed then
+    if self.page < #self.pages then
+      self.page = self.page + 1
+      render_page(self)
+    elseif self.choices_active and self.current_choices then
+      -- Player selected a choice
+      local choice = self.current_choices[self.choice_index]
+      hide_choices(self)
+      DialogueLogic.process_choice_actions(choice)
+      if choice and choice["goto"] then
+        -- Jump to a different dialogue sequence
+        if not goto_sequence(self, choice["goto"]) then
+          close_dialogue(self)
+        end
+      else
+        -- Choice without goto closes or continues
+        close_dialogue(self)
+      end
+    else
+      -- Normal line advance
+      local L = current_line(self)
+      -- Check if current line has a 'next' redirect
+      if L and L.next then
+        if not goto_sequence(self, L.next) then
+          close_dialogue(self)
+        end
+        return true
+      end
+      -- Advance to next valid line
+      if not advance_to_next_line(self) then
+        close_dialogue(self)
+      else
+        apply_line(self)
+      end
+    end
+    return true
+  elseif InputPrompts.menu_matches("back", action_id) and menu_pressed then
+    close_dialogue(self)
+    return true
+  end
+end

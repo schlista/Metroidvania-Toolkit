@@ -1,0 +1,110 @@
+local GeneratedText = require "mvtk.ui.generated_text"
+local ViewPolicy = require "mvtk.render.view_policy"
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local DisplayText = require "mvtk.ui.display_text"
+-- developer/ui/game/boss_hp.gui_script
+local v3 = vmath.vector3
+
+function init(self)
+    gui.set_render_order(RenderLayers.hud)
+  self.enabled = false
+  msg.post(".", "disable")
+
+  -- Backing bar
+  self.root = gui.new_box_node(v3(0,0,0), v3(1,1,0))
+  gui.set_pivot(self.root, gui.PIVOT_SW)
+  gui.set_color(self.root, vmath.vector4(0,0,0,0))
+
+  self.bounds = Viewport.design_bounds(ViewPolicy.current().hud_frame) or self.bounds
+  if not self.bounds then
+    local w,h = Viewport.design_size()
+    self.bounds = { min_x=0,min_y=0,max_x=w,max_y=h }
+  end
+  self.w, self.h = self.bounds.max_x - self.bounds.min_x, self.bounds.max_y - self.bounds.min_y
+  self._viewport_revision = Viewport.revision()
+
+  local w = math.max(300, self.w * 0.6)
+  local x = self.bounds.min_x + (self.w - w) * 0.5
+  local y = self.bounds.max_y - 60
+
+  self.frame = gui.new_box_node(v3(x, y, 0), v3(w, 18, 0))
+  gui.set_pivot(self.frame, gui.PIVOT_SW)
+  gui.set_color(self.frame, vmath.vector4(0.2,0.2,0.2,0.9))
+
+  self.fill = gui.new_box_node(v3(x+2, y+2, 0), v3(w-4, 14, 0))
+  gui.set_pivot(self.fill, gui.PIVOT_SW)
+  gui.set_color(self.fill, vmath.vector4(0.9,0.15,0.15,0.95))
+
+  self.label = GeneratedText.new(gui, "/developer/ui/game/boss_hp.gui", v3((self.bounds.min_x + self.bounds.max_x) * 0.5, y + 28, 0), "")
+  gui.set_font(self.label, "system")
+  gui.set_pivot(self.label, gui.PIVOT_CENTER)
+
+  -- Hide all elements initially
+  gui.set_visible(self.root, false)
+  gui.set_visible(self.frame, false)
+  gui.set_visible(self.fill, false)
+  gui.set_visible(self.label, false)
+
+  self.hp, self.hp_max = 0, 1
+  self.name = ""
+end
+
+local function layout(self)
+  self.bounds = Viewport.design_bounds(ViewPolicy.current().hud_frame) or self.bounds
+  if not self.bounds then
+    local w,h = Viewport.design_size()
+    self.bounds = { min_x=0,min_y=0,max_x=w,max_y=h }
+  end
+  self.w, self.h = self.bounds.max_x - self.bounds.min_x, self.bounds.max_y - self.bounds.min_y
+  self._viewport_revision = Viewport.revision()
+  local w = math.max(300, self.w * 0.6)
+  local x = self.bounds.min_x + (self.w - w) * 0.5
+  local y = self.bounds.max_y - 60
+  gui.set_position(self.frame, v3(x, y, 0))
+  gui.set_size(self.frame, v3(w, 18, 0))
+  gui.set_position(self.fill, v3(x+2, y+2, 0))
+  gui.set_size(self.fill, v3((w-4) * math.max(0, math.min(1, (self.hp or 0)/(self.hp_max or 1))), 14, 0))
+  gui.set_position(self.label, v3((self.bounds.min_x + self.bounds.max_x) * 0.5, y + 28, 0))
+  gui.set_text(self.label, self.name and DisplayText.render(self.name) or DisplayText.ui("boss.name"))
+  self._text_revision = DisplayText.revision()
+end
+
+local function set_enabled(self, on)
+  self.enabled = on and true or false
+  if self.enabled then
+    msg.post(".", "enable")
+    gui.set_visible(self.root, true)
+    gui.set_visible(self.frame, true)
+    gui.set_visible(self.fill, true)
+    gui.set_visible(self.label, true)
+  else
+    msg.post(".", "disable")
+    gui.set_visible(self.root, false)
+    gui.set_visible(self.frame, false)
+    gui.set_visible(self.fill, false)
+    gui.set_visible(self.label, false)
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("boss_open") then
+    self.name = message and message.name
+    self.hp = (message and message.hp) or 1
+    self.hp_max = (message and message.hp_max) or math.max(1, self.hp)
+    set_enabled(self, true)
+    layout(self)
+  elseif message_id == hash("boss_close") then
+    set_enabled(self, false)
+  elseif message_id == hash("boss_set_hp") then
+    if message and message.hp_max then self.hp_max = message.hp_max end
+    if message and message.hp then self.hp = message.hp end
+    if message and message.name then self.name = message.name end
+    if self.enabled then layout(self) end
+  end
+end
+
+function update(self, dt)
+  if self._viewport_revision ~= Viewport.revision() or self._text_revision ~= DisplayText.revision() then layout(self) end
+end
+

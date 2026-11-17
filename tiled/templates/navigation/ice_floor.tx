@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Ice Floor" type="ice_floor" width="256" height="32">
+  <properties>
+   <property name="ice_id" type="string" value="" />
+   <property name="preset" type="string" value="ice" />
+   <property name="surface" type="class" propertytype="ice_floor_surface">
+    <properties>
+     <property name="accel_mult" type="float" value="-1" />
+     <property name="decel_mult" type="float" value="-1" />
+     <property name="turn_brake_mult" type="float" value="-1" />
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0" />
+  </properties>
+ </object>
+</template>

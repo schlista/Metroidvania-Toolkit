@@ -1,0 +1,25 @@
+-- developer/config/attack_patterns.lua
+-- Optional boss attack-pattern overrides.
+--
+-- Leave this table empty to use the built-in boss patterns in
+-- mvtk/bosses/patterns/attack_patterns.lua. Named entries merge over those
+-- patterns at startup; they must follow mvtk/bosses/attack_pattern_schema.lua.
+-- Select an attack pattern on each boss phase object in Tiled.
+-- Parry tells (off by default): parryable=true uses feedback.parry_tell from
+-- combat_config; false can use its optional unblockable_tell. Projectile,
+-- aoe, beam, charge, grab, mine and wave inherit their existing parryable
+-- default when omitted. Classify melee/compound cues explicitly. An explicit
+-- telegraph_color vector4 always wins. Tell selection never changes damage rules.
+-- Projectile patterns may set projectile_deflect="none", "destroy" (default)
+-- or "reflect". A perfect parry returns only reflect shots when Parry reflects
+-- shots is enabled in Game Settings. reflect_damage_mult=-1 inherits
+-- combat_config.projectiles, or use a nonnegative returned damage multiplier.
+-- These patterns use your own world pixels and are not scaled with tile size.
+-- Optional scale_with_tiles = true opts a pattern into the framework's tile
+-- factor (unitless boolean, safe false/true; false is the default).
+-- Summon table: count, enemy_type, optional skin, spawn_radius, max_active,
+-- and drops. With skin, enemy_type supplies the archetype. max_active and
+-- drops inherit boss_defaults.summon_max_active (4) and summon_drops (false).
+-- Summons use the shared enemy collection; no per-pattern factory is read.
+return {}
+

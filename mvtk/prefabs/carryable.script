@@ -1,0 +1,213 @@
+-- Baked kinematic object. No push trigger, tile chunk or runtime placed-object factory.
+local PU = require "mvtk.prefabs.prefab_utils"
+local Motion = require "mvtk.world.carry_motion"
+local Pause = require "mvtk.core.pause"
+local Util = require "mvtk.core.util"
+local Flags = require "mvtk.core.flags"
+
+go.property("carry_id", "")
+go.property("room_id", "")
+go.property("kind", "crate")
+go.property("label", "Pick up")
+go.property("move_speed_mult", 0.8)
+go.property("blocks_jump", false)
+go.property("throw_speed", 900)
+go.property("breaks_on_impact", false)
+go.property("break_speed", 1600)
+go.property("fuse_time", 3)
+go.property("half_w", 32)
+go.property("half_h", 32)
+
+local function interaction(self, enabled)
+    if enabled == self.registered then return end
+    self.registered = enabled
+    if enabled then
+        local cfg = Util.require_config("developer.config.interaction")
+        PU.register_interaction({text=self.label}, cfg.default_range, cfg.default_priority, nil, true)
+    else PU.unregister_interaction() end
+end
+local function place(self, x, y)
+    self.x, self.y = x, y
+    go.set_position(vmath.vector3(x - self.offset.x, y - self.offset.y, self.home.z))
+end
+local function returning(self)
+    interaction(self, false)
+    if self.mode == "carried" and self.owner then
+        msg.post(self.owner, "mvtk_carry_begin", {object=msg.url(), ended=true})
+    end
+    self.mode, self.return_t, self.fuse = "return", self.cfg.return_delay, nil
+    Util.post_component_enabled("#co", false)
+    if self.placeholder then Util.post_component_enabled("#sprite", false) end
+    require("mvtk.tiled.object_presentation").visible(false)
+end
+local function rest(self)
+    self.mode, self.vx, self.vy = "rest", 0, 0
+    interaction(self, true)
+end
+local function begin(self)
+    msg.post(PU.get_player_url(), "mvtk_carry_begin", {object=msg.url(), carry_id=self.carry_id,
+        room_id=self.room_id, kind=self.kind, move_speed_mult=self.move_speed_mult,
+        blocks_jump=self.blocks_jump, throw_speed=self.throw_speed, half_w=self.half_w, half_h=self.half_h})
+end
+local function hide(self)
+    interaction(self, false)
+    Util.post_component_enabled("#co", false)
+    if self.placeholder then Util.post_component_enabled("#sprite", false) end
+    require("mvtk.tiled.object_presentation").visible(false)
+end
+local function impact(self, speed)
+    if self.mode ~= "throw" and self.mode ~= "drop" then return end
+    if self.breaks_on_impact and speed >= self.break_speed then returning(self); return end
+    local kind = self.cfg.kinds[self.kind]
+    if self.mode == "throw" and not kind.explodes and ((kind.impact_damage or 0) > 0 or (kind.hit_tag or "") ~= "") then
+        local radius = math.sqrt(self.half_w*self.half_w + self.half_h*self.half_h)
+        local id = factory.create(require("mvtk.core.constants").URL.FACTORY.melee_circle,
+            vmath.vector3(self.x, self.y, self.home.z + self.offset.z), nil,
+            {damage=self.damage or 0, attack_type=kind.hit_tag or "", source_attack="throw",
+                source_actor=self.owner, hit_enemy=kind.hit_enemy == true, hit_breakable=true,
+                dir=self.vx < 0 and -1 or 1, debug_shape="circle", debug_radius=radius}, radius / 50)
+        msg.post(id, "set_owner", {owner=self.owner})
+    end
+    rest(self)
+end
+local function raycast(x, y, tx, ty, names)
+    local groups = {}
+    for _, name in ipairs(names) do groups[#groups + 1] = hash(name) end
+    local hit = physics.raycast(vmath.vector3(x,y,0), vmath.vector3(tx,ty,0), groups)
+    if hit and hit.group == hash("platform") then hit.group = "platform" end
+    return hit
+end
+
+function init(self)
+    self.cfg = Util.require_config("developer.config.carry_settings")
+    go.update_world_transform()
+    self.home = go.get_position()
+    self.placeholder = pcall(go.get, "#sprite", "size")
+    local world = go.get_world_position()
+    self.offset = world - self.home
+    self.x, self.y, self.vx, self.vy = world.x, world.y, 0, 0
+    self.mode, self.registered = "rest", false
+    local cfg = require("developer.config.runtime_settings").get_player_settings()
+    self.gravity, self.fall_mult = cfg.gravity, cfg.fall_gravity_mult
+    self.max_fall = cfg.max_fall_speed or cfg.gravity * 4
+    if Flags.has("carry_placed_" .. self.carry_id) then
+        self.mode = "consumed"
+        hide(self)
+        return
+    end
+    interaction(self, true)
+end
+
+function update(self, dt)
+    if Pause.get() then return end
+    if self.mode == "consumed" or self.mode == "socketed" then return end
+    if self.mode == "return" then
+        self.return_t = self.return_t - dt
+        if self.return_t <= 0 then
+            place(self, self.home.x + self.offset.x, self.home.y + self.offset.y)
+            Util.post_component_enabled("#co", true)
+            if self.placeholder then Util.post_component_enabled("#sprite", true) end
+            require("mvtk.tiled.object_presentation").visible(true); rest(self)
+        end
+        return
+    end
+    if self.fuse then
+        self.fuse = self.fuse - dt
+        if self.fuse <= 0 then
+            local kind = self.cfg.kinds[self.kind]
+            local action = Util.require_config("developer.config.player_actions").bomb
+            factory.create(require("mvtk.core.constants").URL.FACTORY.bomb,
+                vmath.vector3(self.x,self.y,self.home.z+self.offset.z), nil,
+                {fuse=0, radius=kind.radius_tiles * Util.require_config("developer.config.tile_settings").width,
+                    damage=self.bomb_damage, attack_type=kind.hit_tag, owner=self.owner, knockback=action.knockback_px})
+            returning(self); return
+        end
+    end
+    if self.mode == "carried" then return end
+    local bounds = require("mvtk.map.streaming.room_manager").get_room_bounds(self.room_id)
+    if bounds and self.y + self.half_h < bounds.min_y then returning(self); return end
+    local gravity = self.gravity * (self.vy < 0 and self.fall_mult or 1)
+    local speed = math.sqrt(self.vx*self.vx + self.vy*self.vy)
+    local x,y,vx,vy,hit = Motion.step(self,dt,gravity,raycast)
+    place(self,x,y); self.vx,self.vy = vx, math.max(self.max_fall,vy)
+    if hit then impact(self,speed) end
+    if not hit and self.mode == "rest" then self.mode = "drop"; interaction(self,false) end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("carry_accept") and (self.mode == "consumed"
+        or (self.mode == "socketed" and not self.take_pending)) then
+        -- A rest pickup can have queued begin before the socket won the snap.
+        -- The GO still exists: explicitly retire that late player relationship.
+        msg.post(message.owner,"mvtk_carry_begin",{object=msg.url(),ended=true})
+        return
+    end
+    if message_id == hash("carry_socketed") and self.mode ~= "rest" and self.mode ~= "drop" and self.mode ~= "throw" then
+        msg.post(sender,"socket_rejected",{})
+        return
+    end
+    if self.mode == "consumed" then return end
+    -- Relationship messages must settle even when a reset arrives in a menu.
+    if Pause.get() and message_id ~= hash("carry_accept") and message_id ~= hash("carry_release")
+        and message_id ~= hash("carry_follow") and message_id ~= hash("carry_socketed") then return end
+    if message_id == hash("mvtk_interact") and self.mode == "rest" then
+        begin(self)
+        return true
+    elseif message_id == hash("trigger_response") and message.enter and message.other_group == hash("sensor")
+        and (self.mode == "rest" or self.mode == "drop" or self.mode == "throw") then
+        msg.post(message.other_id, "socket_offer", {carry_id=self.carry_id, kind=self.kind, object=msg.url()})
+    elseif message_id == hash("carry_socketed")
+        and (self.mode == "rest" or self.mode == "drop" or self.mode == "throw") then
+        interaction(self,false)
+        place(self,message.x,message.y)
+        self.mode,self.socket,self.vx,self.vy = "socketed",sender,0,0
+        self.take_pending = nil
+        Util.post_component_enabled("#co", false)
+        if message.consume then
+            Flags.set("carry_placed_" .. self.carry_id, true)
+            self.mode = "consumed"
+            hide(self)
+        end
+        msg.post(sender,"socket_filled",{})
+    elseif message_id == hash("carry_take") and self.mode == "socketed" and sender == self.socket then
+        self.take_pending = true
+        begin(self)
+    elseif message_id == hash("carry_accept") and (self.mode == "rest" or self.mode == "socketed") then
+        if self.mode == "socketed" then
+            msg.post(self.socket,"socket_taken",{})
+            self.socket, self.take_pending = nil, nil
+        end
+        interaction(self,false); self.mode, self.owner = "carried", message.owner
+        self.bomb_damage = message.bomb_damage
+        if self.cfg.kinds[self.kind].explodes and not self.fuse then self.fuse = self.fuse_time end
+        Util.post_component_enabled("#co", false)
+    elseif message_id == hash("carry_follow") and self.mode == "carried" then
+        place(self,message.x,message.y)
+    elseif message_id == hash("carry_release") and self.mode == "carried" then
+        if message.mode == "lost" then returning(self); return end
+        place(self,message.x,message.y)
+        self.mode,self.vx,self.vy = message.mode,message.vx,message.vy
+        self.damage,self.bomb_damage,self.owner = message.damage,message.bomb_damage,message.owner
+        Util.post_component_enabled("#co", true)
+    elseif message_id == hash("contact_point_response") and self.mode ~= "carried" and self.mode ~= "return" and self.mode ~= "socketed" then
+        local group = message.other_group or message.group
+        if group == hash("player") or group == hash("sensor") then return end
+        local speed = math.sqrt(self.vx*self.vx + self.vy*self.vy)
+        local normal = message.normal
+        if (message.distance or 0) > 0 then place(self,self.x+normal.x*message.distance,self.y+normal.y*message.distance) end
+        local dot = self.vx*normal.x + self.vy*normal.y
+        if dot < 0 then self.vx,self.vy = self.vx-dot*normal.x,self.vy-dot*normal.y end
+        impact(self,speed)
+    end
+end
+
+function final(self) interaction(self,false) end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

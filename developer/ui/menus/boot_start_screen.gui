@@ -1,0 +1,263 @@
+script: "/developer/ui/menus/boot_start_screen.gui_script"
+fonts {
+  name: "main"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+background_color {
+  x: 0.0
+  y: 0.0
+  z: 0.0
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.06
+    y: 0.06
+    z: 0.10
+  }
+  type: TYPE_BOX
+  id: "root"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    y: 200.0
+  }
+  size {
+    x: 466.666666563
+    y: 62.222222208
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "MV TOOLKIT"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_CENTER
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  shadow {
+    x: 0.02
+    y: 0.02
+    z: 0.04
+  }
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  outline_alpha: 0.6
+  shadow_alpha: 0.4
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: 80.0
+  }
+  size {
+    x: 787.499999902
+    y: 34.999999996
+  }
+  color {
+    x: 0.65
+    y: 0.65
+    z: 0.70
+  }
+  type: TYPE_TEXT
+  text: "A Framework for Building Great Games"
+  font: "main"
+  id: "subtitle"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.9
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -60.0
+  }
+  size {
+    x: 300.0
+    y: 60.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_play"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 217.777777729
+    y: 38.888888880
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "PLAY GAME"
+  font: "main"
+  id: "btn_play_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_play"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -140.0
+  }
+  size {
+    x: 300.0
+    y: 60.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_editor"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 217.777777729
+    y: 38.888888880
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "LAYOUT EDITOR"
+  font: "main"
+  id: "btn_editor_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_editor"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -220.0
+  }
+  size {
+    x: 300.0
+    y: 60.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_extras"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  enabled: false
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 217.777777729
+    y: 38.888888880
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "EXTRAS"
+  font: "main"
+  id: "btn_extras_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_extras"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: -360.0
+  }
+  size {
+    x: 962.499999880
+    y: 55.999999993
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Play Game opens save slots. Layout Editor builds the world."
+  font: "main"
+  id: "hint"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.85
+
+  font_size: 14
+}
+material: "/builtins/materials/gui.material"

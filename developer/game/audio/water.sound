@@ -1,0 +1,3 @@
+sound: "/developer/assets/sfx/water_cc0.ogg"
+looping: 1
+group: "ambient"

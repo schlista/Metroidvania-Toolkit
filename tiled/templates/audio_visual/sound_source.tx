@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Sound Source" type="ambience_zone" width="96" height="96">
+  <properties>
+   <property name="ambience_id" propertytype="ambient_sounds" value="none"/>
+   <property name="zone_id" type="string" value=""/>
+   <property name="mixing" type="class" propertytype="sound_source_mixing">
+    <properties>
+     <property name="gain" type="float" value="1.0"/>
+    </properties>
+   </property>
+   <property name="positional_audio" type="class" propertytype="sound_source_falloff">
+    <properties>
+     <property name="positional" type="bool" value="true"/>
+     <property name="falloff_start" type="float" value="0"/>
+     <property name="falloff_end" type="float" value="640"/>
+     <property name="min_volume" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

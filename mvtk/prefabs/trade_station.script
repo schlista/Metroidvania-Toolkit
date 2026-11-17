@@ -1,0 +1,110 @@
+-- Baked station owner. Purchase sessions and transactions live in StationOwner.
+local PU = require "mvtk.prefabs.prefab_utils"
+local MenuText = require "mvtk.ui.menu_text"
+local Flags = require "mvtk.core.flags"
+local Presentation = require "mvtk.tiled.object_presentation"
+local StationOwner = require "mvtk.economy.station_owner"
+
+local KINDS = {
+    bank = { prompt = "interaction.bank", locked = "bank.locked" },
+    offering_altar = { prompt = "interaction.offer", locked = "altar.locked" },
+    skill_trainer = { prompt = "interaction.train", locked = "trainer.locked" },
+    shop = { prompt = "interaction.shop", locked = "shop.locked" },
+    upgrade_station = { prompt = "interaction.upgrade", locked = "upgrade_station.locked" },
+}
+
+go.property("station_kind", "shop")
+go.property("bank_mode", "both")
+go.property("station_id", "")
+go.property("catalog_id", "")
+go.property("prompt_text", "Shop")
+go.property("menu_title", "")
+go.property("requires_flag", "")
+go.property("locked_text", "")
+go.property("room_id", "")
+go.property("range", 96)
+go.property("show_on_map", true) -- Read by the world census for the map icon (map_tracking.lua).
+go.property("buys_items", true)
+go.property("sell_share", -1)
+go.property("leave_when_done", false)
+
+go.property("offer_cost_currency", 0)
+go.property("offer_cost_item", "")
+go.property("offer_cost_item_count", 1)
+go.property("offer_reward", "")
+go.property("offer_reward_text", "")
+go.property("offer_remove_after_use", false)
+go.property("offer_set_flag", "")
+
+local function finished(self)
+    if self.station_kind == "offering_altar" then
+        return self.offer_remove_after_use and Flags.has("altar_used:" .. self.station_id)
+    end
+    return self.station_kind == "skill_trainer" and self.leave_when_done
+        and require("mvtk.economy.catalog").all_abilities_learned({ catalog_id = self.catalog_id })
+end
+
+function init(self)
+    if finished(self) then
+        Presentation.restore(nil, true)
+        go.delete()
+        return
+    end
+    self._prompt = PU.normalize_hash_string(self.prompt_text)
+    self._title = PU.normalize_hash_string(self.menu_title) or ""
+    self._requires = PU.normalize_hash_string(self.requires_flag)
+    self._locked = PU.normalize_hash_string(self.locked_text)
+    PU.register_interaction(MenuText.default(self._prompt,
+        (KINDS[self.station_kind] or KINDS.shop).prompt), self.range, 5, nil, true)
+    -- Map icons come from the prepared census (mvtk/map/map_tracking.lua), so the
+    -- station registers no map marker and its icon outlives the room (STAGE_7 D-S7B-2).
+end
+
+function on_message(self, message_id, message, sender)
+    local handled, purchased = StationOwner.on_message(self, message_id, message, sender)
+    if handled then
+        if purchased and finished(self) then
+            StationOwner.final(self) -- Close before removing the owner and its art.
+            Presentation.emit("consumed", nil, true)
+            go.delete()
+        end
+        return
+    end
+    if message_id ~= hash("mvtk_interact") then return end
+    if self.station_kind == "offering_altar" and Flags.has("altar_used:" .. self.station_id) then
+        PU.toast({ key = "altar.already_offered" })
+        return
+    end
+    if self._requires and not Flags.has(self._requires) then
+        PU.toast(MenuText.default(self._locked,
+            (KINDS[self.station_kind] or KINDS.shop).locked))
+        return
+    end
+    local pos = go.get_world_position()
+    local context = {
+        station_kind = self.station_kind, station_id = self.station_id,
+        bank_mode = self.bank_mode, catalog_id = self.catalog_id, menu_title = self._title, room_id = self.room_id,
+        position = { x = pos.x, y = pos.y },
+        buys_items = self.station_kind == "shop" and self.buys_items, sell_share = self.sell_share,
+    }
+    if self.station_kind == "offering_altar" then
+        for _, key in ipairs(require("mvtk.economy.catalog").OFFER_FIELDS) do context[key] = self[key] end
+    end
+    local accepted = StationOwner.open(self, context, message)
+    if accepted then Presentation.emit("interacted") end
+    return accepted and (message and message.interaction_result and "pending" or true) or false
+end
+
+function final(self)
+    StationOwner.final(self)
+    PU.unregister_interaction()
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

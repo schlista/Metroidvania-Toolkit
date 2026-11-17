@@ -1,0 +1,115 @@
+-- Hit-operated, baked switch. State writes and receiver signals use SwitchCore.
+local Core = require "mvtk.prefabs.switch_core"
+local Config = require "developer.config.switches"
+local Flags = require "mvtk.core.flags"
+local Pause = require "mvtk.core.pause"
+local Presentation = require "mvtk.tiled.object_presentation"
+local Audio = require "mvtk.audio.audio"
+
+go.property("switch_id", "")
+go.property("target_id", "")
+go.property("room_id", "")
+go.property("persist_key", "")
+go.property("starts_on", false)
+go.property("mode", "toggle")
+go.property("timer_seconds", 5)
+go.property("accepts", "any")
+go.property("accept_enemy_hits", false)
+go.property("cooldown", -1) -- Negative uses the commented config default.
+go.property("message_on", "activate")
+go.property("call_landing", "")
+go.property("message_off", "deactivate")
+go.property("set_flag_on", "")
+go.property("set_flag_off", "")
+go.property("requires_flag", "")
+go.property("persist_state", false)
+go.property("sound_on", "")
+go.property("sound_off", "")
+go.property("sound_reject", "")
+go.property("tick_sound", "")
+
+local function sound(id, fallback)
+    if id == nil or id == "" then id = fallback end
+    if id and id ~= "" and id ~= "none" then Audio.sfx(id) end
+end
+
+local function start_clock(self)
+    if self.mode == "timed" then
+        self.remaining = math.max(0, tonumber(self.timer_seconds) or 0)
+        Presentation.restore("timing")
+    elseif self.mode == "momentary" then
+        self.pulse_generation = (self.pulse_generation or 0) + 1
+        local generation = self.pulse_generation
+        Pause.delay(Config.momentary_pulse, function()
+            if self.pulse_generation == generation then Core.set_state(self, false) end
+        end)
+    end
+end
+
+function init(self)
+    self.lever_id = self.switch_id
+    self.toggle = self.mode == "toggle" or self.mode == "once"
+    Core.init(self, {kind="strike", interaction=false, restore_on_flag=false,
+        state_fallbacks=require("developer.config.object_art").strike_switch_state_fallbacks})
+    if self.cooldown < 0 then self.cooldown = Config.default_cooldown end
+    if self.state_on then start_clock(self) end
+end
+
+function final(self)
+    self.pulse_generation = (self.pulse_generation or 0) + 1
+    Core.final(self)
+end
+
+function update(self, dt)
+    if Pause.get() then return end
+    Core.update(self, dt)
+    if self.mode == "timed" and self.state_on then
+        local previous = self.remaining or 0
+        self.remaining = math.max(0, previous - dt)
+        -- Count every crossed second, even after an unusually long frame.
+        for second = math.ceil(previous) - 1, math.ceil(self.remaining), -1 do
+            sound(self.tick_sound, Config.timed_tick_sound)
+        end
+        if self.remaining <= 0 then Core.set_state(self, false) end
+    end
+end
+
+local function accepted(self, message)
+    if not self.accept_enemy_hits and (message.source_attack == "enemy_projectile"
+        or (message.boss_id and message.boss_id ~= "")) then return false end
+    if self.accepts == "any" or self.accepts == "" then return true end
+    for _, tag in ipairs(Config.accept_groups[self.accepts] or {}) do
+        if tag == message.attack_type then return true end
+    end
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_force_off") then
+        Core.on_message(self, message_id, message, sender)
+        if not self.state_on then
+            self.remaining = nil
+            self.pulse_generation = (self.pulse_generation or 0) + 1
+        end
+        return
+    end
+    if message_id ~= hash("mvtk_apply_damage") and message_id ~= hash("damage")
+        and message_id ~= hash("attack_hit") then return end
+    if Pause.get() or self.cooldown_t > 0
+        or (self.requires_flag_str and not Flags.has(self.requires_flag_str)) then return end
+    if self.mode == "once" and self.state_on and not self.call_landing_key then return end
+    self.cooldown_t = self.cooldown
+    if not accepted(self, message or {}) then
+        sound(self.sound_reject, Config.reject_sound)
+        Presentation.emit("rejected")
+        return
+    end
+    if self.call_landing_key then
+        Core.call(self)
+    elseif self.mode == "toggle" then
+        Core.set_state(self, not self.state_on)
+    else
+        Core.set_state(self, true, {reemit=true})
+        start_clock(self)
+    end
+end

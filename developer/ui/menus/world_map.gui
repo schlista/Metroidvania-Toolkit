@@ -1,0 +1,27 @@
+script: "/developer/ui/menus/world_map.gui_script"
+fonts {
+  name: "system"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 2048
+
+materials {
+  name: "fog"
+  material: "/mvtk/ui/minimap/fog.material"
+}
+
+textures {
+  name: "minimap_atlas"
+  texture: "/developer/assets/minimap/minimap.atlas"
+}
+
+# Disabled, empty source for generated runtime text; never measured or registered for input.
+nodes {
+  type: TYPE_TEXT
+  id: "generated_text_template"
+  font: "system"
+  font_size: 14
+  enabled: false
+}

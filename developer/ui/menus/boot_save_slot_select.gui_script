@@ -1,0 +1,626 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+-- mvtk/boot/gui/save_slot_select.gui_script
+-- Save Slot Selection Screen - shown when user clicks "Play Game" from main menu
+-- Displays up to 3 save slot cards (mvtk/ui/save_slot_card.lua), and selects,
+-- copies (after a confirmation) and deletes (after a confirmation) saves.
+
+local Viewport = require "mvtk.ui.viewport"
+local Checkpoint = require "mvtk.core.checkpoint"
+local SaveManager = require "mvtk.game.save_system.save_manager"
+local CFG = require "developer.config.resolved_config"
+local InputCtl = require "mvtk.rooms.input_controller"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local DisplayText = require "mvtk.ui.display_text"
+local MenuText = require "mvtk.ui.menu_text"
+local Localization = require "mvtk.core.localization"
+local Difficulty = require "mvtk.core.difficulty"
+local ListMenu = require "mvtk.ui.list_menu"
+local NewGamePlus = require "mvtk.game.new_game_plus"
+local MenuNav = require "mvtk.ui.menu_nav"
+local SaveSlotCard = require "mvtk.ui.save_slot_card"
+local ok_cm, CollectibleManager = pcall(require, "mvtk.collectibles.collectible_manager")
+
+local SAVES = (CFG.progression and CFG.progression.saves) or {}
+local MAX_SLOTS = SAVES.max_slots or 3
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function set_enabled(self, enabled)
+    local root = n("root")
+    if root then
+        gui.set_enabled(root, enabled)
+        if enabled then
+            gui.animate(root, gui.PROP_COLOR, vmath.vector4(0.05, 0.05, 0.08, 1), gui.EASING_LINEAR, 0.2)
+        else
+            gui.set_color(root, vmath.vector4(0.05, 0.05, 0.08, 0))
+        end
+    end
+end
+
+local function get_slot_info()
+    return Checkpoint.list_slots(MAX_SLOTS)
+end
+
+local function update_slot_display(self)
+    for i=1,3 do local bg=n("slot"..i.."_bg"); if bg then gui.set_enabled(bg,i<=MAX_SLOTS) end end
+    gui.set_text(n("title"), DisplayText.ui("save.title"))
+    gui.set_text(n("btn_back_label"), DisplayText.ui("save.back"))
+    local slots = get_slot_info()
+    self.slots = slots
+    self.ng_slots = {}
+    
+    for i = 1, MAX_SLOTS do
+        gui.set_text(n("slot" .. i .. "_label"), DisplayText.ui("save.slot", { number = i }))
+        local slot = slots[i]
+        local bg = n("slot" .. i .. "_bg")
+        local info = n("slot" .. i .. "_info")
+        local meta_node = n("slot" .. i .. "_meta")
+        local swatch = n("slot" .. i .. "_swatch")
+        local card = {}
+        
+        if slot and slot.exists then
+            -- Has save data: region, swatch and summary fields, or today's lines.
+            local status = NewGamePlus.slot_status(slot.slot)
+            self.ng_slots[i] = status
+            card = SaveSlotCard.build(slot.meta, { display = DisplayText, localization = Localization,
+                saves = SAVES, cycle = status.cycle })
+            if info then gui.set_text(info, card.line1) end
+            if meta_node then gui.set_text(meta_node, card.line2) end
+            if card.swatch then gui.set_color(swatch, card.swatch) end
+        elseif slot and slot.error and slot.error ~= "missing" then
+            if info then gui.set_text(info, DisplayText.ui("save.unavailable")) end
+            if meta_node then gui.set_text(meta_node, DisplayText.ui("save.file_preserved")) end
+        else
+            -- Empty slot
+            if info then
+                gui.set_text(info, DisplayText.ui("save.empty"))
+            end
+            if meta_node then
+                gui.set_text(meta_node, DisplayText.ui("save.new_adventure"))
+            end
+        end
+        if swatch then gui.set_enabled(swatch, card.swatch ~= nil) end
+    end
+    gui.set_text(n("slot_status"), self.status_key and DisplayText.ui(self.status_key) or "")
+end
+
+-- Copy needs a second slot, the setting, and a selected slot that holds a save.
+local function can_copy_from(self, index)
+    local slot = self.slots and self.slots[index]
+    return SAVES.allow_copy ~= false and MAX_SLOTS > 1 and slot ~= nil and slot.exists == true
+end
+
+-- A copy may replace a valid save or a corrupt file, never a newer or foreign
+-- one (Checkpoint.copy_slot refuses those too); the source is never a target.
+local function copy_target(self, index)
+    local slot = self.slots and self.slots[index]
+    if not slot or index == self.copy_from or index > MAX_SLOTS then return nil end
+    if slot.exists or not slot.error or slot.error == "missing" or slot.error == "corrupt" then return slot end
+    return nil
+end
+
+local function update_legend(self)
+    if self.copy_from then
+        gui.set_text(self.hints, DisplayText.legend({
+            { button_key = "save.up_down", text_key = "save.navigate" }, { command = "confirm", text_key = "save.copy_choose" },
+            { command = "back", text_key = "save.copy_cancel" },
+        }, { separator = DisplayText.ui("save.legend_separator") }))
+        return
+    end
+    local entries = {
+        { button_key = "save.up_down", text_key = "save.navigate" }, { command = "confirm", text_key = "save.select" },
+        { key = "key_x", pad = "gamepad_rpad_left", text_key = "save.delete" },
+        { command = "back", text_key = "save.back_hint" },
+    }
+    local status = self.ng_slots and self.ng_slots[self.selected]
+    if status and status.eligible then
+        entries[#entries + 1] = { key = "key_g", pad = "gamepad_rpad_up", text_key = "save.new_game_plus" }
+    end
+    if can_copy_from(self, self.selected) then
+        entries[#entries + 1] = { key = "key_c", pad = "gamepad_rshoulder", text_key = "save.copy" }
+    end
+    gui.set_text(self.hints, DisplayText.legend(entries, { separator = DisplayText.ui("save.legend_separator") }))
+end
+
+local function update_selection(self)
+    -- Use original colors from GUI, brighten for selection
+    for i = 1, MAX_SLOTS do
+        local bg = n("slot" .. i .. "_bg")
+        if bg then
+            local base_color = self.original_colors and self.original_colors["slot" .. i .. "_bg"]
+            if base_color then
+                if self.selected == i then
+                    -- Brighten the original color for selection
+                    local hilite = vmath.vector4(
+                        math.min(base_color.x * 1.8, 1.0),
+                        math.min(base_color.y * 1.8, 1.0),
+                        math.min(base_color.z * 1.8, 1.0),
+                        1.0
+                    )
+                    gui.set_color(bg, hilite)
+                else
+                    gui.set_color(bg, base_color)
+                end
+            end
+            gui.set_scale(bg, self.selected == i and vmath.vector3(1.02, 1.02, 1) or vmath.vector3(1, 1, 1))
+        end
+    end
+
+    -- Back button
+    local btn_back = n("btn_back")
+    if btn_back then
+        local base_color = self.original_colors and self.original_colors["btn_back"]
+        if base_color then
+            if self.selected == MAX_SLOTS + 1 then
+                local hilite = vmath.vector4(
+                    math.min(base_color.x * 1.5, 1.0),
+                    math.min(base_color.y * 1.5, 1.0),
+                    math.min(base_color.z * 1.5, 1.0),
+                    1.0
+                )
+                gui.set_color(btn_back, hilite)
+            else
+                gui.set_color(btn_back, base_color)
+            end
+        end
+        gui.set_scale(btn_back, self.selected == MAX_SLOTS + 1 and vmath.vector3(1.05, 1.05, 1) or vmath.vector3(1, 1, 1))
+    end
+    update_legend(self)
+end
+
+local render_difficulty, render_confirm
+local function refresh_prompt(self)
+    update_slot_display(self)
+    if self.difficulty_picker then render_difficulty(self) end
+    if self.slot_confirm then render_confirm(self) end
+    update_legend(self)
+    gui.set_text(n("difficulty_hints"), DisplayText.legend({
+        { command = "up", text_key = "save.previous" }, { command = "down", text_key = "save.next" },
+        { command = "left", text_key = "save.previous_page" }, { command = "right", text_key = "save.next_page" },
+        { command = "confirm", text_key = "save.start" }, { command = "back", text_key = "save.back_hint" },
+    }))
+    self._prompt_revision = DisplayText.revision()
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self._menu_stick_guard = nil
+    self.visible = true
+    -- Reset selection before building the selected-slot legend.
+    self.selected = 1
+    self.copy_from, self.status_key = nil, nil
+    refresh_prompt(self)
+    set_enabled(self, true)
+    msg.post(".", "acquire_input_focus")
+    
+    update_selection(self)
+end
+
+local function hide_screen(self)
+    if not self.visible then return end
+    self.visible = false
+    self.difficulty_picker = nil
+    self.slot_confirm, self.confirm_nav = nil, nil
+    self.copy_from = nil
+    gui.set_enabled(n("slot_confirm_panel"), false)
+    gui.set_enabled(n("difficulty_panel"), false)
+    set_enabled(self, false)
+    msg.post(".", "release_input_focus")
+end
+
+render_difficulty = function(self)
+    local view = self.difficulty_picker.view()
+    gui.set_text(n("difficulty_title"), DisplayText.ui("save.difficulty_page", { title = MenuText.render(view.title, DisplayText), page = MenuText.render(view.page_text, DisplayText) }))
+    for i = 1, 12 do
+        local bg, text, row = n("difficulty_row" .. i .. "_bg"), n("difficulty_row" .. i .. "_text"), view.rows[i]
+        gui.set_enabled(bg, row ~= nil)
+        gui.set_enabled(text, row ~= nil)
+        if row then
+            gui.set_text(text, MenuText.render(row.label, DisplayText))
+            gui.set_color(bg, view.selected == i and vmath.vector4(0.24, 0.36, 0.50, 1) or vmath.vector4(0.12, 0.12, 0.16, 1))
+        end
+    end
+    gui.set_text(n("difficulty_detail"), MenuText.render(view.status ~= "" and view.status or view.detail.body, DisplayText))
+end
+
+local function create_game(self, slot, choice)
+    if ok_cm and CollectibleManager and CollectibleManager.reset then CollectibleManager.reset() end
+    local ok, created = pcall(SaveManager.create_new_save, slot)
+    if not ok or not created then
+        update_slot_display(self)
+        return false, { key = "save.create_failed" }
+    end
+    if choice then
+        Difficulty.set(choice)
+        local saved = Checkpoint.save_provider_updates({ difficulty = { profile = Difficulty.get() } }, { slot = slot })
+        if not saved then
+            update_slot_display(self)
+            return false, { key = "save.difficulty_failed" }
+        end
+    end
+    hide_screen(self)
+    msg.post("/host#script", hash("start_game_now"), { slot = slot })
+    return true
+end
+
+local function show_difficulty(self, slot)
+    local provider = {
+        pause = false,
+        title = function() return { key = "save.choose_difficulty" } end,
+        rows = function()
+            local rows = Difficulty.list()
+            for _, row in ipairs(rows) do row.detail, row.hold = row.description, 0 end
+            return rows
+        end,
+        on_confirm = function(_, row)
+            local ok, status = create_game(self, slot, row.id)
+            return { close = ok, status = status }
+        end,
+    }
+    self.difficulty_picker = ListMenu.new({ screen = "difficulty", registry = { screen = function() return provider end } })
+    self.difficulty_nav = MenuNav.new()
+    for i, row in ipairs(self.difficulty_picker.rows) do
+        if row.id == Difficulty.default_profile() then
+            self.difficulty_picker.selected = i
+            self.difficulty_picker.page = math.ceil(i / self.difficulty_picker.page_size)
+        end
+    end
+    gui.set_enabled(n("difficulty_panel"), true)
+    render_difficulty(self)
+end
+
+local function difficulty_command(self, command, action)
+    local result = self.difficulty_picker.command(command, action)
+    if result and result.close then
+        self.difficulty_picker = nil
+        gui.set_enabled(n("difficulty_panel"), false)
+    elseif self.difficulty_picker then render_difficulty(self) end
+end
+
+local function difficulty_input(self, action_id, action)
+    local command = self.difficulty_nav.input(action_id, action)
+    if command == "pointer" and action.pressed then
+        for i = 1, #self.difficulty_picker.view().rows do
+            local row = n("difficulty_row" .. i .. "_bg")
+            if gui.pick_node(row, action.x, action.y) and self.difficulty_picker.select(i) then
+                difficulty_command(self, "confirm", { pressed = true })
+                break
+            end
+        end
+    elseif command then difficulty_command(self, command, action) end
+    return true -- The modal consumes even unrecognized actions, including Delete.
+end
+
+local function select_slot(self, slot_index, new_cycle)
+    local slot = self.slots[slot_index]
+    if not slot or (new_cycle and not slot.exists) then return end
+    if slot.error and slot.error ~= "missing" then return end
+    
+    -- Set the checkpoint slot
+    Checkpoint.set_slot(slot.slot)
+    
+    if slot.exists then
+        -- Load existing save
+        print(string.format("[SAVE_SELECT] Loading existing save from slot %d", slot.slot))
+        if not Checkpoint.load(slot.slot) then
+            print("[SAVE_SELECT] Cannot load save: " .. tostring(Checkpoint.last_error))
+            update_slot_display(self)
+            update_selection(self)
+            return
+        end
+    else
+        if Difficulty.selection_mode() ~= "fixed" then show_difficulty(self, slot.slot)
+        else create_game(self, slot.slot) end
+        return
+    end
+    
+    -- Queue only after a successful load: a failed Continue must not leave a
+    -- replay request that a later ordinary Continue could accidentally apply.
+    if new_cycle and not NewGamePlus.request(slot.slot) then
+        update_slot_display(self)
+        update_selection(self)
+        return false
+    end
+    -- Tell the boot manager to start the game
+    hide_screen(self)
+    msg.post("/host#script", hash("start_game_now"), { slot = slot.slot })
+    return true
+end
+
+render_confirm = function(self)
+    local confirm = self.slot_confirm.view().confirm
+    gui.set_text(n("slot_confirm_text"), MenuText.render(confirm.question, DisplayText))
+    local yes, no = DisplayText.ui("list.yes"), DisplayText.ui("list.no")
+    gui.set_text(n("slot_confirm_yes"), confirm.yes and DisplayText.ui("list.selected", { text = yes }) or yes)
+    gui.set_text(n("slot_confirm_no"), confirm.yes and no or DisplayText.ui("list.selected", { text = no }))
+end
+
+-- One confirmation panel for New Game+, delete and copy. It starts on No;
+-- on_yes runs only when the player confirms Yes.
+local function open_confirm(self, question, on_yes)
+    local provider = {
+        pause = false,
+        rows = function() return {{ id = "slot_confirm", hold = 0, confirm = question }} end,
+        on_confirm = function()
+            on_yes()
+            return { close = true }
+        end,
+    }
+    self.slot_confirm = ListMenu.new({ screen = "slot_confirm", registry = { screen = function() return provider end } })
+    self.confirm_nav = MenuNav.new()
+    self.slot_confirm.command("confirm", { pressed = true })
+    gui.set_enabled(n("slot_confirm_panel"), true)
+    render_confirm(self)
+end
+
+local function show_confirm(self)
+    local index = self.selected
+    local status = self.ng_slots and self.ng_slots[index]
+    if not status or not status.eligible then return end
+    open_confirm(self, { key = "save.ng_confirm", params = { cycle = status.cycle + 1 } }, function()
+        select_slot(self, index, true)
+    end)
+end
+
+local function confirm_command(self, command, action)
+    local model = self.slot_confirm
+    local result = model.command(command, action)
+    if (result and result.close) or not model.view().confirm then
+        self.slot_confirm, self.confirm_nav = nil, nil
+        gui.set_enabled(n("slot_confirm_panel"), false)
+    else render_confirm(self) end
+end
+
+local function confirm_input(self, action_id, action)
+    local command = self.confirm_nav.input(action_id, action)
+    if command == "pointer" and action.pressed then
+        for _, choice in ipairs({{ "slot_confirm_yes", true }, { "slot_confirm_no", false }}) do
+            if gui.pick_node(n(choice[1]), action.x, action.y) then
+                self.slot_confirm.confirm_step.yes = choice[2]
+                confirm_command(self, "confirm", { pressed = true })
+                break
+            end
+        end
+    elseif command then confirm_command(self, command, action) end
+    return true
+end
+
+local function delete_slot(self, slot_index)
+    local slot = self.slots[slot_index]
+    if not slot or (not slot.exists and (not slot.error or slot.error == "missing")) then return end
+    
+    print(string.format("[SAVE_SELECT] Deleting save slot %d", slot.slot))
+    
+    local ok, deleted = pcall(SaveManager.delete_save, slot.slot)
+    if not ok then
+        print("[SAVE_SELECT] Failed to delete save slot " .. tostring(slot.slot) .. ": " .. tostring(deleted))
+    elseif not deleted then
+        print("[SAVE_SELECT] Failed to delete save slot " .. tostring(slot.slot))
+    else
+        Checkpoint.reset_to_defaults(slot.slot)
+        if ok_cm and CollectibleManager and CollectibleManager.reset then
+            CollectibleManager.reset()
+        end
+    end
+    
+    -- Refresh display
+    update_slot_display(self)
+    update_selection(self)
+end
+
+local function confirm_delete(self, slot_index)
+    local slot = self.slots[slot_index]
+    if not slot or (not slot.exists and (not slot.error or slot.error == "missing")) then return end
+    open_confirm(self, { key = "save.delete_confirm", params = { slot = slot.slot } }, function()
+        delete_slot(self, slot_index)
+    end)
+end
+
+local function copy_to(self, index)
+    local from, target = self.copy_from, copy_target(self, index)
+    if not target then return end
+    local key = (target.exists or target.error == "corrupt") and "save.copy_replace_confirm" or "save.copy_confirm"
+    open_confirm(self, { key = key, params = { from = self.slots[from].slot, to = target.slot } }, function()
+        local ok, copied = pcall(SaveManager.copy_save, self.slots[from].slot, target.slot)
+        self.copy_from = nil
+        if ok and copied then self.selected = index else self.selected, self.status_key = from, "save.copy_failed" end
+        update_slot_display(self)
+        update_selection(self)
+    end)
+end
+
+-- Next copy target from the selection in one direction, or the selection itself.
+local function step_copy_target(self, delta)
+    local index = self.selected
+    for _ = 1, MAX_SLOTS do
+        index = (index - 1 + delta) % MAX_SLOTS + 1
+        if copy_target(self, index) then return index end
+    end
+    return self.selected
+end
+
+local function start_copy(self)
+    if self.selected > MAX_SLOTS or not can_copy_from(self, self.selected) then return end
+    self.copy_from, self.status_key = self.selected, nil
+    local target = step_copy_target(self, 1)
+    if target == self.copy_from then self.copy_from = nil; return end
+    self.selected = target
+    update_slot_display(self)
+    update_selection(self)
+end
+
+-- Copy mode: choose a target with Up/Down, Confirm or a click; Back cancels.
+-- The source and blocked slots are skipped, and other actions are consumed.
+local function copy_input(self, action_id, action, menu_pressed)
+    if not menu_pressed then return true end
+    if InputPrompts.menu_matches("up", action_id) or InputPrompts.menu_matches("down", action_id) then
+        self.selected = step_copy_target(self, InputPrompts.menu_matches("up", action_id) and -1 or 1)
+        update_selection(self)
+    elseif InputPrompts.menu_matches("confirm", action_id) then
+        copy_to(self, self.selected)
+    elseif InputPrompts.menu_matches("back", action_id) then
+        self.selected, self.copy_from = self.copy_from, nil
+        update_selection(self)
+    elseif action_id == hash("touch") or action_id == hash("click") then
+        for i = 1, MAX_SLOTS do
+            if copy_target(self, i) and gui.pick_node(n("slot" .. i .. "_bg"), action.x, action.y) then
+                self.selected = i
+                update_selection(self)
+                copy_to(self, i)
+                break
+            end
+        end
+    end
+    return true
+end
+
+local function execute_selection(self)
+    if self.selected >= 1 and self.selected <= MAX_SLOTS then
+        select_slot(self, self.selected)
+    elseif self.selected == MAX_SLOTS + 1 then
+        -- Back button
+        hide_screen(self)
+        msg.post("/host#script", hash("back_to_main_menu"), {})
+    end
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.menus)
+    self.root = n("root")
+    Viewport.cover(self.root)
+    self._view_revision = Viewport.revision()
+    self.hints = n("hints")
+    self.visible = false
+    self.selected = 1
+    self.slots = {}
+
+    -- Store original colors from the GUI file
+    self.original_colors = {}
+    for i = 1, MAX_SLOTS do
+        local bg = n("slot" .. i .. "_bg")
+        if bg then
+            self.original_colors["slot" .. i .. "_bg"] = gui.get_color(bg)
+        end
+    end
+    local btn_back = n("btn_back")
+    if btn_back then
+        self.original_colors["btn_back"] = gui.get_color(btn_back)
+    end
+
+    gui.set_enabled(n("slot_confirm_panel"), false)
+    -- Initially hidden
+    gui.set_enabled(n("difficulty_panel"), false)
+    set_enabled(self, false)
+end
+
+function on_input(self, action_id, action)
+    if InputCtl and InputCtl.note_device then InputCtl.note_device(action_id, action) end
+    local menu_pressed = require("mvtk.ui.menu_nav").pressed(self, action_id, action)
+    if self.visible and self._prompt_revision ~= DisplayText.revision() then refresh_prompt(self) end
+    if not self.visible then return false end
+    if self.slot_confirm then return confirm_input(self, action_id, action) end
+    if self.difficulty_picker then return difficulty_input(self, action_id, action) end
+    if self.copy_from then return copy_input(self, action_id, action, menu_pressed) end
+    
+    if menu_pressed then
+        -- Navigation
+        if InputPrompts.menu_matches("up", action_id) then
+            self.selected = self.selected > 1 and self.selected - 1 or (MAX_SLOTS + 1)
+            update_selection(self)
+            return true
+        elseif InputPrompts.menu_matches("down", action_id) then
+            self.selected = self.selected < (MAX_SLOTS + 1) and self.selected + 1 or 1
+            update_selection(self)
+            return true
+        end
+        
+        -- Select
+        if InputPrompts.menu_matches("confirm", action_id) then
+            execute_selection(self)
+            return true
+        end
+        
+        -- Back
+        if InputPrompts.menu_matches("back", action_id) then
+            hide_screen(self)
+            msg.post("/host#script", hash("back_to_main_menu"), {})
+            return true
+        end
+        if action_id == hash("key_g") or action_id == hash("gamepad_rpad_up") then
+            show_confirm(self)
+            return true
+        end
+        -- Copy (RB or C): choose a target slot, then confirm.
+        if action_id == hash("gamepad_rshoulder") or action_id == hash("key_c") then
+            start_copy(self)
+            return true
+        end
+        -- Delete (X button), after a confirmation
+        if action_id == hash("gamepad_rpad_left") or action_id == hash("key_x")
+            or action_id == hash("key_delete") then
+            if self.selected >= 1 and self.selected <= MAX_SLOTS then
+                confirm_delete(self, self.selected)
+            end
+            return true
+        end
+
+    end
+    
+    -- Mouse/touch input
+    if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+        local x, y = action.x, action.y
+        
+        -- Check slot clicks
+        for i = 1, MAX_SLOTS do
+            local bg = n("slot" .. i .. "_bg")
+            if bg and gui.pick_node(bg, x, y) then
+                self.selected = i
+                update_selection(self)
+                select_slot(self, i)
+                return true
+            end
+        end
+        
+        -- Check back button
+        local btn_back = n("btn_back")
+        if btn_back and gui.pick_node(btn_back, x, y) then
+            hide_screen(self)
+            msg.post("/host#script", hash("back_to_main_menu"), {})
+            return true
+        end
+    end
+    
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_save_slots") or message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_save_slots") or message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    end
+end
+
+function update(self, dt)
+    if self.visible and self._prompt_revision ~= DisplayText.revision() then refresh_prompt(self) end
+    if self.difficulty_picker then
+        for _, command in ipairs(self.difficulty_nav.update(dt)) do
+            difficulty_command(self, command, { pressed = true })
+            if not self.difficulty_picker then break end
+        end
+    end
+    if self.slot_confirm then
+        for _, command in ipairs(self.confirm_nav.update(dt)) do
+            confirm_command(self, command, { pressed = true })
+            if not self.slot_confirm then break end
+        end
+    end
+    local view_revision = Viewport.revision()
+    if self._view_revision ~= view_revision then
+        Viewport.cover(self.root)
+        self._view_revision = view_revision
+    end
+end

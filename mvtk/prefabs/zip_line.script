@@ -1,0 +1,57 @@
+local PU = require "mvtk.prefabs.prefab_utils"
+local Pause = require "mvtk.core.pause"
+local Paths = require "mvtk.player.zipline_paths"
+
+go.property("zip_id", "")
+go.property("room_id", "")
+go.property("path_points", "")
+go.property("label", "Ride")
+go.property("range", 96)
+go.property("speed", 800)
+go.property("exit_boost", 0)
+go.property("auto_start", false)
+
+local function start(self)
+    if Pause.get() then return end
+    local player=PU.get_player_url()
+    if not player then return end
+    go.update_world_transform()
+    local origin=go.get_world_position()
+    local points={}
+    for pair in self.path_points:gmatch("[^;]+") do
+        local x,y=pair:match("^([^,]+),([^,]+)$")
+        x,y=tonumber(x),tonumber(y)
+        if not x or not y then return end
+        points[#points+1]=vmath.vector3(origin.x+x,origin.y+y,origin.z)
+    end
+    if #points<2 then return end
+    local message={speed=self.speed,exit_boost=self.exit_boost,zip_id=self.zip_id}
+    -- Eight vector entries leave room for the message keys within 2 KB.
+    if #points<=8 then message.points=points
+    else
+        self.path_key=self.path_key or tostring(msg.url())
+        Paths.set(self.path_key,points)
+        message.points_key=self.path_key
+    end
+    msg.post(player,"zipline_start",message)
+    return true
+end
+function init(self) PU.register_interaction({text=self.label},self.range,nil,nil,true) end
+function final(self)
+    PU.unregister_interaction()
+    if self.path_key then Paths.remove(self.path_key) end
+end
+function on_message(self, message_id, message)
+    if message_id==hash("mvtk_interact") then return start(self)
+    elseif message_id==hash("trigger_response") and self.auto_start and message.enter
+        and message.other_id and (message.other_group or message.group)==hash("player") then start(self) end
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

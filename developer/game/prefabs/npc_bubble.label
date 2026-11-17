@@ -1,0 +1,9 @@
+size {
+  x: 220.0
+  y: 64.0
+}
+pivot: PIVOT_S
+line_break: true
+font: "/developer/assets/fonts/ui_label.font"
+material: "/builtins/fonts/label-vector.material"
+font_size: 14

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Fast Travel Station" type="fast_travel" width="64" height="64">
+  <properties>
+   <property name="station_id" type="string" value=""/>
+   <property name="station_name" type="string" value="Fast Travel"/>
+   <property name="unlock" type="class" propertytype="fast_travel_unlock">
+    <properties>
+     <property name="auto_unlock" type="bool" value="false"/>
+     <property name="unlock_cost" type="int" value="0"/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="fast_travel_presentation">
+    <properties>
+     <property name="station_description" type="string" value=""/>
+     <property name="show_on_map" type="bool" value="true"/>
+     <property name="facing" type="int" value="1"/>
+     <property name="sound_id" type="string" propertytype="sound_effects" value="fast_travel"/>
+     <property name="label_locked" type="string" value="Activate"/>
+     <property name="label_unlocked" type="string" value="Travel"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="fast_travel_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

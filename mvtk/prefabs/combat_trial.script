@@ -1,0 +1,93 @@
+-- Baked trial host. FightSession owns the clock, outcome and safe return.
+local PU = require "mvtk.prefabs.prefab_utils"
+local FightSession = require "mvtk.game.fight_session"
+local next_session = 0
+
+go.property("room_id", "")
+go.property("trial_id", "")
+go.property("trial_name", "")
+go.property("encounter_id", "")
+go.property("label", "Begin trial")
+go.property("range", 96)
+go.property("trial_goal", "clear")
+go.property("defeat_target", 10)
+go.property("time_limit", 0)
+go.property("no_damage", false)
+go.property("rank_1", -1)
+go.property("rank_2", -1)
+go.property("rank_3", -1)
+go.property("trial_reward", "")
+go.property("clear_flag", "")
+go.property("requires_flag", "")
+go.property("disabled_abilities", "")
+go.property("disabled_attacks", "")
+
+local function spec(self)
+    return {room_id=self.room_id, trial_id=self.trial_id, trial_name=self.trial_name,
+        encounter_id=self.encounter_id, trial_goal=self.trial_goal, defeat_target=self.defeat_target,
+        time_limit=self.time_limit, no_damage=self.no_damage, rank_1=self.rank_1,
+        rank_2=self.rank_2, rank_3=self.rank_3, trial_reward=self.trial_reward,
+        clear_flag=self.clear_flag, requires_flag=self.requires_flag,
+        disabled_abilities=self.disabled_abilities, disabled_attacks=self.disabled_attacks}
+end
+
+function init(self)
+    go.update_world_transform()
+    self.position = go.get_world_position()
+    PU.register_interaction({text=self.label}, self.range, nil, nil, true)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") then
+        if self.trial_menu then return end
+        next_session = next_session + 1
+        local own = spec(self)
+        local public = {}
+        for _,k in ipairs({"trial_id","trial_name","trial_goal","defeat_target","time_limit","no_damage","rank_1","rank_2","rank_3","disabled_abilities","disabled_attacks"}) do
+            public[k] = own[k]
+        end
+        self.trial_menu = {spec=own,session_token=next_session}
+        msg.post("main:/list_menu_gui#list_menu", "open_list_menu", {
+            screen="combat_trial", context={trial_id=own.trial_id,room=own.room_id,
+                session_token=next_session,spec=public}, owner=msg.url(),
+                interaction_result=message and message.interaction_result
+                    and require("mvtk.game.interaction_result").defer(message) or nil})
+        return message and message.interaction_result and "pending" or true
+    end
+    local session = self.trial_menu
+    if not session or sender ~= msg.url("main:/list_menu_gui#list_menu") or message.screen ~= "combat_trial" then return end
+    if message_id == hash("list_menu_closed") then self.trial_menu = nil; return end
+    if message_id ~= hash("list_menu_choice") then return end
+    local echo = message.context or {}
+    if echo.session_token ~= session.session_token or echo.trial_id ~= session.spec.trial_id
+        or echo.room ~= session.spec.room_id then return end
+    if type(message.token) ~= "number" or message.token < 1 or message.token == math.huge
+        or message.token ~= math.floor(message.token) or (session.token and message.token ~= session.token) then return end
+    session.token = message.token
+    if message.row_id ~= "begin" then return end
+    self.trial_menu = nil
+    local ok, key = FightSession.start_trial(session.spec, self)
+    if not ok then PU.toast({key=key}) end
+end
+
+function update(self, dt)
+    FightSession.host_update(self, dt)
+end
+
+function final(self)
+    if self.trial_menu then
+        self.trial_menu = nil
+        msg.post("main:/list_menu_gui#list_menu", "close_list_menu", {owner=msg.url()})
+    end
+    FightSession.host_final(self)
+    PU.unregister_interaction()
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

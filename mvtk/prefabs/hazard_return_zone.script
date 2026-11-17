@@ -1,0 +1,24 @@
+-- Baked challenge start marker; overlapping player parts share one entry.
+go.property("return_zone_id", "")
+go.property("room_id", "")
+go.property("zone_width", 192)
+go.property("zone_height", 128)
+go.property("return_facing", 0)
+go.property("forget_return_point", false)
+local PU = require "mvtk.prefabs.prefab_utils"
+function init(self)
+    self.parts = {}
+end
+function on_message(self, id, message)
+    if id ~= hash("trigger_response") or message.other_group ~= hash("player") then return end
+    if message.enter then
+        local first = next(self.parts) == nil
+        self.parts[message.other_id] = true
+        if first then
+            local position = go.get_world_position()
+            position.y = position.y - self.zone_height/2
+            msg.post(PU.get_player_url(),hash("mvtk_return_point"),{position=position,
+                facing=self.return_facing,clear=self.forget_return_point,zone_id=self.return_zone_id})
+        end
+    else self.parts[message.other_id] = nil end
+end

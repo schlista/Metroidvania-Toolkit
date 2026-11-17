@@ -1,0 +1,10 @@
+default_animation: "player_bomb"
+size {
+  x: 24.0
+  y: 24.0
+}
+size_mode: SIZE_MODE_MANUAL
+textures {
+  sampler: "texture_sampler"
+  texture: "/developer/assets/atlas/gameplay_visuals.atlas"
+}

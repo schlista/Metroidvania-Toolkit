@@ -1,0 +1,125 @@
+-- Baked, nonblocking scenery. Keep the owner alive so broken artwork remains.
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local Flags = require "mvtk.core.flags"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local SwitchState = require "mvtk.world.switch_state"
+local Rules = require "mvtk.world.breakable_rules"
+local AbilityTags = require "mvtk.abilities.ability_tags"
+local Presentation = require "mvtk.tiled.object_presentation"
+
+go.property("prop_id", "")
+go.property("room_id", "")
+go.property("health", 1)
+go.property("required_ability", "")
+go.property("break_on_interact", false)
+go.property("stays_broken", false)
+go.property("drop_collectible", "")
+go.property("drop_count", 1)
+go.property("drop_chance", 1)
+go.property("set_flag", "")
+go.property("target_id", "")
+go.property("painted_layer", "")
+go.property("label", "Search")
+go.property("sound_break", "wall_break")
+
+local function disable(self)
+    Util.post_component_enabled("#attack_trigger", false)
+    if self.break_on_interact then
+        Util.post_component_enabled("#co", false)
+        PU.unregister_interaction()
+    end
+    if self.painted_layer ~= "" then
+        tilemap.set_visible(msg.url("#tiles"), self.painted_layer, false)
+    end
+end
+
+local function restore_broken(self)
+    if self.broken then return end
+    self.broken = true
+    disable(self)
+    Presentation.restore("broken")
+end
+
+local function break_prop(self)
+    if self.broken then return end
+    self.broken = true
+    disable(self)
+    if self.stays_broken then
+        Flags.set("prop_broken_" .. self.prop_id, true)
+        SwitchState.write_channel(require("mvtk.core.flags"), self.target_id, true, "activate")
+    end
+    if self.set_flag ~= "" then Flags.set(self.set_flag, true) end
+    -- The baked presentation's own consume_effect component handles destroyed.
+    Presentation.emit("destroyed", "broken")
+    if self.sound_break ~= "" and self.sound_break ~= "none" then
+        require("mvtk.audio.audio").sfx(self.sound_break)
+    end
+    if self.drop_collectible ~= "" and self.drop_collectible ~= "none" then
+        local chance = math.max(0, math.min(1, self.drop_chance))
+        local count = 0
+        for _ = 1, math.max(0, math.floor(self.drop_count)) do
+            if chance > 0 and (chance >= 1 or math.random() < chance) then
+                count = count + 1
+            end
+        end
+        if count > 0 then
+            local drops = require "mvtk.collectibles.reward_drops"
+            local planned = drops.plan({{type = self.drop_collectible, amount = count}},
+                require "developer.config.collectible_types", "prop_" .. self.prop_id .. "_loot_")
+            drops.spawn(planned, go.get_world_position(), {
+                spacing = 0, lift = 0, config = {room_id = self.room_id},
+            })
+        end
+    end
+    if self.target_id ~= "" then
+        TriggerBus.emit(self.target_id, hash("activate"), {
+            prop_id = self.prop_id, state = "on", kind = "prop", persist = self.stays_broken,
+        })
+    end
+end
+
+function init(self)
+    self.broken = false
+    self.current_health = self.health
+    if self.required_ability == "none" then self.required_ability = "" end
+    self.required_ability = Rules.required_ability(self.required_ability, "normal") or ""
+    self.accepted_tags = AbilityTags.tags_for(self.required_ability,
+        require("developer.config.player_actions"), require("developer.config.combat_config").attacks,
+        require("developer.config.abilities").abilities)
+    Presentation.set_state_fallbacks(require("developer.config.object_art").prop_state_fallbacks)
+    if self.break_on_interact then
+        PU.register_interaction({text=self.label}, nil, nil, nil, true)
+    end
+    -- A prop is a switch sender, never a receiver: its own saved state is the
+    -- prop_broken_ flag. A channel aimed at prop_id must not break it on reload
+    -- when no live signal could have broken it.
+    if self.stays_broken and Flags.has("prop_broken_" .. self.prop_id) then restore_broken(self) end
+end
+
+function on_message(self, message_id, message)
+    if self.broken or require("mvtk.core.pause").get() then return end
+    if message_id == hash("mvtk_interact") then
+        if self.break_on_interact then break_prop(self); return true end
+    elseif message_id == hash("mvtk_apply_damage") or message_id == hash("damage") or message_id == hash("attack_hit") then
+        local accepted, instant, damage = Rules.accepts(self.required_ability, "normal",
+            message.attack_type, self.accepted_tags, message.damage or message.amount or 1)
+        if not accepted then return end
+        self.current_health = self.current_health - damage
+        if instant or self.current_health <= 0 then break_prop(self) end
+    end
+end
+
+function final(self)
+    if self.break_on_interact then PU.unregister_interaction() end
+    Presentation.release_unbound()
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

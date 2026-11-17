@@ -1,0 +1,318 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+-- Title screen: Play Game opens save slots; Layout Editor opens room layout;
+-- EXTRAS, shown only once something is unlocked, opens the Extras proxy.
+-- Settings are available in-game via the pause menu.
+
+local Viewport = require "mvtk.ui.viewport"
+local Settings = require("mvtk.core.settings")
+local DisplayText = require "mvtk.ui.display_text"
+local Product = require "mvtk.core.product"
+local RuntimeSettings = require("developer.config.runtime_settings")
+local WizardController = require("mvtk.editor.wizard_controller")
+local Extras = require "mvtk.game.extras"
+
+-- Game Settings saves this file; the game only bundles it at Build.
+local CREATOR_SETTINGS_PATH = "developer/config/creator_settings.lua"
+local BUILD_REQUIRED_HINT = "Project settings saved: stop the game and Build to apply them."
+local LAYOUT_MISSING_HINT = "No rooms are published yet. In Layout Editor, click each room in the Rooms list, then click Export."
+
+-- True when a debug build has no published room to start in. Play Game would
+-- then wait on a black screen (release smoke, 2026-11-16). Uses the game's own
+-- layout read, so a Layout Export clears it without a rebuild. An exported game
+-- always has a layout: Export Game refuses a missing or empty one.
+local function layout_missing()
+    local info = sys.get_engine_info()
+    if not (info and info.is_debug) then return false end
+    local ok, layout = pcall(function()
+        return require("mvtk.rooms.layout_io").load({ runtime_preferred = true })
+    end)
+    return ok and type(layout) == "table" and type(layout.rooms) == "table" and #layout.rooms == 0
+end
+
+-- True while saved Game Settings values are not in this build yet. Debug
+-- builds only: an exported game has no project folder to compare against.
+local function build_required()
+    local info = sys.get_engine_info()
+    if not (info and info.is_debug) then return false end
+    local text
+    local f = io.open(CREATOR_SETTINGS_PATH, "rb")
+    if f then
+        text = f:read("*a")
+        f:close()
+    end
+    local ok, required = pcall(WizardController.build_required,
+        RuntimeSettings.compiled_document(), RuntimeSettings.project_document(), text)
+    return ok and required == true
+end
+
+local function n(id)
+    local ok, node = pcall(gui.get_node, id)
+    return ok and node or nil
+end
+
+local function refresh_text(self)
+    local title = n("title")
+    if title then gui.set_text(title, DisplayText.render(string.upper(Product.name))) end
+    if self.btn_play_label then gui.set_text(self.btn_play_label, DisplayText.ui("start.play")) end
+    if self.btn_editor_label then gui.set_text(self.btn_editor_label, DisplayText.ui("start.layout_editor")) end
+    if self.btn_extras_label then gui.set_text(self.btn_extras_label, DisplayText.ui("start.extras")) end
+    local subtitle = n("subtitle")
+    if subtitle then gui.set_text(subtitle, DisplayText.ui("start.subtitle")) end
+    if self.hint and self.blocked_key then
+        -- The boot host refused Play Game: configuration errors are in the log.
+        gui.set_text(self.hint, DisplayText.ui(self.blocked_key))
+        gui.set_color(self.hint, vmath.vector4(1.0, 0.45, 0.4, 1))
+    elseif self.hint and self.layout_missing then
+        -- Debug-only creator hint, under the same tool exemption as the build reminder.
+        gui.set_text(self.hint, LAYOUT_MISSING_HINT)
+        gui.set_color(self.hint, vmath.vector4(1.0, 0.82, 0.35, 1))
+    elseif self.hint then
+        local required = build_required()
+        -- This debug-only build reminder belongs to the creator tool exemption.
+        gui.set_text(self.hint, required and BUILD_REQUIRED_HINT or DisplayText.ui("start.hint"))
+        gui.set_color(self.hint, required and vmath.vector4(1.0, 0.82, 0.35, 1) or self.default_hint_color)
+    end
+    self._text_revision = DisplayText.revision()
+end
+
+local function arm_input(self)
+    self.input_armed = false
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+    self.input_arm_timer = timer.delay(0.2, false, function()
+        self.input_armed = true
+        self.input_arm_timer = nil
+    end)
+end
+
+local function set_enabled(self, enabled)
+    local root = n("root")
+    if root then
+        gui.set_enabled(root, enabled)
+        -- Fade alpha only: the backdrop keeps the colour authored in the .gui file.
+        local color = gui.get_color(root)
+        if enabled then
+            color.w = 1
+            gui.animate(root, gui.PROP_COLOR, color, gui.EASING_LINEAR, 0.3)
+        else
+            color.w = 0
+            gui.set_color(root, color)
+        end
+    end
+end
+
+-- Button colors follow the selection (matching ui_theme menu palette).
+local function paint_button(button, label, selected)
+    if not button then return end
+    if selected then
+        gui.set_color(button, vmath.vector4(0.12, 0.25, 0.50, 1))  -- Selected blue
+        gui.set_scale(button, vmath.vector3(1.05, 1.05, 1))
+        if label then gui.set_color(label, vmath.vector4(1, 1, 1, 1)) end
+    else
+        gui.set_color(button, vmath.vector4(0.22, 0.22, 0.28, 1))  -- Normal slate
+        gui.set_scale(button, vmath.vector3(1, 1, 1))
+        if label then gui.set_color(label, vmath.vector4(0.88, 0.88, 0.90, 1)) end
+    end
+end
+
+local function update_selection(self)
+    paint_button(self.btn_play, self.btn_play_label, self.selected == 1)
+    paint_button(self.btn_editor, self.btn_editor_label, self.selected == 2)
+    paint_button(self.btn_extras, self.btn_extras_label, self.selected == 3)
+end
+
+-- 1 = Play Game, 2 = Layout Editor, 3 = Extras (only while it is shown).
+local function entry_count(self)
+    return self.extras_shown and 3 or 2
+end
+
+-- Extras stays hidden until something is unlocked; a failed profile read
+-- must never take the title screen down with it.
+local function refresh_extras(self)
+    local ok, shown = pcall(Extras.any_unlocked)
+    self.extras_shown = ok and shown == true and self.btn_extras ~= nil
+    if self.btn_extras then gui.set_enabled(self.btn_extras, self.extras_shown) end
+end
+
+local function hide_screen(self)
+    if not self.visible then return end
+    self.visible = false
+
+    set_enabled(self, false)
+    msg.post(".", "release_input_focus")
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self._menu_stick_guard = nil
+    self.visible = true
+
+    set_enabled(self, true)
+    msg.post(".", "acquire_input_focus")
+    arm_input(self)
+
+    -- Reset controller selection
+    refresh_extras(self)
+    self.selected = 1
+    update_selection(self)
+
+    refresh_text(self)
+end
+
+-- Play Game, unless a debug build has nothing published to play yet: the
+-- title stays up with the hint, before any save slot is written.
+local function start_game(self)
+    self.layout_missing = layout_missing()
+    if self.layout_missing then
+        refresh_text(self)
+        return
+    end
+    hide_screen(self)
+    msg.post("/host#script", hash("start_game"), {})
+end
+
+local function execute_selection(self)
+    if self.selected == 1 then
+        start_game(self)
+    elseif self.selected == 2 then
+        -- Open Layout Editor
+        hide_screen(self)
+        msg.post("/host#script", hash("start_editor"), {})
+    elseif self.selected == 3 and self.extras_shown then
+        -- Open Extras
+        hide_screen(self)
+        msg.post("/host#script", hash("start_extras"), {})
+    end
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.menus)
+    -- Get all nodes
+    self.root = n("root")
+    Viewport.cover(self.root)
+    self._view_revision = Viewport.revision()
+    self.btn_play = n("btn_play")
+    self.btn_play_label = n("btn_play_label")
+    self.btn_editor = n("btn_editor")
+    self.btn_editor_label = n("btn_editor_label")
+    self.btn_extras = n("btn_extras")
+    self.btn_extras_label = n("btn_extras_label")
+    self.hint = n("hint")
+    local title = n("title")
+    if title then gui.set_text(title, DisplayText.render(string.upper(Product.name))) end
+    if self.hint then
+        self.default_hint = gui.get_text(self.hint)
+        self.default_hint_color = gui.get_color(self.hint)
+    end
+
+    -- Controller navigation
+    self.selected = 1  -- 1 = Play Game, 2 = Layout Editor, 3 = Extras
+    self.extras_shown = false
+    if self.btn_extras then gui.set_enabled(self.btn_extras, false) end
+
+    -- Initially hidden
+    self.visible = false
+    self.input_armed = false
+    self.input_arm_timer = nil
+    set_enabled(self, false)
+
+    -- Load settings
+    Settings.load()
+    Settings.apply_all()
+    refresh_text(self)
+end
+
+function on_input(self, action_id, action)
+    local menu_pressed = require("mvtk.ui.menu_nav").pressed(self, action_id, action)
+    if not self.visible then return false end
+    if not self.input_armed then
+        if action and (action.pressed or action.released) then
+            return true
+        end
+        return false
+    end
+
+    if menu_pressed then
+        -- Controller navigation: Up/Down
+        if action_id == hash("key_up") or action_id == hash("key_w")
+            or action_id == hash("gamepad_lpad_up")
+            or action_id == hash("gamepad_lstick_up") then
+            self.selected = self.selected > 1 and self.selected - 1 or entry_count(self)
+            update_selection(self)
+            return true
+        elseif action_id == hash("key_down") or action_id == hash("key_s")
+            or action_id == hash("gamepad_lpad_down")
+            or action_id == hash("gamepad_lstick_down") then
+            self.selected = self.selected < entry_count(self) and self.selected + 1 or 1
+            update_selection(self)
+            return true
+        end
+
+        -- Controller/Keyboard select: A button or Enter
+        if action_id == hash("gamepad_rpad_down") or action_id == hash("key_enter") then
+            execute_selection(self)
+            return true
+        end
+
+        -- Home screen has no parent menu; consume Back/B without navigating.
+        if action_id == hash("gamepad_rpad_right") or action_id == hash("gamepad_back")
+            or action_id == hash("key_escape") or action_id == hash("key_m") then
+            return true
+        end
+    end
+
+    -- Handle mouse/touch input
+    if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+        local x, y = action.x, action.y
+
+        -- Play Game button
+        if self.btn_play and gui.pick_node(self.btn_play, x, y) then
+            start_game(self)
+            return true
+
+        -- Layout editor button
+        elseif self.btn_editor and gui.pick_node(self.btn_editor, x, y) then
+            hide_screen(self)
+            msg.post("/host#script", hash("start_editor"), {})
+            return true
+
+        -- Extras button, only while it is shown
+        elseif self.extras_shown and gui.pick_node(self.btn_extras, x, y) then
+            hide_screen(self)
+            msg.post("/host#script", hash("start_extras"), {})
+            return true
+        end
+    end
+
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    elseif message_id == hash("config_blocked") then
+        self.blocked_key = message.key
+        show_screen(self)
+        refresh_text(self)
+    end
+end
+
+function final(self)
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+end
+
+function update(self, dt)
+    if self.visible and self._text_revision ~= DisplayText.revision() then refresh_text(self) end
+    local view_revision = Viewport.revision()
+    if self._view_revision ~= view_revision then
+        Viewport.cover(self.root)
+        self._view_revision = view_revision
+    end
+end

@@ -1,0 +1,310 @@
+-- mvtk/world/light_manager.script
+-- Manages global darkness and per-source local light glow data.
+
+local C = require "mvtk.core.constants"
+local Util = require "mvtk.core.util"
+local Config = require "developer.config.resolved_config"
+local CameraState = require "mvtk.camera.camera_state"
+
+local PUBLISH_HOOK_KEY = "light_manager"
+
+local RoomManager = nil
+local function get_room_manager()
+    if RoomManager ~= nil then return RoomManager end
+    local ok, mod = pcall(require, "mvtk.map.streaming.room_manager")
+    RoomManager = ok and mod or false
+    return RoomManager
+end
+
+-- Optional under strict/headless hosts; keep the original glow path when absent.
+local LightMask = nil
+local function get_light_mask()
+    if LightMask ~= nil then return LightMask end
+    local ok, mod = pcall(require, "mvtk.render.light_mask")
+    LightMask = ok and mod or false
+    return LightMask
+end
+
+local AbilityManager = nil
+local function get_ability_manager()
+    if AbilityManager ~= nil then return AbilityManager end
+    local ok, mod = pcall(require, "mvtk.abilities.ability_manager")
+    AbilityManager = ok and mod or false
+    return AbilityManager
+end
+
+-- Use shared Util.clamp instead of duplicating it locally.
+local clamp = Util.clamp
+
+-- Negative = use developer/config/game_config.lua visual.default_room_darkness.
+-- Set >= 0 on the instance to override that config value.
+go.property("base_darkness", -1)
+go.property("min_darkness", 0.0)
+go.property("max_darkness", 0.9)
+
+go.property("enable_room_filter", true)
+go.property("max_local_lights", 24)
+go.property("local_light_intensity_scale", 0.6)
+
+local lights = {}
+local room_darkness = {}
+-- Loader instance that registered each room's darkness. A clear (level = nil)
+-- from any other instance is stale (re-streamed room) and ignored.
+local room_darkness_owner = {}
+local configured_default_darkness = tonumber(Config and Config.visual and Config.visual.default_room_darkness) or 0.0
+local overlay_url = msg.url("main:/darkness_overlay#gui")
+
+-- Register the overlay URL so other systems can resolve it via C.URL.OVERLAY.
+-- Override the default by setting C.set_url("OVERLAY", ...) earlier in boot,
+-- or via developer/config/url_map.lua.
+if C and C.set_url then
+    pcall(C.set_url, "OVERLAY", overlay_url)
+end
+
+local normalize_id = Util.normalize_hash_string
+
+local normalize_room_key = Util.normalize_hash_string
+
+local function current_room_id()
+    local rm = get_room_manager()
+    if rm and rm.get_current_room then
+        return rm.get_current_room()
+    end
+    return nil
+end
+
+local function match_room(light_room, player_room)
+    if not light_room or light_room == "" then return true end
+    if not player_room or player_room == "" then return false end
+    return tostring(light_room) == tostring(player_room)
+end
+
+local function update_overlay_darkness(level)
+    Util.safe_post(overlay_url, hash("set_darkness"), { level = level },
+        { check_exists = true })
+end
+
+local function update_overlay_lights(light_list, intensity_scale, tint)
+    Util.safe_post(overlay_url, hash("set_light_sources"), {
+        lights = light_list,
+        intensity_scale = intensity_scale,
+        tint = tint,
+    }, { check_exists = true })
+end
+
+-- Keep world-space selection shared by the GUI glow and renderer helper pool.
+local function select_lights(self, bounds, room_id, cap)
+    local selected = {}
+    if not bounds then return selected end
+    local view_w, view_h = bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y
+    if view_w <= 0 or view_h <= 0 then return selected end
+    for _, light in pairs(lights) do
+        if light.enabled ~= false and (not self.enable_room_filter or match_room(light.room_id, room_id)) then
+            local radius, intensity = tonumber(light.radius) or 0, tonumber(light.intensity) or 0
+            if radius > 0 and intensity > 0 then
+                local x, y, margin = light.position.x, light.position.y, radius * 1.5
+                if x >= bounds.min_x - margin and x <= bounds.max_x + margin
+                    and y >= bounds.min_y - margin and y <= bounds.max_y + margin then
+                    selected[#selected + 1] = { x = x, y = y, radius = radius, intensity = clamp(intensity, 0, 4) }
+                end
+            end
+        end
+    end
+    if #selected > 1 then
+        table.sort(selected, function(a, b) return a.intensity > b.intensity end)
+    end
+    -- Reserve a slot after ranking torches: the carried light must never drop
+    -- out in a busy room. Both consumers trim the weakest other lights below.
+    local abilities = get_ability_manager()
+    if abilities and abilities.has_ability((self._lantern_settings or {}).ability_id or "lantern") then
+        local ok, Lantern = pcall(require, "mvtk.world.lantern_light")
+        local carried = ok and Lantern.entry(self._lantern_settings, self._final_darkness,
+            rawget(_G, "PLAYER_WORLD_POS"), self._lantern_t)
+        if carried then table.insert(selected, 1, carried) end
+    end
+    -- A zero overlay cap has always meant unlimited; preserve that behavior.
+    cap = math.max(0, math.floor(tonumber(cap) or 0))
+    if cap > 0 then
+        for i = #selected, cap + 1, -1 do selected[i] = nil end
+    end
+    return selected
+end
+
+local function compose_lights(self, bounds, room_id)
+    -- No guessed view at boot: lights wait for published projection bounds.
+    if not bounds then return end
+    local view_w, view_h = bounds.max_x - bounds.min_x, bounds.max_y - bounds.min_y
+    if view_w <= 0 or view_h <= 0 then return end
+    local LM = get_light_mask()
+    local settings = LM and (self._lighting or LM.settings())
+    if self._mask_on and settings.glow_with_mask == 0 then
+        if not self._glow_hidden then update_overlay_lights({}, 0, settings.light_color) end
+        self._glow_hidden = true
+        return
+    end
+    self._glow_hidden = false
+    local visible_lights = select_lights(self, bounds, room_id, self.max_local_lights)
+    for _, light in ipairs(visible_lights) do
+        light.nx, light.ny = (light.x - bounds.min_x) / view_w, (light.y - bounds.min_y) / view_h
+        light.radius_x, light.radius_y = light.radius / view_w, light.radius / view_h
+        light.x, light.y, light.radius = nil, nil, nil
+    end
+    local scale = tonumber(self.local_light_intensity_scale) or 0.6
+    if self._mask_on then scale = scale * settings.glow_with_mask end
+    update_overlay_lights(visible_lights, scale, settings and settings.light_color or nil)
+end
+
+-- Only initialized sprites may receive constants; factory components become ready
+-- on the following frame. A zero tint parks unused helpers without a zero scale.
+local function park_pool(self)
+    for _, entry in ipairs(self._light_pool or {}) do
+        if entry.ready then go.set(entry.sprite, "tint", vmath.vector4(0, 0, 0, 0)) end
+    end
+end
+
+function init(self)
+    self._base_darkness_override = nil
+    self._lantern_t = 0
+    -- Optional for strict/headless hosts; missing settings use Lantern defaults.
+    local ok, runtime = pcall(require, "developer.config.runtime_settings")
+    local loaded, player = false, nil
+    if ok and type(runtime.get_player_settings) == "function" then
+        loaded, player = pcall(runtime.get_player_settings)
+    end
+    self._lantern_settings = loaded and player and player.lantern or {}
+    -- Compose the light overlay from the camera's published view, inside its
+    -- late_update, so light positions never lag the world by a frame.
+    CameraState.on_publish(PUBLISH_HOOK_KEY, function(x, y, zoom, bounds)
+        compose_lights(self, bounds, current_room_id())
+    end)
+end
+
+function final(self)
+    CameraState.off_publish(PUBLISH_HOOK_KEY)
+    local LM = get_light_mask()
+    if LM then LM.clear() end
+    for _, entry in ipairs(self._light_pool or {}) do go.delete(entry.id) end
+end
+
+function update(self, dt)
+    self._lantern_t = (self._lantern_t or 0) + dt
+    local room_id = current_room_id()
+
+    local base = self._base_darkness_override
+    if base == nil then
+        local room_key = normalize_room_key(room_id)
+        if room_key ~= nil then
+            base = room_darkness[room_key]
+        end
+        if base == nil then
+            local override = tonumber(self.base_darkness)
+            base = (override and override >= 0) and override or configured_default_darkness
+        end
+    end
+    local glow_darkness = clamp(base, self.min_darkness, self.max_darkness)
+    local LM = get_light_mask()
+    local settings = LM and LM.settings()
+    self._lighting = settings
+    self._mask_on = LM and settings.mode == "mask" and LM.supported() and glow_darkness > 0 or false
+    local final_darkness = self._mask_on and clamp(base, self.min_darkness, settings.max_darkness) or glow_darkness
+    self._final_darkness = final_darkness
+    if self._mask_on then
+        local r, g, b = LM.ambient(final_darkness, settings.shadow_color)
+        LM.publish(r, g, b, settings.mask_scale)
+        update_overlay_darkness(0)
+    else
+        if LM then LM.clear() end
+        update_overlay_darkness(final_darkness)
+    end
+end
+
+function late_update(self, dt)
+    if not self._mask_on then park_pool(self); return end
+    local LM, settings = get_light_mask(), self._lighting
+    self._light_pool = self._light_pool or {}
+    local selected = select_lights(self, CameraState.view_bounds, current_room_id(), settings.max_lights)
+    for i = #self._light_pool, settings.max_lights + 1, -1 do
+        go.delete(self._light_pool[i].id)
+        self._light_pool[i] = nil
+    end
+    for i = 1, settings.max_lights do
+        local entry = self._light_pool[i]
+        if not entry then
+            local id = factory.create(msg.url("main:/light_manager#light_mask_factory"), vmath.vector3(), nil, nil, 1e-4)
+            self._light_pool[i] = { id = id, sprite = msg.url(nil, id, "sprite") }
+        else
+            if entry.shape ~= settings.light_shape then
+                sprite.play_flipbook(entry.sprite, settings.light_shape)
+                entry.shape = settings.light_shape
+                -- play_flipbook only posts the animation change; the sprite's
+                -- size is the old animation's until that message is handled
+                -- after this script returns. Read it next frame instead.
+                entry.width = nil
+            elseif not entry.width then
+                entry.width = go.get(entry.sprite, "size").x
+            end
+            if entry.falloff ~= settings.falloff then
+                go.set(entry.sprite, "light_params", vmath.vector4(settings.falloff, 0, 0, 0))
+                entry.falloff = settings.falloff
+            end
+            entry.ready = true
+            local light = entry.width and selected[i]
+            if light then
+                go.set_position(vmath.vector3(light.x, light.y, 0), entry.id)
+                go.set_scale(LM.light_scale(light.radius, entry.width), entry.id)
+                local c = settings.light_color
+                go.set(entry.sprite, "tint", vmath.vector4(c.r, c.g, c.b, light.intensity))
+            else
+                go.set(entry.sprite, "tint", vmath.vector4(0, 0, 0, 0))
+            end
+        end
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("register_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        if id ~= "" then
+            lights[id] = {
+                id = id,
+                position = message.position or vmath.vector3(0, 0, 0),
+                radius = tonumber(message.radius) or 200,
+                intensity = tonumber(message.intensity) or 1.0,
+                enabled = message.enabled ~= false,
+                room_id = message.room_id,
+            }
+        end
+    elseif message_id == hash("update_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        local entry = lights[id]
+        if entry then
+            if message.position then entry.position = message.position end
+            if message.radius ~= nil then entry.radius = tonumber(message.radius) or entry.radius end
+            if message.intensity ~= nil then entry.intensity = tonumber(message.intensity) or entry.intensity end
+            if message.enabled ~= nil then entry.enabled = message.enabled and true or false end
+            if message.room_id ~= nil then entry.room_id = message.room_id end
+        end
+    elseif message_id == hash("unregister_light_source") then
+        local id = normalize_id(message.id) or tostring(message.id or "")
+        lights[id] = nil
+    elseif message_id == hash("set_darkness") then
+        self._base_darkness_override = tonumber(message and message.level)
+    elseif message_id == hash("set_room_darkness") then
+        local room_key = normalize_room_key(message and message.room_id)
+        if room_key then
+            local level = tonumber(message and message.level)
+            local owner = message and message.owner
+            if level == nil then
+                -- Only the instance that registered the level may clear it.
+                if owner == nil or room_darkness_owner[room_key] == nil
+                    or room_darkness_owner[room_key] == owner then
+                    room_darkness[room_key] = nil
+                    room_darkness_owner[room_key] = nil
+                end
+            else
+                room_darkness[room_key] = level
+                room_darkness_owner[room_key] = owner
+            end
+        end
+    end
+end

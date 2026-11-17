@@ -1,0 +1,3 @@
+sound: "/developer/assets/sfx/collectible_sparkle.wav"
+looping: 0
+group: "sfx"

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Launch Cannon" type="launch_cannon" width="96" height="96">
+  <properties>
+   <property name="cannon_id" type="string" value=""/>
+   <property name="aim" type="class" propertytype="launch_cannon_aim">
+    <properties>
+     <property name="aim_mode" propertytype="launch_aim_modes" value="fixed"/>
+     <property name="angle" type="float" value="45"/>
+     <property name="sweep_range" type="float" value="90"/>
+     <property name="sweep_speed" type="float" value="60"/>
+    </properties>
+   </property>
+   <property name="fire" type="class" propertytype="launch_cannon_fire">
+    <properties>
+     <property name="fire_on" propertytype="launch_fire_modes" value="jump"/>
+     <property name="auto_delay" type="float" value="1"/>
+     <property name="launch_speed" type="float" value="2400"/>
+     <property name="control_lock_time" type="float" value="0.35"/>
+     <property name="keep_momentum" type="bool" value="true"/>
+     <property name="cooldown" type="float" value="0.5"/>
+     <property name="breaks_action" propertytype="actions" value="none"/>
+    </properties>
+   </property>
+   <property name="sound_id" propertytype="sound_effects" value="none"/>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

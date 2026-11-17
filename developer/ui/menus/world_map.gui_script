@@ -1,0 +1,1896 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local DisplayText = require "mvtk.ui.display_text"
+-- developer/ui/game/world_map.gui_script
+local Debug = require('developer.config.debug_config')
+-- World map overlay using exported minimap sprite as background.
+
+local Pause = require "mvtk.core.pause"
+local FastTravel = require "mvtk.core.fast_travel"
+local C = require "mvtk.core.constants"
+local DynamicTexture = require "mvtk.ui.dynamic_texture"
+local Fog = require "mvtk.ui.minimap.fog"
+local Discovery = require "mvtk.map.discovery"
+local MapView = require "mvtk.map.map_view"
+local MapRaster = require "mvtk.map.map_raster"
+
+local function world_map_log(...)
+  if Debug.global.enable or Debug.ui.world_map then
+    print(...)
+  end
+end
+
+local InputCtl = nil
+pcall(function() InputCtl = require "mvtk.rooms.input_controller" end)
+local SOURCE_PATH = "/developer/assets/minimap/layout_map.lua"
+local DISK_SOURCE_PATHS = {
+  "./developer/assets/minimap/layout_map.lua",
+  "./developer/assets/minimap/updated_map.lua",
+}
+local HOT_RELOAD_IMAGE_PATHS = {
+  "./developer/assets/minimap/layout_map.png",
+  "./developer/assets/minimap/updated_map.png",
+}
+
+local image_module_checked = false
+local image_module = nil
+local IMAGE_OPTIONS = { premultiply_alpha = false }
+
+local function get_image_module()
+  if not image_module_checked then
+    image_module = rawget(_G, "image")
+    if not image_module and type(require) == "function" then
+      local ok, mod = pcall(require, "ima" .. "ge")
+      if ok then
+        image_module = mod
+      end
+    end
+    image_module_checked = true
+  end
+  return image_module
+end
+
+local function decode_image(data)
+  local mod = get_image_module()
+  if not (mod and mod.load) then
+    world_map_log('[WORLD_MAP] image module unavailable; skipping dynamic texture refresh')
+    return false, "image module unavailable"
+  end
+  return pcall(mod.load, data, IMAGE_OPTIONS)
+end
+
+local function clear_fade_overlay()
+  local fade_url = C and C.URL and C.URL.FADE_GUI
+  if not fade_url then
+    fade_url = msg.url("main:/ui#fade")
+  end
+  pcall(msg.post, fade_url, C.MSG and C.MSG.FADE_FROM_BLACK or hash("mvtk_fade_from_black"), { instant = true })
+end
+
+local function deserialize_map(src, context)
+  local loader = loadstring or load
+  if not loader then
+    world_map_log(string.format('[WORLD_MAP] No loader available (%s)', context or 'unknown'))
+    return nil
+  end
+  local chunk, compile_err = loader(src)
+  if not chunk then
+    world_map_log(string.format('[WORLD_MAP] Compile failed (%s): %s', context or 'unknown', tostring(compile_err)))
+    return nil
+  end
+  local ok_eval, data = pcall(chunk)
+  if not ok_eval or type(data) ~= 'table' then
+    world_map_log(string.format('[WORLD_MAP] Eval failed (%s): %s', context or 'unknown', tostring(data)))
+    return nil
+  end
+  return data
+end
+
+local function load_map_data(initial, context)
+  if type(initial) == 'table' then
+    return initial
+  end
+  if io and io.open then
+    for _, disk_path in ipairs(DISK_SOURCE_PATHS) do
+      local fh = io.open(disk_path, "r")
+      if fh then
+        local src = fh:read("*a")
+        fh:close()
+        if src and #src > 0 then
+          local data = deserialize_map(src, context or disk_path)
+          if data then
+            return data
+          end
+        end
+      end
+    end
+  end
+  local ok_src, src = pcall(sys.load_resource, SOURCE_PATH)
+  if not ok_src then
+    world_map_log(string.format('[WORLD_MAP] sys.load_resource failed (%s): %s', context or 'unknown', tostring(src)))
+    return nil
+  end
+  if not src or #src == 0 then
+    world_map_log(string.format('[WORLD_MAP] Empty map resource (%s)', context or 'unknown'))
+    return nil
+  end
+  return deserialize_map(src, context)
+end
+
+local MapData = load_map_data(nil, 'init') or {}
+local function named_text(source)
+  return type(source)=="string" and source:match("%S") and DisplayText.render(source) or DisplayText.ui("map.unknown")
+end
+local function world_title()
+  return type(MapData.world_name) == "string" and MapData.world_name ~= "" and DisplayText.render(MapData.world_name) or DisplayText.ui("map.title")
+end
+world_map_log(string.format('[MINIMAP_LOAD] World map data loaded width=%s height=%s min=(%s,%s) max=(%s,%s)', tostring(MapData.width or '?'), tostring(MapData.height or '?'), tostring(MapData.world_min and MapData.world_min.x or '?'), tostring(MapData.world_min and MapData.world_min.y or '?'), tostring(MapData.world_max and MapData.world_max.x or '?'), tostring(MapData.world_max and MapData.world_max.y or '?')))
+-- G8-06 map outlines. nil keeps the map overview-only: the file is missing,
+-- empty, or was not written by the same export as layout_map.lua.
+local MapVectors, map_vectors_note = require("mvtk.map.layout_vectors").load(MapData)
+world_map_log(string.format('[WORLD_MAP] Map outlines: %s (%s)', MapVectors and (#MapVectors.rooms .. ' rooms') or 'overview only', tostring(map_vectors_note)))
+local CFG = require("developer.config.runtime_settings").section("world_map",require "developer.config.world_map_settings")
+local POI = nil
+pcall(function() POI = require "developer.config.poi" end)
+local GameManager = require "mvtk.game.game_manager"
+
+-- Screenshot markers
+local ScreenshotMarkers = nil
+pcall(function() ScreenshotMarkers = require "mvtk.map.screenshot_markers" end)
+
+local MODE = { CLOSED = 0, OPEN = 1 }
+local TEXTURE_ID = hash("minimap_atlas")
+local FLIP_ID = hash("layout_map")
+local UPDATED_TEXTURE_NAME = "updated_worldmap"
+local UPDATED_TEXTURE_FORMAT = "rgba"
+local MINIMAP_MODE = { OFF = 0, PANEL = 1, FULL = 2 }
+local MINIMAP_URL = msg.url("main:/minimap_gui#minimap")
+local POI_SIZE_PX = 12
+local POI_FACING_SIZE_PX = { w = 6, h = 3 }
+local POI_FACING_GAP_PX = 2
+
+local MAP_WIDTH, MAP_HEIGHT = 1, 1
+local world_min_x, world_min_y = 0, 0
+local world_max_x, world_max_y = 0, 0
+local scale_x, scale_y = 1, 1
+
+local function refresh_metrics()
+  MAP_WIDTH = math.max(1, MapData.width or 1)
+  MAP_HEIGHT = math.max(1, MapData.height or 1)
+  world_min_x = (MapData.world_min and MapData.world_min.x) or 0
+  world_min_y = (MapData.world_min and MapData.world_min.y) or 0
+  world_max_x = (MapData.world_max and MapData.world_max.x) or (world_min_x + MAP_WIDTH)
+  world_max_y = (MapData.world_max and MapData.world_max.y) or (world_min_y + MAP_HEIGHT)
+  scale_x = (MapData.scale and MapData.scale.x) or (MAP_WIDTH / math.max(1, world_max_x - world_min_x))
+  scale_y = (MapData.scale and MapData.scale.y) or (MAP_HEIGHT / math.max(1, world_max_y - world_min_y))
+end
+
+refresh_metrics()
+
+local COLORS = (CFG and CFG.colors) or {
+  bg = vmath.vector4(0,0,0,0.65),
+  frame = vmath.vector4(0.8,0.93,0.99,0.35),
+  icon_boss = vmath.vector4(0.95, 0.30, 0.30, 0.95),
+  icon_custom = vmath.vector4(0.70, 0.40, 0.95, 0.95),
+  player = vmath.vector4(1.0, 0.92, 0.20, 0.95),
+}
+
+local v3 = vmath.vector3
+local v4 = vmath.vector4
+
+local function design_size()
+  return Viewport.design_size()
+end
+
+local function world_to_map(wx, wy)
+  local px = (wx - world_min_x) * scale_x
+  local py = (wy - world_min_y) * scale_y
+  return px, py
+end
+
+local function update_dynamic_texture(name, width, height, buffer)
+  return DynamicTexture.update(name, width, height, buffer, {
+    format = UPDATED_TEXTURE_FORMAT,
+    log = function(message)
+      world_map_log('[WORLD_MAP] ' .. tostring(message))
+    end,
+  })
+end
+
+-- ============================================================================
+-- G8-06 DETAIL PAGES
+-- Above pages.threshold the map draws room outlines from MapVectors into a
+-- fixed pool of square pages (MapView.new_page_cache), one texture name per
+-- slot for the whole session. A page not drawn yet leaves the overview image
+-- showing. The detail fog then covers the view plus one page ring.
+-- ============================================================================
+
+-- Also forgets the status overlay and overview fog: they are map_image's
+-- children too, so deleting map_image deletes them.
+local function reset_detail(self)
+  self.pages_root, self.detail_fog, self.layer_parent = nil, nil, nil
+  self.status_node, self.fog = nil, nil
+  self.page_nodes = {}
+  if self.page_cache then self.page_cache:clear() end
+end
+
+-- Nodes draw in tree order, not by z: the pages root comes first under
+-- map_image, so pages draw above the overview image and below both fogs.
+local function ensure_map_layers(self)
+  if not self.map_image or self.layer_parent == self.map_image then return end
+  reset_detail(self)
+  self.layer_parent = self.map_image
+  self.pages_root = gui.new_box_node(v3(0, 0, 0), v3(1, 1, 0))
+  gui.set_parent(self.pages_root, self.map_image, false)
+  gui.set_pivot(self.pages_root, gui.PIVOT_SW)
+  gui.set_color(self.pages_root, v4(0, 0, 0, 0))
+  -- G8-08c room status overlay (mvtk/ui/world_map_items.lua fills it): above
+  -- the pages, below both fogs, off until it has a texture.
+  self.status_node = gui.new_box_node(v3(0, 0, 0), v3(1, 1, 0))
+  gui.set_parent(self.status_node, self.map_image, false)
+  gui.set_pivot(self.status_node, gui.PIVOT_SW)
+  gui.set_enabled(self.status_node, false)
+  self.fog = Fog.create(self.map_image, gui.PIVOT_SW, "world_fog")
+  self.detail_fog = Fog.create(self.map_image, gui.PIVOT_SW, "world_fog_detail")
+  gui.set_enabled(self.detail_fog.node, false)
+end
+
+local function hide_pages(self)
+  for _, node in pairs(self.page_nodes or {}) do gui.set_enabled(node, false) end
+  if self.detail_fog then gui.set_enabled(self.detail_fog.node, false) end
+end
+
+-- Rooms concealed as secrets, recomputed only when discovery changes.
+local function concealment(self)
+  local revision = Discovery.revision()
+  if self._conceal_revision ~= revision then
+    self._conceal_revision = revision
+    self._conceal_skip, self._conceal_signature = MapView.concealed_rooms(MapVectors,
+      function(id) return Discovery.is_secret_hidden(nil, nil, id) end)
+  end
+  return self._conceal_skip, self._conceal_signature
+end
+
+local function draw_page(self, slot, page, signature, px)
+  local node = self.page_nodes[slot.index]
+  if not node then
+    node = gui.new_box_node(v3(0, 0, 0), v3(1, 1, 0))
+    gui.set_parent(node, self.pages_root, false)
+    gui.set_pivot(node, gui.PIVOT_SW)
+    gui.set_enabled(node, false)
+    self.page_nodes[slot.index] = node
+  end
+  -- Image pixels to baked-map space, where the outlines live.
+  local origin = MapData.world_min
+  local rect = { min_x = origin.x + page.x / scale_x, min_y = origin.y + page.y / scale_y,
+    max_x = origin.x + (page.x + page.span) / scale_x, max_y = origin.y + (page.y + page.span) / scale_y }
+  local bg = COLORS.bg or v4(0, 0, 0, 1)
+  local skip = concealment(self)
+  local rgba = MapRaster.rasterize(MapVectors, rect, px, px, { skip = skip,
+    background = { bg.x * 255, bg.y * 255, bg.z * 255, bg.w * 255 } })
+  local name = "world_map_page_" .. slot.index
+  -- Rows start at the page's min_y; GUI texture buffers start at the top.
+  if not DynamicTexture.update(name, px, px, rgba, { format = "rgba", flip = true, log = world_map_log }) then
+    -- Out of texture resources: keep the overview for the rest of the session.
+    world_map_log('[WORLD_MAP] Detail page texture failed; keeping the overview image')
+    self._pages_failed = true
+    slot.ready = false
+    return false
+  end
+  slot.ready, slot.signature = true, signature
+  gui.set_texture(node, name)
+  gui.set_position(node, v3(page.x, page.y, 0))
+  gui.set_size(node, v3(page.span, page.span, 0))
+  return true
+end
+
+-- Shows the detail pages for the current scale and position. Returns true when
+-- the detail fog covers the view, so the overview fog stays off this frame.
+local function update_detail(self)
+  local cfg = CFG and CFG.pages or {}
+  local origin = self._root_origin or self.map_origin
+  local density = MapVectors and MapData.world_min and not self._pages_failed and self.pages_root and origin
+    and MapView.detail_density(self.map_scale, cfg)
+  if not density then
+    hide_pages(self)
+    return false
+  end
+  local px = math.max(16, math.floor(tonumber(cfg.page_px) or 256))
+  self.page_cache = self.page_cache or MapView.new_page_cache(
+    math.min(MapView.CAPS.pages, math.max(1, math.floor(tonumber(cfg.cache_max) or 24))))
+  local cache = self.page_cache
+  local area = Viewport.design_bounds("picture")
+    or { min_x = 0, min_y = 0, max_x = self.screen_w, max_y = self.screen_h }
+  density = MapView.fit_density(density, self.map_scale, px, area.max_x - area.min_x, area.max_y - area.min_y,
+    MAP_WIDTH, MAP_HEIGHT, #cache.slots)
+  local view = MapView.image_rect(origin.x, origin.y, self.map_scale, area)
+  local pages = MapView.page_keys(view, density, px, cfg.ring or 1, MAP_WIDTH, MAP_HEIGHT)
+  local _, signature = concealment(self)
+  local count = math.min(#pages, #cache.slots)
+  local needed, shown = {}, {}
+  local budget = math.max(1, math.floor(tonumber(cfg.per_frame) or 1))
+  for i = 1, count do needed[pages[i].key] = true end
+  for i = 1, count do
+    local page = pages[i]
+    local slot = cache:get(page.key)
+    -- A page drawn under another concealment is stale: hide it until redrawn.
+    if slot and slot.ready and slot.signature ~= signature then slot.ready = false end
+    if not (slot and slot.ready) and budget > 0 then
+      slot = cache:acquire(page.key, needed)
+      if slot then
+        budget = budget - 1
+        if not draw_page(self, slot, page, signature, px) then
+          hide_pages(self)
+          return false
+        end
+      end
+    end
+    if slot and slot.ready then
+      cache:touch(slot)
+      shown[slot.index] = true
+    end
+  end
+  for index, node in pairs(self.page_nodes) do gui.set_enabled(node, shown[index] == true) end
+
+  -- Detail fog: the view plus one page ring, snapped to the page grid, so its
+  -- rectangle changes only when the view crosses a page edge.
+  local grid = MapView.pages_rect(pages, MAP_WIDTH, MAP_HEIGHT)
+  local fog = self.detail_fog
+  if not (grid and fog) then return false end
+  local world = { min_x = world_min_x + grid.min_x / scale_x, min_y = world_min_y + grid.min_y / scale_y,
+    max_x = world_min_x + grid.max_x / scale_x, max_y = world_min_y + grid.max_y / scale_y }
+  Fog.update(fog, grid.max_x - grid.min_x, grid.max_y - grid.min_y, world, { throttle = true })
+  if not fog.built_at then
+    -- Fail closed: the overview fog stays on until the detail fog has a texture.
+    gui.set_position(fog.node, v3(grid.min_x, grid.min_y, 0.001))
+    return false
+  end
+  -- A throttled rebuild keeps the last built rectangle; place the node there.
+  gui.set_position(fog.node, v3((fog.min_x - world_min_x) * scale_x, (fog.min_y - world_min_y) * scale_y, 0.001))
+  if self.fog then gui.set_enabled(self.fog.node, false) end
+  return true
+end
+
+
+local function apply_icon_sizes(self)
+  local scale = self.map_scale or 1
+  if scale <= 0 then scale = 1 end
+  if self.player_node then
+    gui.set_size(self.player_node, v3(10 / scale, 10 / scale, 0))
+  end
+  if self.poi_nodes then
+    local Items = require "mvtk.ui.world_map_items"
+    for i, rec in ipairs(self.poi_shape_nodes) do
+      self.poi_nodes[i] = Items.shape_node(self.poi_shape_nodes, i, self.map_root,
+        rec.shape, rec.style, POI_SIZE_PX / scale)
+    end
+  end
+  if self.poi_facing_nodes then
+    for _,node in ipairs(self.poi_facing_nodes) do
+      gui.set_size(node, v3(POI_FACING_SIZE_PX.w / scale, POI_FACING_SIZE_PX.h / scale, 0))
+    end
+  end
+  if self.fast_travel_nodes then
+    for _,node in ipairs(self.fast_travel_nodes) do
+      gui.set_size(node, v3(14 / scale, 14 / scale, 0))
+    end
+  end
+  if self.poi_labels then
+    for _,label in ipairs(self.poi_labels) do gui.set_scale(label, v3(self.menu_typography.prompt_scale / scale, self.menu_typography.prompt_scale / scale, 1)) end
+  end
+end
+
+local function apply_map_layout(self)
+  self.screen_w, self.screen_h = design_size()
+  Viewport.cover(self.overlay)
+  self._view_revision = Viewport.revision()
+
+  -- Keep the legacy opening and whole-world fit levels reachable by Q/E.
+  -- Choose the opening from that list using a fresh current-room snapshot.
+  local open = MapView.open_scale(self.screen_w, self.screen_h, MAP_WIDTH, MAP_HEIGHT, CFG)
+  local fit = MapView.fit_scale(self.screen_w, self.screen_h, MAP_WIDTH, MAP_HEIGHT, CFG)
+  local per_tile = MapVectors and (MapVectors.tile_width or 0) * ((MapData.scale and MapData.scale.x) or 0)
+  self.zoom_levels, self.zoom_open = MapView.zoom_levels(open, fit, CFG and CFG.zoom, per_tile)
+  local mini = rawget(_G, "MINIMAP_MODULE")
+  local snap = mini and mini.snapshot and mini.snapshot()
+  self.zoom_open = MapView.open_level(self.zoom_levels, self.zoom_open, CFG, MapVectors,
+    snap and snap.center_id, MapData, self.screen_w, self.screen_h)
+  self.zoom_fit = fit
+  self.zoom_index = math.max(1, math.min(#self.zoom_levels, self.zoom_index or self.zoom_open))
+  local scale = self.zoom_levels[self.zoom_index] or open
+  self.map_scale = scale
+
+  local width_px = MAP_WIDTH * scale
+  local height_px = MAP_HEIGHT * scale
+  local x = (self.screen_w - width_px) * 0.5
+  local y = (self.screen_h - height_px) * 0.5
+  local center_x = x + width_px * 0.5
+  local center_y = y + height_px * 0.5
+  self.map_origin = { x = x, y = y }
+
+  gui.set_position(self.map_root, v3(x, y, 0.01))
+  gui.set_scale(self.map_root, v3(scale, scale, 1))
+
+  apply_icon_sizes(self)
+  -- The title and legend stay where the opening level puts them, so zooming
+  -- never moves them off screen.
+  local open_scale = self.zoom_levels[self.zoom_open] or scale
+  width_px, height_px = MAP_WIDTH * open_scale, MAP_HEIGHT * open_scale
+  x, y = (self.screen_w - width_px) * 0.5, (self.screen_h - height_px) * 0.5
+  center_x = x + width_px * 0.5
+  local title_y = y + height_px + 24
+  title_y = math.min(self.screen_h - 24, title_y)
+  gui.set_position(self.title, v3(center_x, title_y, 0.04))
+  local layout = self.menu_typography.map
+  gui.set_position(self.legend, v3(layout.legend_x, layout.legend_y, 0.04))
+  gui.set_size(self.legend, v3(layout.legend_width / self.menu_typography.prompt_scale, layout.legend_height / self.menu_typography.prompt_scale, 0))
+  gui.set_line_break(self.legend, true)
+  self._legend_pos = { x = layout.legend_x, y = layout.legend_y }
+end
+
+-- G8-06b2 pan and zoom. self._pan is the overview-image point at the view
+-- centre once the player pans, drags or zooms at the pointer; nil follows the
+-- player (or the selected travel stop) as before.
+local function zoom_by(self, dir, ax, ay)
+  local index, changed = MapView.step_level(self.zoom_levels, self.zoom_index, dir)
+  if not changed then return false end
+  local origin = self._root_origin or self.map_origin
+  if origin and (ax or self._pan) then
+    ax, ay = ax or self.screen_w * 0.5, ay or self.screen_h * 0.5
+    local cx, cy = MapView.anchor_center(origin.x, origin.y, self.map_scale or 1, self.zoom_levels[index],
+      ax, ay, self.screen_w, self.screen_h)
+    self._pan = { x = cx, y = cy }
+  end
+  self.zoom_index = index
+  apply_map_layout(self)
+  return true
+end
+
+-- Each opening recomputes its room level, following the player, with no held input.
+local function reset_view(self)
+  self._pan, self._drag, self._pointer, self._deselected_marker = nil, nil, nil, nil
+  self._pan_sticks, self._pan_keys, self._analog = {}, {}, {}
+  self.zoom_index = nil
+  if self.enabled then apply_map_layout(self) end
+end
+
+local function refresh_legend(self)
+  if not self.legend then return end
+  local parts, prefix, suffix = {}, "", ""
+  if self.fast_travel_mode then
+    local ids = self.fast_travel_ids or {}
+    if #ids == 0 then
+      prefix = "empty"
+      parts = { { command = "back", text_key = "map.cancel" } }
+    else
+      local index = math.max(1, math.min(#ids, self.fast_travel_index or 1))
+      local point = FastTravel and FastTravel.get_point and FastTravel.get_point(ids[index])
+      prefix = {name=named_text(point and point.name),
+        current=index,total=#ids}
+      parts = { { button = DisplayText.ui("map.up_down"), text_key = "map.select" },
+        { pad = "gamepad_lshoulder", text_key = "map.previous_stop" }, { pad = "gamepad_rshoulder", text_key = "map.next_stop" },
+        { command = "confirm", text_key = "map.travel" }, { command = "back", text_key = "map.cancel" } }
+    end
+  elseif require("mvtk.ui.world_map_stamps").is_open(self) then
+    parts = require("mvtk.ui.world_map_stamps").palette_legend()
+  elseif self.marker_selection_active and (self.selected_marker_index or 0) > 0 then
+    local markers = ScreenshotMarkers and ScreenshotMarkers.get_all() or {}
+    suffix = {current=self.selected_marker_index,total=#markers}
+    parts = { { command = "back", text_key = "map.delete" }, { command = "confirm", text_key = "map.deselect" } }
+  else
+    -- G8-06c: markers are chosen by pointing, so the D-pad pans like the stick.
+    parts = { { command = "back", text_key = "gameplay.close" },
+      { key = "key_tab", pad = "gamepad_lshoulder", text_key = "map.minimap" },
+      { key = { "key_w", "key_a", "key_s", "key_d" }, pad = "gamepad_lstick_up", text_key = "map.pan" },
+      { key = { "key_q", "key_e" }, pad = "gamepad_rstick_up", text_key = "map.zoom" },
+      { key = "key_c", pad = "gamepad_rstick_click", text_key = "map.center" },
+      { key = "key_i", pad = "gamepad_rpad_up", text_key = "map.show_legend" } }
+    -- G8-07: X places a stamp, or removes the one under the cursor.
+    parts[#parts + 1] = require("mvtk.ui.world_map_stamps").legend(self)
+  end
+  local legend = DisplayText.legend(parts)
+  if prefix == "empty" then legend = DisplayText.ui("map.no_travel", {legend=legend})
+  elseif type(prefix) == "table" then prefix.legend=legend; legend=DisplayText.ui("map.travel_legend",prefix)
+  elseif type(suffix) == "table" then suffix.legend=legend; legend=DisplayText.ui("map.marker_legend",suffix) end
+  gui.set_text(self.legend, legend)
+  self._prompt_revision = DisplayText.revision()
+end
+
+local function set_enabled(self, on, context)
+  if on and not self.enabled then self._menu_stick_guard = nil end
+  context = context or {}
+  self.enabled = on and true or false
+  if InputCtl and InputCtl.set_hud_covered then InputCtl.set_hud_covered(self, self.enabled) end
+  world_map_log(string.format('[WORLD_MAP] set_enabled(%s)', tostring(on)))
+  reset_view(self)
+  if on then refresh_legend(self) end
+  gui.set_visible(self.overlay, self.enabled)
+  gui.set_visible(self.map_root, self.enabled)
+
+  -- Respect config settings for title/legend/border visibility
+  local show_title = (context.show_title ~= nil) and (context.show_title and true or false) or (CFG and CFG.show_title ~= false)
+  local show_legend = (context.show_legend ~= nil) and (context.show_legend and true or false) or (CFG and CFG.show_legend ~= false)
+  -- The player's I / top face button choice outlasts closing the map.
+  if self._legend_shown ~= nil and context.show_legend == nil then show_legend = self._legend_shown end
+  self._show_legend = show_legend
+  if not self.enabled then
+    require("mvtk.ui.world_map_overlay").hide(self)
+    if self._items then require("mvtk.ui.world_map_items").hide(self) end
+  else
+    -- Correction 15: the item index rebuilds on map open.
+    require("mvtk.ui.world_map_items").invalidate(self)
+  end
+  local show_border = false
+
+  gui.set_visible(self.title, self.enabled and show_title)
+  gui.set_visible(self.legend, self.enabled and show_legend)
+  if self.border_top then
+    gui.set_visible(self.border_top, self.enabled and show_border)
+  end
+  if self.border_bottom then gui.set_visible(self.border_bottom, self.enabled and show_border) end
+  if self.border_left then gui.set_visible(self.border_left, self.enabled and show_border) end
+  if self.border_right then gui.set_visible(self.border_right, self.enabled and show_border) end
+  if self.poi_nodes then
+    for _,node in ipairs(self.poi_nodes) do gui.set_visible(node, self.enabled) end
+  end
+  if self.poi_facing_nodes then
+    for _,node in ipairs(self.poi_facing_nodes) do gui.set_visible(node, self.enabled) end
+  end
+  if self.poi_labels then
+    for _,node in ipairs(self.poi_labels) do gui.set_visible(node, self.enabled) end
+  end
+  if self.screenshot_marker_nodes then
+    for _,node in ipairs(self.screenshot_marker_nodes) do gui.set_visible(node, self.enabled) end
+  end
+  if self.fast_travel_nodes then
+    for _,node in ipairs(self.fast_travel_nodes) do
+      gui.set_visible(node, self.enabled and self.fast_travel_mode)
+    end
+  end
+  if self.player_node then gui.set_visible(self.player_node, self.enabled and self._player_visible) end
+  if self.enabled then
+    msg.post(".", "enable")
+    -- Taking focus again moves the map to the top of the input stack. The player takes focus whenever it
+    -- spawns, so it could sit above the map, and its pause key also saw the Esc that closed it (row 0av).
+    msg.post(".", "acquire_input_focus")
+    pcall(msg.post, MINIMAP_URL, hash("set_minimap_mode"), {
+      mode = MINIMAP_MODE.FULL,
+      source = "world_map",
+      origin = context.source or "world_map",
+      force = true,
+    })
+  else
+    msg.post(".", "disable")
+    local revert = context.revert_mode
+    if revert == nil then revert = MINIMAP_MODE.PANEL end
+    if revert < MINIMAP_MODE.OFF then revert = MINIMAP_MODE.OFF end
+    if revert > MINIMAP_MODE.FULL then revert = MINIMAP_MODE.FULL end
+    pcall(msg.post, MINIMAP_URL, hash("set_minimap_mode"), {
+      mode = revert,
+      source = "world_map",
+      origin = context.source or "world_map",
+      force = true,
+    })
+  end
+end
+
+function init(self)
+  self.menu_typography = require "developer.config.menu_typography"
+    gui.set_render_order(RenderLayers.menus)
+  msg.post(".", "acquire_input_focus")
+  self.enabled = false
+
+  -- The overlay covers the design picture and follows the GUI Fit adjustment.
+  local design_w, design_h = design_size()
+  self.overlay = gui.new_box_node(v3(design_w * 0.5,design_h * 0.5,0), v3(design_w, design_h, 0))
+  gui.set_pivot(self.overlay, gui.PIVOT_CENTER)
+  gui.set_color(self.overlay, COLORS.bg or v4(0,0,0,1.0))
+  gui.set_visible(self.overlay, false)
+
+  -- map container
+  self.map_root = gui.new_box_node(v3(0,0,0.01), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+  gui.set_pivot(self.map_root, gui.PIVOT_SW)
+  gui.set_color(self.map_root, v4(0,0,0,0))
+  gui.set_visible(self.map_root, false)
+
+  self.map_image = gui.new_box_node(v3(0,0,0), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+  gui.set_parent(self.map_image, self.map_root, false)
+  gui.set_pivot(self.map_image, gui.PIVOT_SW)
+  gui.set_texture(self.map_image, TEXTURE_ID)
+  gui.play_flipbook(self.map_image, FLIP_ID)
+  ensure_map_layers(self)
+
+  -- Border nodes removed for full-bleed map
+  self.border_top, self.border_bottom, self.border_left, self.border_right = nil, nil, nil, nil
+
+  self.player_node = gui.new_box_node(v3(MAP_WIDTH * 0.5, MAP_HEIGHT * 0.5, 0.02), v3(10,10,0))
+  gui.set_parent(self.player_node, self.map_root, false)
+  gui.set_pivot(self.player_node, gui.PIVOT_CENTER)
+  gui.set_color(self.player_node, COLORS.player or v4(1.0,0.92,0.20,1.0))
+  gui.set_visible(self.player_node, false)
+
+  self.poi_nodes = {}
+  self.poi_shape_nodes = {}
+  self.poi_labels = {}
+  self.poi_facing_nodes = {}
+  self.screenshot_marker_nodes = {}  -- Screenshot marker nodes
+  self.screenshot_marker_data = {}   -- Marker data for hover detection
+
+  -- Screenshot preview container (hidden by default)
+  local preview_size = 180  -- Preview thumbnail size
+  self.screenshot_preview = gui.new_box_node(v3(0, 0, 0.1), v3(self.menu_typography.map.preview_width, preview_size + self.menu_typography.map.preview_caption_height + 10, 0))
+  gui.set_pivot(self.screenshot_preview, gui.PIVOT_SW)
+  gui.set_color(self.screenshot_preview, v4(0.1, 0.1, 0.15, 0.95))
+  gui.set_visible(self.screenshot_preview, false)
+
+  -- Screenshot image node (child of preview container)
+  self.screenshot_preview_image = gui.new_box_node(v3(5, self.menu_typography.map.preview_caption_height + 5, 0), v3(preview_size, preview_size, 0))
+  gui.set_parent(self.screenshot_preview_image, self.screenshot_preview, false)
+  gui.set_pivot(self.screenshot_preview_image, gui.PIVOT_SW)
+  gui.set_color(self.screenshot_preview_image, v4(1, 1, 1, 1))
+  gui.set_visible(self.screenshot_preview_image, false)
+
+  -- Text label for marker info (below image)
+  self.screenshot_preview_text = require("mvtk.ui.generated_text").new(gui, "/developer/ui/menus/world_map.gui", v3(5, 5, 0), "")
+  gui.set_font(self.screenshot_preview_text, "system")
+  gui.set_scale(self.screenshot_preview_text, v3(self.menu_typography.prompt_scale, self.menu_typography.prompt_scale, 1))
+  gui.set_parent(self.screenshot_preview_text, self.screenshot_preview, false)
+  gui.set_size(self.screenshot_preview_text, v3((self.menu_typography.map.preview_width - 10) / self.menu_typography.prompt_scale, self.menu_typography.map.preview_caption_height / self.menu_typography.prompt_scale, 0))
+  gui.set_line_break(self.screenshot_preview_text, true)
+  gui.set_pivot(self.screenshot_preview_text, gui.PIVOT_SW)
+  gui.set_color(self.screenshot_preview_text, v4(1, 1, 1, 1))
+  gui.set_visible(self.screenshot_preview_text, false)
+
+  self.hovered_marker_id = nil
+  self.preview_texture_name = "screenshot_preview_tex"
+  self.preview_texture_created = false
+  self.preview_tex_w = 0
+  self.preview_tex_h = 0
+
+  -- Controller marker selection
+  self.selected_marker_index = 0  -- 0 = none selected, 1+ = index into markers array
+  self.marker_selection_active = false  -- True when cycling through markers
+
+  -- Fast travel selection (pause menu)
+  self.fast_travel_mode = false
+  self.fast_travel_ids = {}
+  self.fast_travel_index = 1
+  self.fast_travel_nodes = {}
+  self._center_world = nil
+
+  self.title = require("mvtk.ui.generated_text").new(gui, "/developer/ui/menus/world_map.gui", v3(0,0,0.02), world_title())
+  gui.set_font(self.title, "system")
+  gui.set_scale(self.title, v3(self.menu_typography.prompt_scale, self.menu_typography.prompt_scale, 1))
+  gui.set_pivot(self.title, gui.PIVOT_CENTER)
+
+  self.legend = require("mvtk.ui.generated_text").new(gui, "/developer/ui/menus/world_map.gui", v3(0,0,0.02), "")
+  gui.set_font(self.legend, "system")
+  gui.set_scale(self.legend, v3(self.menu_typography.prompt_scale, self.menu_typography.prompt_scale, 1))
+  refresh_legend(self)
+  gui.set_pivot(self.legend, gui.PIVOT_SW)
+
+  apply_map_layout(self)
+  set_enabled(self, false)
+end
+
+local function map_to_screen(self, px, py)
+  return (px or 0), (py or 0)
+end
+
+local function ensure_poi_node(self, idx, color, shape, style)
+  local Items = require "mvtk.ui.world_map_items"
+  local node = Items.shape_node(self.poi_shape_nodes, idx, self.map_root, shape, style, POI_SIZE_PX)
+  local rec = self.poi_shape_nodes[idx]
+  rec.shape, rec.style = shape, style
+  -- Keep the raw live handle for the visibility loop; labels/facing are siblings.
+  self.poi_nodes[idx] = node
+  gui.set_color(node, color)
+  return node
+end
+
+local function ensure_poi_facing_node(self, idx, color)
+  local node = self.poi_facing_nodes[idx]
+  if not node then
+    node = gui.new_box_node(v3(0,0,0.02), v3(POI_FACING_SIZE_PX.w, POI_FACING_SIZE_PX.h, 0))
+    gui.set_parent(node, self.map_root, false)
+    gui.set_pivot(node, gui.PIVOT_CENTER)
+    self.poi_facing_nodes[idx] = node
+  end
+  gui.set_color(node, color)
+  return node
+end
+
+local function ensure_label(self, idx, text)
+  self.poi_labels = self.poi_labels or {}
+  local label = self.poi_labels[idx]
+  if not label then
+    label = require("mvtk.ui.generated_text").new(gui, "/developer/ui/menus/world_map.gui", v3(0,0,0.02), text)
+    gui.set_font(label, "system")
+    gui.set_scale(label, v3(self.menu_typography.prompt_scale, self.menu_typography.prompt_scale, 1))
+    gui.set_parent(label, self.map_root, false)
+    gui.set_pivot(label, gui.PIVOT_SW)
+    self.poi_labels[idx] = label
+  end
+  gui.set_text(label, text)
+  return label
+end
+
+local function refresh_pois(self)
+  local offset = (CFG and CFG.labels and CFG.labels.poi_offset) or { x = 10, y = 6 }
+  local scale = self.map_scale or 1
+  if scale <= 0 then scale = 1 end
+  local facing_offset = (POI_SIZE_PX * 0.5 + POI_FACING_SIZE_PX.w * 0.5 + POI_FACING_GAP_PX) / scale
+  local idx = 0
+  -- G8-06c: what the cursor can point at (image px, kind, source label).
+  local items = {}
+  self._poi_items = items
+
+  local function resolve_facing(value)
+    if value == nil then
+      return nil
+    end
+    if type(value) == "number" then
+      if value < 0 then return -1 end
+      if value > 0 then return 1 end
+      return nil
+    end
+    if type(value) == "string" then
+      local lower = value:lower()
+      if lower == "left" or lower == "-1" or lower == "west" then return -1 end
+      if lower == "right" or lower == "1" or lower == "east" then return 1 end
+    end
+    return nil
+  end
+
+  -- The marker's colour and its legend kind (mvtk/ui/world_map_overlay.lua KINDS).
+  local function marker_color_for(marker)
+    if not marker then
+      return COLORS.icon_custom or v4(0.70, 0.40, 0.95, 0.95), "marker"
+    end
+    local mtype = tostring(marker.marker_type or marker.type or ""):lower()
+    if mtype == "shop" then
+      return COLORS.icon_shop or v4(0.20, 0.85, 0.95, 0.95), "shop"
+    elseif mtype == "boss" then
+      return COLORS.icon_boss or v4(0.95, 0.30, 0.30, 0.95), "boss"
+    elseif mtype == "save" or mtype == "bench" or mtype == "checkpoint" then
+      return COLORS.icon_bench or v4(1.00, 0.92, 0.20, 0.95), "save"
+    end
+    return COLORS.icon_custom or v4(0.70, 0.40, 0.95, 0.95), "marker"
+  end
+
+  local function place_entry(pos, color, kind, extra)
+    if not pos or not pos.x or not pos.y then return end
+    if Discovery.is_secret_hidden(pos.x, pos.y, pos.room_id) then return end
+    -- The node budget reserves MapView.CAPS.poi icons (world_map.gui max_nodes).
+    if idx >= MapView.CAPS.poi then return end
+    idx = idx + 1
+    local node = ensure_poi_node(self, idx, color, extra and extra.shape, extra and extra.style)
+    local px, py = world_to_map(pos.x, pos.y)
+    gui.set_position(node, v3(px, py, 0.02))
+    gui.set_visible(node, true)
+    -- Fast travel points only at travel stops; the icons still count in the legend.
+    local item = { px = px, py = py, kind = kind or "marker", label = pos.label,
+      snap = not self.fast_travel_mode }
+    for k, v in pairs(extra or {}) do item[k] = v end
+    items[#items + 1] = item
+
+    local facing_dir = resolve_facing(pos.facing)
+    local facing_node = ensure_poi_facing_node(self, idx, color)
+    if facing_dir then
+      gui.set_position(facing_node, v3(px + facing_dir * facing_offset, py, 0.02))
+      gui.set_visible(facing_node, true)
+    else
+      gui.set_visible(facing_node, false)
+    end
+
+    if pos.label then
+      local label = ensure_label(self, idx, DisplayText.render(pos.label))
+      gui.set_position(label, v3(px + (offset.x or 10) / scale, py + (offset.y or 6) / scale, 0.02))
+      gui.set_visible(label, true)
+    elseif self.poi_labels and self.poi_labels[idx] then
+      gui.set_visible(self.poi_labels[idx], false)
+    end
+  end
+
+  -- Check for revealed map areas via Flags system
+  local ok_flags, Flags = pcall(require, "mvtk.core.flags")
+  local function is_revealed(area_id)
+    if ok_flags and Flags and Flags.has then
+      return Flags.has("map_revealed_" .. area_id)
+    end
+    return false
+  end
+
+  if POI then
+    if POI.bosses then
+      for area_id, pos in pairs(POI.bosses) do
+        if is_revealed(area_id) or (pos.always_visible == true) then
+          place_entry(pos, COLORS.icon_boss or v4(0.95,0.30,0.30,0.95), "boss")
+        end
+      end
+    end
+    if POI.custom then
+      for area_id, pos in pairs(POI.custom) do
+        if is_revealed(area_id) or (pos.always_visible == true) then
+          place_entry(pos, pos.color or COLORS.icon_custom or v4(0.70,0.40,0.95,0.95), "marker")
+        end
+      end
+    end
+  end
+
+  local snap = self._mini_snapshot
+  -- G8-08c: stations, placed markers and map_icon objects come from the census
+  -- (one path for hide_on_map, rules and presence; STAGE_7 D-S7B-2), so they
+  -- persist while their rooms are unloaded (D-S7B-1).
+  local Items = require "mvtk.ui.world_map_items"
+  for _, rec in ipairs(Items.stations(self, { poi_bosses = POI and POI.bosses,
+    marker_version = snap and snap.world_marker_version })) do
+    place_entry({ x = rec.wx, y = rec.wy, room_id = rec.room, label = rec.label, facing = rec.facing },
+      rec.color, rec.legend.id, { legend = rec.legend, state_key = rec.state_key, shape = rec.shape, style = rec.style })
+  end
+  local world_markers = snap and snap.world_markers
+  if world_markers then
+    for _, marker in ipairs(world_markers) do
+      -- A registered marker the census lists is drawn once, from the census.
+      if marker and marker.x and marker.y and not Items.covers(marker.id) and Discovery.marker_visible(marker) then
+        place_entry({
+          x = marker.x,
+          y = marker.y,
+          label = marker.label or marker.marker_label or marker.name or "",
+          facing = marker.facing,
+        }, marker_color_for(marker))
+      end
+    end
+  end
+
+  for i = idx + 1, #self.poi_nodes do
+    gui.set_visible(self.poi_nodes[i], false)
+    if self.poi_labels and self.poi_labels[i] then gui.set_visible(self.poi_labels[i], false) end
+    if self.poi_facing_nodes and self.poi_facing_nodes[i] then gui.set_visible(self.poi_facing_nodes[i], false) end
+  end
+  apply_icon_sizes(self)
+end
+
+-- Screenshot marker rendering
+local function ensure_screenshot_marker_node(self, idx)
+  local node = self.screenshot_marker_nodes[idx]
+  if not node then
+    -- Create gold camera-style marker
+    local size = 14  -- Slightly larger than POI markers
+    node = gui.new_box_node(v3(0,0,0.025), v3(size, size, 0))
+    gui.set_parent(node, self.map_root, false)
+    gui.set_pivot(node, gui.PIVOT_CENTER)
+    gui.set_color(node, vmath.vector4(1.0, 0.8, 0.2, 0.95))  -- Gold color
+
+    -- Create inner dark square to make it look like a camera icon
+    local inner = gui.new_box_node(v3(0, 0, 0), v3(size * 0.5, size * 0.35, 0))
+    gui.set_parent(inner, node, false)
+    gui.set_pivot(inner, gui.PIVOT_CENTER)
+    gui.set_color(inner, vmath.vector4(0.1, 0.1, 0.1, 0.9))
+
+    self.screenshot_marker_nodes[idx] = node
+  end
+  return node
+end
+
+local function refresh_screenshot_markers(self)
+  if not ScreenshotMarkers then
+    return
+  end
+
+  local config = ScreenshotMarkers.get_config()
+  if not config.show_on_world_map then
+    -- Hide all screenshot markers
+    for _, node in ipairs(self.screenshot_marker_nodes) do
+      gui.set_visible(node, false)
+    end
+    return
+  end
+
+  local markers = ScreenshotMarkers.get_all()
+  local idx = 0
+
+  -- Colors for normal and selected states
+  local normal_color = vmath.vector4(1.0, 0.8, 0.2, 0.95)  -- Gold
+  local selected_color = vmath.vector4(0.2, 1.0, 0.4, 1.0)  -- Bright green for selected
+
+  for i, marker in ipairs(markers) do
+    if idx < MapView.CAPS.screenshot and marker.pos
+        and not Discovery.is_secret_hidden(marker.pos.x, marker.pos.y, marker.room_id) then
+      idx = idx + 1
+      local node = ensure_screenshot_marker_node(self, idx)
+      local px, py = world_to_map(marker.pos.x, marker.pos.y)
+      gui.set_position(node, v3(px, py, 0.025))
+      gui.set_visible(node, true)
+
+      -- Scale marker - selected marker is bigger
+      local scale = self.map_scale or 1
+      local is_selected = (self.selected_marker_index == i)
+      local base_size = is_selected and 20 or 14  -- Selected is bigger
+      if scale > 0 then
+        gui.set_size(node, v3(base_size / scale, base_size / scale, 0))
+      end
+
+      -- Color based on selection
+      gui.set_color(node, is_selected and selected_color or normal_color)
+
+      -- Store marker data for hover detection
+      self.screenshot_marker_data[idx] = {
+        node = node,
+        marker = marker,
+        marker_index = i,
+        map_x = px,
+        map_y = py,
+      }
+    end
+  end
+
+  -- Hide unused nodes and clear data
+  for i = idx + 1, #self.screenshot_marker_nodes do
+    gui.set_visible(self.screenshot_marker_nodes[i], false)
+    self.screenshot_marker_data[i] = nil
+  end
+end
+
+-- Marker hit tests use Defold pick coordinates, unchanged from the input action.
+local function pick_screenshot_marker(self, pick_x, pick_y)
+  for _, data in pairs(self.screenshot_marker_data) do
+    if data and data.node then
+      -- Check if node is enabled (visible)
+      local enabled = pcall(function() return gui.is_enabled(data.node) end)
+      if enabled and gui.pick_node(data.node, pick_x, pick_y) then
+        return data.marker
+      end
+    end
+  end
+  return nil
+end
+
+local function refresh_marker_text(self)
+  local marker = self._preview_marker
+  if not marker then return end
+  -- Format marker info text
+  local source = marker.room_name
+  if type(source)~="string" or not source:match("%S") then source=marker.label end
+  local room_name = named_text(source)
+  if require("mvtk.ui.notices").trim(room_name, 25) ~= room_name then
+    room_name = require("mvtk.ui.notices").trim(room_name, 22) .. DisplayText.ui("map.ellipsis")
+  end
+  local timestamp = marker.timestamp or 0
+  local date = os.date("*t", timestamp)
+  local date_str = string.format("%02d/%02d %02d:%02d", date.month, date.day, date.hour, date.min)
+
+  local info_text = DisplayText.ui("map.marker_info", {number=marker.id, name=room_name, date=date_str})
+  gui.set_text(self.screenshot_preview_text, info_text)
+end
+
+-- Show screenshot preview for a marker (displays actual screenshot thumbnail)
+local function show_screenshot_preview(self, marker, design_x, design_y)
+  if not marker then
+    gui.set_visible(self.screenshot_preview, false)
+    return
+  end
+
+  -- First, decode the image to get its dimensions
+  local has_image = false
+  local display_w, display_h = 100, 100  -- Default size if no image
+
+  if ScreenshotMarkers and marker.screenshot_data and #marker.screenshot_data > 0 then
+    world_map_log(string.format("[WORLD_MAP] Decoding screenshot for marker #%d (base64 len=%d)",
+        marker.id, #marker.screenshot_data))
+    local png_data = ScreenshotMarkers.decode_screenshot(marker)
+    if png_data and #png_data > 0 then
+      world_map_log(string.format("[WORLD_MAP] Decoded PNG data: %d bytes", #png_data))
+      -- Decode PNG to pixel data
+      local img_ok, img = decode_image(png_data)
+      if img_ok and img and img.buffer and img.width and img.height then
+        -- Determine format from buffer size
+        local expected_rgba = img.width * img.height * 4
+        local expected_rgb = img.width * img.height * 3
+        local actual_size = #img.buffer
+        local tex_format = "rgba"
+        if actual_size == expected_rgb then
+          tex_format = "rgb"
+        end
+        world_map_log(string.format("[WORLD_MAP] Image: %dx%d buf=%d -> %s", img.width, img.height, actual_size, tex_format))
+
+        -- Calculate display size (max 400px, twice as big as before)
+        local max_preview_size = 400
+        local scale = math.min(max_preview_size / img.width, max_preview_size / img.height)
+        display_w = img.width * scale
+        display_h = img.height * scale
+
+        -- Create texture
+        local tex_name = self.preview_texture_name
+        if self.preview_texture_created then
+          pcall(gui.delete_texture, tex_name)
+          self.preview_texture_created = false
+        end
+
+        local create_ok, result = pcall(gui.new_texture, tex_name, img.width, img.height, tex_format, img.buffer)
+        local tex_ok = create_ok and result ~= false
+        if tex_ok then
+          self.preview_texture_created = true
+          self.preview_buffer = img.buffer  -- Keep reference to prevent GC
+
+          -- Set texture and size on image node
+          gui.set_texture(self.screenshot_preview_image, tex_name)
+          gui.set_size(self.screenshot_preview_image, v3(display_w, display_h, 0))
+          gui.set_position(self.screenshot_preview_image, v3(5, self.menu_typography.map.preview_caption_height + 5, 0))
+          gui.set_visible(self.screenshot_preview_image, true)
+          has_image = true
+          world_map_log(string.format("[WORLD_MAP] Preview: %dx%d -> %.0fx%.0f", img.width, img.height, display_w, display_h))
+        else
+          world_map_log(string.format("[WORLD_MAP] Texture failed: %s", tostring(result)))
+        end
+      else
+        world_map_log("[WORLD_MAP] Failed to decode PNG: " .. tostring(img))
+      end
+    end
+  end
+
+  -- Hide image if no screenshot
+  if not has_image then
+    gui.set_visible(self.screenshot_preview_image, false)
+    display_w, display_h = 150, 20  -- Minimal size for text-only
+  end
+
+  -- Size the container to exactly fit the content
+  local padding = 10
+  local text_height = self.menu_typography.map.preview_caption_height
+  local container_w = math.max(self.menu_typography.map.preview_width, display_w + padding)
+  local container_h = display_h + text_height + padding
+  gui.set_size(self.screenshot_preview, v3(container_w, container_h, 0))
+
+  -- Now position the preview near cursor (using actual container size)
+  local offset_x = 20
+  local offset_y = 20
+  local preview_x = design_x + offset_x
+  local preview_y = design_y + offset_y
+
+  -- Keep on screen
+  if preview_x + container_w > self.screen_w then
+    preview_x = design_x - container_w - 10
+  end
+  if preview_y + container_h > self.screen_h then
+    preview_y = self.screen_h - container_h - 10
+  end
+  if preview_x < 10 then preview_x = 10 end
+  if preview_y < 10 then preview_y = 10 end
+
+  gui.set_position(self.screenshot_preview, v3(preview_x, preview_y, 0.1))
+  gui.set_visible(self.screenshot_preview, true)
+  gui.set_visible(self.screenshot_preview_text, true)
+
+  self._preview_marker = marker
+  refresh_marker_text(self)
+end
+
+-- Hide screenshot preview
+local function hide_screenshot_preview(self)
+  self._preview_marker = nil
+  gui.set_visible(self.screenshot_preview, false)
+  gui.set_visible(self.screenshot_preview_image, false)  -- Explicitly hide image too
+  gui.set_visible(self.screenshot_preview_text, false)   -- And text
+  self.hovered_marker_id = nil
+end
+
+-- Get design position for a marker (controller-driven preview display).
+local function get_marker_design_pos(self, marker)
+  if not marker or not marker.pos then return nil, nil end
+  local px, py = world_to_map(marker.pos.x, marker.pos.y)
+  local scale = self.map_scale or 1
+  local origin = self._root_origin or self.map_origin or { x = 0, y = 0 }
+  local design_x = origin.x + px * scale
+  local design_y = origin.y + py * scale
+  return design_x, design_y
+end
+
+-- Select a marker by index and show its preview
+local function select_marker(self, index)
+  if not ScreenshotMarkers then return end
+  local markers = ScreenshotMarkers.get_all()
+
+  if index < 0 then index = 0 end
+  if index > #markers then index = #markers end
+
+  self.selected_marker_index = index
+  self.marker_selection_active = (index > 0)
+
+  if index > 0 and markers[index] then
+    local marker = markers[index]
+    local design_x, design_y = get_marker_design_pos(self, marker)
+    if design_x and design_y then
+      show_screenshot_preview(self, marker, design_x, design_y)
+    end
+    -- Update legend to show delete option
+    refresh_legend(self)
+    world_map_log(string.format("[WORLD_MAP] Selected marker %d/%d", index, #markers))
+  else
+    hide_screenshot_preview(self)
+    -- Reset legend
+    refresh_legend(self)
+    world_map_log("[WORLD_MAP] Deselected marker")
+  end
+
+  -- Force refresh to update marker visuals
+  refresh_screenshot_markers(self)
+end
+
+-- Delete the currently selected marker
+local function delete_selected_marker(self)
+  if not ScreenshotMarkers then return false end
+  if self.selected_marker_index <= 0 then return false end
+
+  local markers = ScreenshotMarkers.get_all()
+  if self.selected_marker_index > #markers then return false end
+
+  local marker = markers[self.selected_marker_index]
+  if marker and marker.id then
+    world_map_log(string.format("[WORLD_MAP] Deleting marker #%d", marker.id))
+    ScreenshotMarkers.remove_marker(marker.id)
+
+    -- Adjust selection after deletion
+    local new_markers = ScreenshotMarkers.get_all()
+    if #new_markers == 0 then
+      self.selected_marker_index = 0
+      self.marker_selection_active = false
+      hide_screenshot_preview(self)
+      refresh_legend(self)
+    elseif self.selected_marker_index > #new_markers then
+      select_marker(self, #new_markers)
+    else
+      select_marker(self, self.selected_marker_index)
+    end
+
+    return true
+  end
+  return false
+end
+
+-- Clear marker selection
+local function clear_marker_selection(self)
+  self.selected_marker_index = 0
+  self.marker_selection_active = false
+  hide_screenshot_preview(self)
+  refresh_screenshot_markers(self)
+  -- Reset legend
+  refresh_legend(self)
+end
+
+-- ============================================================================
+-- FAST TRAVEL SELECTION (pause menu)
+-- ============================================================================
+
+local function ensure_fast_travel_node(self, idx)
+  self.fast_travel_nodes = self.fast_travel_nodes or {}
+  local node = self.fast_travel_nodes[idx]
+  if not node then
+    node = gui.new_box_node(v3(0, 0, 0.025), v3(14, 14, 0))
+    gui.set_parent(node, self.map_root, false)
+    gui.set_pivot(node, gui.PIVOT_CENTER)
+    self.fast_travel_nodes[idx] = node
+  end
+  return node
+end
+
+local function refresh_fast_travel_ui(self)
+  if not self.fast_travel_mode then
+    return
+  end
+
+  local refusal = self._fast_travel_refusal
+  gui.set_text(self.title, refusal and require("mvtk.ui.menu_text").render(refusal, DisplayText)
+    or DisplayText.ui("map.fast_travel"))
+
+  local ids = self.fast_travel_ids or {}
+  if #ids == 0 then
+    refresh_legend(self)
+    self._center_world = nil
+    return
+  end
+
+  local idx = math.max(1, math.min(#ids, self.fast_travel_index or 1))
+  self.fast_travel_index = idx
+  refresh_legend(self)
+end
+
+local function refresh_fast_travel_nodes(self)
+  local nodes = self.fast_travel_nodes or {}
+  local ids = self.fast_travel_ids or {}
+  local show = self.enabled and self.fast_travel_mode
+
+  -- Ensure consistent on-screen icon size regardless of map zoom.
+  apply_icon_sizes(self)
+
+  local base_color = (CFG and CFG.colors and CFG.colors.icon_bench) or COLORS.icon_bench or v4(1.0, 0.92, 0.20, 0.95)
+  local selected_color = v4(0.25, 0.85, 1.0, 1.0)
+  local boss_color = (CFG and CFG.colors and CFG.colors.icon_boss) or COLORS.icon_boss or v4(0.95, 0.30, 0.30, 0.95)
+  local custom_color = (CFG and CFG.colors and CFG.colors.icon_custom) or COLORS.icon_custom or v4(0.70, 0.40, 0.95, 0.95)
+
+  local function resolve_fast_travel_color(point)
+    local icon = point and point.icon
+    icon = tostring(icon or ""):lower()
+    if icon == "" then
+      return base_color
+    end
+    if icon:find("boss", 1, true) then
+      return boss_color
+    end
+    if icon:find("bench", 1, true) or icon:find("save", 1, true) or icon:find("fast_travel", 1, true)
+      or icon:find("travel", 1, true) or icon:find("checkpoint", 1, true) then
+      return base_color
+    end
+    if icon:find("custom", 1, true) then
+      return custom_color
+    end
+    return base_color
+  end
+
+  local points = FastTravel.lookup_points and FastTravel.lookup_points()
+  -- G8-06c: in fast travel the cursor points only at these stops.
+  local items = {}
+  self._travel_items = items
+  for i, id in ipairs(ids) do
+    -- The node budget reserves MapView.CAPS.travel points; the rest stay
+    -- selectable by name.
+    if i > MapView.CAPS.travel then break end
+    local node = ensure_fast_travel_node(self, i)
+    if show then
+      local point = FastTravel and FastTravel.get_point and FastTravel.get_point(id, points) or nil
+      if point and point.pos and point.show_on_map ~= false then
+        local px, py = world_to_map(point.pos.x, point.pos.y)
+        items[#items + 1] = { px = px, py = py, kind = "travel", label = point.name, index = i }
+        gui.set_position(node, v3(px, py, 0.025))
+        local node_color = (i == (self.fast_travel_index or 1)) and selected_color or resolve_fast_travel_color(point)
+        gui.set_color(node, node_color)
+        gui.set_visible(node, true)
+      else
+        gui.set_visible(node, false)
+      end
+    else
+      gui.set_visible(node, false)
+    end
+  end
+
+  -- Hide any leftover nodes from previous sessions.
+  for i = #ids + 1, #nodes do
+    if nodes[i] then
+      gui.set_visible(nodes[i], false)
+    end
+  end
+end
+
+local function set_fast_travel_selection(self, new_index)
+  self._fast_travel_refusal = nil
+  local ids = self.fast_travel_ids or {}
+  if #ids == 0 then
+    self.fast_travel_index = 1
+    self._center_world = nil
+    refresh_fast_travel_ui(self)
+    refresh_fast_travel_nodes(self)
+    return
+  end
+
+  local idx = ((new_index - 1) % #ids) + 1
+  self.fast_travel_index = idx
+  self._pan = nil
+  local id = ids[idx]
+  local point = FastTravel and FastTravel.get_point and FastTravel.get_point(id) or nil
+  self._center_world = (point and point.pos) and vmath.vector3(point.pos) or nil
+  refresh_fast_travel_ui(self)
+  refresh_fast_travel_nodes(self)
+end
+
+local function enter_fast_travel_mode(self)
+  self.fast_travel_mode = true
+  self._fast_travel_busy = false
+  self._fast_travel_refusal = nil
+  self._travel_hit = nil
+  -- Disable screenshot marker selection while fast traveling.
+  self.selected_marker_index = 0
+  self.marker_selection_active = false
+  hide_screenshot_preview(self)
+
+  -- Get unlocked fast travel points and filter to only those with valid position data
+  local all_unlocked = (FastTravel and FastTravel.get_unlocked_ids and FastTravel.get_unlocked_ids()) or {}
+  self.fast_travel_ids = {}
+  local points = FastTravel.lookup_points and FastTravel.lookup_points()
+  for _, fid in ipairs(all_unlocked) do
+    -- Only include points that have valid position data for teleporting
+    if FastTravel.has_point_data and FastTravel.has_point_data(fid, points) then
+      table.insert(self.fast_travel_ids, fid)
+    end
+  end
+
+  if Debug and Debug.global and Debug.global.enable then
+    print(string.format("[FAST_TRAVEL][MAP] %d teleportable ids (of %d unlocked, %d registered)",
+      #self.fast_travel_ids, #all_unlocked, FastTravel.count and FastTravel.count() or 0))
+    for i, fid in ipairs(self.fast_travel_ids) do
+      local point = FastTravel.get_point and FastTravel.get_point(fid, points)
+      print(string.format("[FAST_TRAVEL][MAP] %d: %s -> %s", i, tostring(fid),
+        point and string.format("(%.0f, %.0f)", point.pos.x, point.pos.y) or "NO DATA"))
+    end
+  end
+  if #self.fast_travel_ids == 0 then
+    self.fast_travel_index = 1
+    self._center_world = nil
+    refresh_fast_travel_ui(self)
+    refresh_fast_travel_nodes(self)
+    return
+  end
+
+  set_fast_travel_selection(self, self.fast_travel_index or 1)
+end
+
+local function exit_fast_travel_mode(self)
+  self.fast_travel_mode = false
+  self._fast_travel_busy = false
+  self._fast_travel_refusal = nil
+  self.fast_travel_ids = {}
+  self.fast_travel_index = 1
+  self._center_world = nil
+  if self.fast_travel_nodes then
+    for _, node in ipairs(self.fast_travel_nodes) do
+      gui.set_visible(node, false)
+    end
+  end
+  gui.set_text(self.title, world_title())
+  refresh_legend(self)
+end
+
+-- Refreshes the icons, then (G8-06c pointing) moves the cursor, fills the info
+-- panel and region labels, and acts on what the cursor snapped to. In fast travel it points only at
+-- unlocked stops, choosing the one A travels to without moving the view.
+-- Elsewhere the centre cursor (controller and keyboard) selects screenshot
+-- markers, which B then deletes; the mouse keeps its hover preview.
+local function point_cursor(self, player_on_screen)
+  refresh_pois(self)
+  refresh_screenshot_markers(self)
+  refresh_fast_travel_nodes(self)
+  local fast = self.fast_travel_mode
+  local items = {}
+  for _, item in ipairs(self._poi_items or {}) do items[#items + 1] = item end
+  -- G8-08c item icons: detail zoom only; the status overlay shows otherwise.
+  local Items = require "mvtk.ui.world_map_items"
+  local snap = self._mini_snapshot
+  local detail = MapView.detail_density(self.map_scale, CFG and CFG.pages) ~= nil
+  local root = self._root_origin or self.map_origin
+  local area = Viewport.design_bounds("picture") or { min_x = 0, min_y = 0, max_x = self.screen_w, max_y = self.screen_h }
+  local tracked = Items.draw(self, { map_root = self.map_root, scale = self.map_scale, detail = detail,
+    world_to_image = world_to_map, fast_travel = fast, poi_bosses = POI and POI.bosses,
+    marker_version = snap and snap.world_marker_version,
+    view = root and MapView.image_rect(root.x, root.y, self.map_scale or 1, area) })
+  for _, item in ipairs(tracked) do items[#items + 1] = item end
+  local origin_world = MapData.world_min
+  Items.update_overlay(self, { node = self.status_node, detail = detail, map_w = MAP_WIDTH, map_h = MAP_HEIGHT,
+    vectors = origin_world and MapVectors, rooms = snap and snap.rooms, world_to_image = world_to_map,
+    vector_to_image = origin_world and function(mx, my)
+      return (mx - origin_world.x) * scale_x, (my - origin_world.y) * scale_y
+    end })
+  if fast then
+    for _, item in ipairs(self._travel_items or {}) do items[#items + 1] = item end
+  else
+    for _, data in pairs(self.screenshot_marker_data or {}) do
+      local marker = data.marker or {}
+      items[#items + 1] = { px = data.map_x, py = data.map_y, kind = "screenshot",
+        label = marker.room_name or marker.label, marker_index = data.marker_index }
+    end
+  end
+  local origin = self._root_origin or self.map_origin or { x = 0, y = 0 }
+  local shift_x = MapData.world_min and (MapData.world_min.x - world_min_x) or 0
+  local shift_y = MapData.world_min and (MapData.world_min.y - world_min_y) or 0
+  local hit = require("mvtk.ui.world_map_overlay").update(self, {
+    screen_w = self.screen_w, screen_h = self.screen_h, origin = origin,
+    scale = self.map_scale or 1, fit = self.zoom_fit, cfg = CFG, map_root = self.map_root,
+    image_to_world = function(px, py) return world_min_x + px / scale_x, world_min_y + py / scale_y end,
+    world_to_image = world_to_map, map_shift = { x = shift_x, y = shift_y },
+    vectors = MapVectors, rooms = snap and snap.rooms, items = items, pointer = self._pointer,
+    player_on_screen = player_on_screen, fast_travel = fast,
+    legend_visible = self._show_legend and true or false, legend_pos = self._legend_pos,
+    room_info = function(room_id) return Items.room_info(self, room_id) end,
+  })
+  if fast then
+    -- Only a moved mouse or a stick pan points, and only onto a new stop, so
+    -- the centre cursor never undoes an Up/Down choice on an unmoving map.
+    local index = (self._pointer or self._pan) and hit and hit.index or nil
+    if index and index ~= self._travel_hit and index ~= self.fast_travel_index then
+      self.fast_travel_index = index
+      self._fast_travel_refusal = nil
+      refresh_fast_travel_ui(self)
+      refresh_fast_travel_nodes(self)
+    end
+    self._travel_hit = index
+    return
+  end
+  local index = hit and hit.kind == "screenshot" and hit.marker_index or nil
+  if index ~= self._deselected_marker then self._deselected_marker = nil end
+  if self._pointer then
+    if self.marker_selection_active then clear_marker_selection(self) end
+  elseif index and index ~= self._deselected_marker then
+    if index ~= self.selected_marker_index then select_marker(self, index) end
+  elseif self.marker_selection_active then
+    clear_marker_selection(self)
+  end
+end
+
+-- The overview-image point at the view centre now.
+local function view_center(self)
+  local origin, scale = self._root_origin, self.map_scale or 1
+  if not origin or scale <= 0 then return nil end
+  return { x = (self.screen_w * 0.5 - origin.x) / scale, y = (self.screen_h * 0.5 - origin.y) / scale }
+end
+
+-- Held stick and keys pan at pan.speed design pixels per second, at any zoom.
+local function pan_update(self, dt)
+  local vx, vy = MapView.pan_vector(self._pan_sticks, self._pan_keys)
+  if vx == 0 and vy == 0 then return end
+  local center = self._pan or view_center(self)
+  if not center then return end
+  local step = ((CFG.pan and CFG.pan.speed) or 900) * (dt or 0) / math.max(1e-6, self.map_scale or 1)
+  self._pan = { x = center.x + vx * step, y = center.y + vy * step }
+end
+
+function update(self, dt)
+  if not self.enabled then return end
+  if self._prompt_revision ~= DisplayText.revision() then
+    refresh_legend(self)
+    refresh_marker_text(self)
+    gui.set_text(self.title, self.fast_travel_mode and DisplayText.ui("map.fast_travel") or world_title())
+  end
+
+  local sw, sh = design_size()
+  if sw ~= self.screen_w or sh ~= self.screen_h or self._view_revision ~= Viewport.revision() then
+    apply_map_layout(self)
+  end
+
+  local mini = rawget(_G, "MINIMAP_MODULE")
+  local player_w
+  local player_px, player_py
+  if mini and mini.snapshot then
+    local snap = mini.snapshot()
+    if snap then
+      self._mini_snapshot = snap
+      if MapData.world_min and MapData.world_max then
+        local shift = snap.origin_shift or {}
+        world_min_x = MapData.world_min.x - (shift.x or 0)
+        world_min_y = MapData.world_min.y - (shift.y or 0)
+        world_max_x = MapData.world_max.x - (shift.x or 0)
+        world_max_y = MapData.world_max.y - (shift.y or 0)
+        scale_x = (MapData.scale and MapData.scale.x) or MAP_WIDTH / math.max(1, world_max_x - world_min_x)
+        scale_y = (MapData.scale and MapData.scale.y) or MAP_HEIGHT / math.max(1, world_max_y - world_min_y)
+      elseif snap.world_bb then
+        local bb = snap.world_bb
+        local new_min_x = bb.min_x
+        local new_max_x = bb.max_x
+        local new_min_y = bb.min_y
+        local new_max_y = bb.max_y
+        if new_min_x and new_max_x and new_max_x ~= new_min_x then
+          world_min_x = new_min_x
+          world_max_x = new_max_x
+          local world_w = math.max(1e-3, new_max_x - new_min_x)
+          scale_x = MAP_WIDTH / world_w
+        end
+        if new_min_y and new_max_y and new_max_y ~= new_min_y then
+          world_min_y = new_min_y
+          world_max_y = new_max_y
+          local world_h = math.max(1e-3, new_max_y - new_min_y)
+          scale_y = MAP_HEIGHT / world_h
+        end
+      end
+      if snap.player then
+        player_w = snap.player
+        player_px, player_py = world_to_map(snap.player.x or 0, snap.player.y or 0)
+        player_px = math.max(0, math.min(MAP_WIDTH, player_px))
+        player_py = math.max(0, math.min(MAP_HEIGHT, player_py))
+      end
+    end
+  end
+
+  local offset_cfg = (CFG and CFG.player_offset_px) or { x = 0, y = 0 }
+  local offset_x = offset_cfg.x or 0
+  local offset_y = offset_cfg.y or 0
+
+  pan_update(self, dt)
+  local center_w = self._center_world or player_w
+  local center_px, center_py
+  if self._pan then
+    center_px, center_py = self._pan.x, self._pan.y
+  elseif center_w then
+    center_px, center_py = world_to_map(center_w.x or 0, center_w.y or 0)
+    center_px = math.max(0, math.min(MAP_WIDTH, center_px))
+    center_py = math.max(0, math.min(MAP_HEIGHT, center_py))
+  end
+
+  if center_px and center_py then
+    -- Following keeps the map's edges on screen (today's rule); a panned view
+    -- may show pan.margin_px beyond them.
+    local margin = self._pan and ((CFG.pan and CFG.pan.margin_px) or 0) or 0
+    local origin_x, origin_y, cx, cy = MapView.root_origin(self.screen_w, self.screen_h, MAP_WIDTH, MAP_HEIGHT,
+      self.map_scale, center_px, center_py, margin)
+    if self._pan then self._pan.x, self._pan.y = cx, cy end
+
+    gui.set_position(self.map_root, v3(origin_x, origin_y, 0.01))
+    self._root_origin = { x = origin_x, y = origin_y }
+  end
+
+  if player_px and player_py then
+    gui.set_visible(self.player_node, true)
+    self._player_visible = true
+    gui.set_position(self.player_node, v3(player_px + offset_x, player_py + offset_y, 0.03))
+  else
+    gui.set_visible(self.player_node, false)
+    self._player_visible = false
+  end
+
+  point_cursor(self, player_px ~= nil)
+  if self.map_image then
+    ensure_map_layers(self)
+    -- Detail pages and their fog first: the overview fog turns off only once
+    -- the detail fog has a texture (fail closed).
+    if not update_detail(self) then
+      self._fog_world = self._fog_world or {}
+      local bounds = self._fog_world
+      bounds.min_x, bounds.min_y = world_min_x, world_min_y
+      bounds.max_x, bounds.max_y = world_min_x + MAP_WIDTH / scale_x, world_min_y + MAP_HEIGHT / scale_y
+      Fog.update(self.fog, MAP_WIDTH, MAP_HEIGHT, bounds)
+    end
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if CFG.enabled==false and (message_id==hash("open_world_map") or message_id==hash("toggle_world_map")) then
+    if message and message.interaction_result then require("mvtk.game.interaction_result").report(message.interaction_result, false) end
+    return
+  end
+  message = message or {}
+  if message_id == hash("open_world_map") then
+    self._fast_travel_source = message.source
+    if message.mode == "fast_travel" or message.fast_travel then
+      message.show_title = (message.show_title ~= false)
+      message.show_legend = (message.show_legend ~= false)
+    end
+    set_enabled(self, true, message)
+    if message.mode == "fast_travel" or message.fast_travel then
+      enter_fast_travel_mode(self)
+    else
+      exit_fast_travel_mode(self)
+    end
+    Pause.set(true)
+    if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+    if message.interaction_result then require("mvtk.game.interaction_result").report(message.interaction_result, true) end
+  elseif message_id == hash("close_world_map") then
+    set_enabled(self, false, message)
+    exit_fast_travel_mode(self)
+    Pause.set(false)
+    if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+  elseif message_id == hash("toggle_world_map") then
+    if self.enabled then
+      set_enabled(self, false, message)
+      exit_fast_travel_mode(self)
+      Pause.set(false)
+      if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+    else
+      set_enabled(self, true, message)
+      self._fast_travel_source = message.source
+      if message.mode == "fast_travel" or message.fast_travel then
+        enter_fast_travel_mode(self)
+      else
+        exit_fast_travel_mode(self)
+      end
+      Pause.set(true)
+      if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(true) end
+    end
+  elseif message_id == hash("reload_minimap") or message_id == hash("minimap_reload_requested") then
+    world_map_log('[WORLD_MAP] Reload request received from: ' .. tostring(sender))
+    local supplied = message and message.map
+    local data = load_map_data(supplied, 'reload')
+    if data then
+      MapData = data
+      -- The outlines must match the reloaded overview, or pages stay off.
+      MapVectors, map_vectors_note = require("mvtk.map.layout_vectors").load(MapData)
+      if self.page_cache then self.page_cache:clear() end
+      require("mvtk.ui.world_map_overlay").reset(self)
+      if not self.fast_travel_mode then gui.set_text(self.title, world_title()) end
+      refresh_metrics()
+      apply_map_layout(self)
+      refresh_pois(self)
+
+      -- Try to use updated atlas if provided
+      if message and message.use_updated_atlas then
+        world_map_log('[WORLD_MAP] Loading updated atlas...')
+
+        -- Recreate map image node if it was deleted
+        if not self.map_image and self.map_root then
+          world_map_log('[WORLD_MAP] Recreating map image node for updated atlas')
+          self.map_image = gui.new_box_node(v3(0,0,0), v3(MAP_WIDTH, MAP_HEIGHT, 0))
+          gui.set_parent(self.map_image, self.map_root, false)
+          gui.set_pivot(self.map_image, gui.PIVOT_SW)
+        end
+
+        if self.map_image then
+          local refreshed = false
+          local last_error = nil
+          for _, img_path in ipairs(HOT_RELOAD_IMAGE_PATHS) do
+            local img_file = io and io.open and io.open(img_path, "rb")
+            if img_file then
+              local img_data = img_file:read("*all")
+              img_file:close()
+
+              world_map_log('[WORLD_MAP] Decoding updated image: ' .. tostring(img_path))
+              local img_ok, img = decode_image(img_data)
+              if img_ok and img and img.buffer and img.width and img.height then
+                local texture_name = UPDATED_TEXTURE_NAME
+                local texture_ok = update_dynamic_texture(texture_name, img.width, img.height, img.buffer)
+
+                if texture_ok then
+                  gui.set_texture(self.map_image, texture_name)
+                  local scale_x = MAP_WIDTH / img.width
+                  local scale_y = MAP_HEIGHT / img.height
+                  gui.set_scale(self.map_image, v3(scale_x, scale_y, 1))
+                  gui.set_size(self.map_image, v3(img.width, img.height, 0))
+                  world_map_log('[WORLD_MAP] Successfully applied updated texture (' .. img.width .. 'x' .. img.height .. ') scaled to fit')
+                  refreshed = true
+                  break
+                else
+                  last_error = "dynamic texture update failed"
+                end
+              else
+                last_error = tostring(img)
+                world_map_log('[WORLD_MAP] Failed to decode updated image: ' .. tostring(img))
+              end
+            else
+              last_error = "image file unavailable"
+            end
+          end
+
+          if not refreshed then
+            world_map_log('[WORLD_MAP] Runtime image refresh unavailable (' .. tostring(last_error) .. '); reverting to atlas')
+            gui.set_texture(self.map_image, TEXTURE_ID)
+            gui.play_flipbook(self.map_image, FLIP_ID)
+          end
+        end
+      elseif self.map_image then
+        gui.set_texture(self.map_image, TEXTURE_ID)
+        gui.play_flipbook(self.map_image, FLIP_ID)
+      end
+      world_map_log('[WORLD_MAP] Map data reloaded successfully')
+    else
+      world_map_log('[WORLD_MAP] Failed to reload map data')
+    end
+  elseif message_id == hash("use_original_texture") then
+    world_map_log('[WORLD_MAP] Unloading world map - deleting map node and closing')
+    if self.map_image then
+      -- gui.delete_node is recursive: pages, their root and both fogs go too.
+      gui.delete_node(self.map_image)
+      self.map_image = nil
+      reset_detail(self)
+      world_map_log('[WORLD_MAP] Map image node deleted')
+    end
+    set_enabled(self, false)
+  elseif message_id == hash("reveal_area") then
+    -- Area revealed - refresh POIs to show newly revealed markers
+    world_map_log('[WORLD_MAP] Area revealed: ' .. tostring(message.area_id))
+    refresh_pois(self)
+  elseif message_id == hash("refresh_screenshot_markers") then
+    -- Screenshot marker added/removed - refresh display
+    world_map_log('[WORLD_MAP] Refreshing screenshot markers')
+    refresh_screenshot_markers(self)
+  end
+end
+
+-- Pan, zoom, centre, drag and travel-stop inputs (G8-06 slice b correction
+-- 13). Returns true when the input was the map's. Stick ids are tested here,
+-- before the menu up/down checks that also list gamepad_lstick_up/down. In
+-- fast-travel mode the keyboard keeps today's up/down selection, so pan keys
+-- are left to it.
+local function map_input(self, action_id, action, fast_travel)
+  -- G8-06c cursor: the mouse pointer once the mouse moves, the view centre
+  -- again after any controller input.
+  if action_id == nil and action.x then
+    local x, y, inside = Viewport.pointer(action)
+    self._pointer = (x and inside ~= false) and { x = x, y = y } or nil
+  elseif action.gamepad ~= nil then
+    self._pointer = nil
+  end
+  local row = MapView.input(action_id)
+  local drag = self._drag
+  if drag and (action_id == nil or (row and row.kind == "drag")) then
+    local x, y = Viewport.pointer(action)
+    if x and drag.x then
+      local center = self._pan or view_center(self)
+      local scale = math.max(1e-6, self.map_scale or 1)
+      if center then self._pan = { x = center.x - (x - drag.x) / scale, y = center.y - (y - drag.y) / scale } end
+    end
+    if x then drag.x, drag.y = x, y end
+    if action.released then self._drag = nil end
+    return true
+  end
+  if not row then return false end
+  local kind, name = row.kind, row.name
+  if kind == "pan_stick" then
+    self._pan_sticks = self._pan_sticks or {}
+    -- The value decides: Defold reports a stick released while it is still pushed.
+    local value = tonumber(action.value)
+    local magnitude = value and math.abs(value) or ((not action.released) and 0 or nil)
+    self._pan_sticks[name] = (magnitude and magnitude > 0) and magnitude or nil
+    return true
+  elseif kind == "pan_key" then
+    if fast_travel then return false end
+    self._pan_keys = self._pan_keys or {}
+    if action.pressed then self._pan_keys[name] = true elseif action.released then self._pan_keys[name] = nil end
+    return true
+  elseif kind == "zoom_in" or kind == "zoom_out" then
+    local dir = kind == "zoom_in" and 1 or -1
+    if MapView.is_analog(name) then
+      self._analog = self._analog or {}
+      local value = tonumber(action.value)
+      local over
+      if value then
+        over = math.abs(value) > (self._analog[name] and MapView.ANALOG_RELEASE or MapView.ANALOG_STEP)
+      else
+        over = not action.released and self._analog[name] or false
+      end
+      if over and not self._analog[name] then zoom_by(self, dir) end
+      self._analog[name] = over
+    elseif action.pressed then
+      local x, y, inside = Viewport.pointer(action)
+      if name:match("^mouse_wheel") and inside then zoom_by(self, dir, x, y) else zoom_by(self, dir) end
+    end
+    return true
+  elseif kind == "center" then
+    if action.pressed then self._pan = nil end
+    return true
+  elseif kind == "drag" then
+    if action.pressed then
+      local x, y = Viewport.pointer(action)
+      self._drag = { x = x, y = y }
+    end
+    return true
+  elseif kind == "legend" then
+    -- A creator who made this input a menu command keeps the command.
+    if InputPrompts.menu_matches("confirm", action_id) or InputPrompts.menu_matches("back", action_id) then return false end
+    if action.pressed then
+      self._legend_shown = not self._show_legend
+      self._show_legend = self._legend_shown
+      gui.set_visible(self.legend, self.enabled and self._show_legend)
+    end
+    return true
+  elseif fast_travel and (kind == "previous_stop" or kind == "next_stop") then
+    if action.pressed then
+      set_fast_travel_selection(self, (self.fast_travel_index or 1) + (kind == "next_stop" and 1 or -1))
+    end
+    return true
+  end
+  return false
+end
+
+function final(self)
+  if InputCtl and InputCtl.set_hud_covered then InputCtl.set_hud_covered(self, false) end
+end
+
+function on_input(self, action_id, action)
+  if InputCtl and InputCtl.note_device then InputCtl.note_device(action_id, action) end
+  local menu_pressed = require("mvtk.ui.menu_nav").pressed(self, action_id, action)
+  if not self.enabled or not action then return end
+
+  if self.fast_travel_mode then
+    -- Controller hotplug ids belong to the input controller: never consume them.
+    if require("mvtk.ui.menu_nav").lifecycle(action_id) then return end
+    if map_input(self, action_id, action, true) then return true end
+    if action_id and menu_pressed then
+      if InputPrompts.menu_matches("down", action_id) then
+        set_fast_travel_selection(self, (self.fast_travel_index or 1) + 1)
+        return true
+      elseif InputPrompts.menu_matches("up", action_id) then
+        set_fast_travel_selection(self, (self.fast_travel_index or 1) - 1)
+        return true
+      elseif InputPrompts.menu_matches("confirm", action_id) then
+        if self._fast_travel_busy then
+          return true
+        end
+        self._fast_travel_busy = true
+        local ids = self.fast_travel_ids or {}
+        local id = ids[self.fast_travel_index or 1]
+        if id and FastTravel and FastTravel.teleport_to and FastTravel.can_travel and FastTravel.can_travel(self._fast_travel_source) then
+          -- Teleport with fade transition and unlock verification
+          local ok_call, ok, reason, cost = pcall(FastTravel.teleport_to, id, nil, { fade = true, load_room = true, update_camera = true, source = self._fast_travel_source })
+          if ok_call and ok then
+            exit_fast_travel_mode(self)
+            set_enabled(self, false)
+            Pause.set(false)
+            if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+            return true
+          end
+          -- Keep map open if teleport failed.
+          world_map_log("[FAST_TRAVEL] Teleport failed for id: " .. tostring(id))
+          clear_fade_overlay()
+          -- The paused map holds toasts, so the title says why until the selection moves.
+          self._fast_travel_refusal = ok_call and reason == "cost"
+            and { key = "gameplay.travel_cost", params = { cost = { currency = cost } } } or nil
+          self._fast_travel_busy = false
+          refresh_fast_travel_ui(self)
+          return true
+        end
+        self._fast_travel_busy = false
+        return true
+      elseif InputPrompts.menu_matches("back", action_id) then
+        exit_fast_travel_mode(self)
+        set_enabled(self, false)
+        Pause.set(false)
+        if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+        return true
+      end
+    end
+    -- Consume input while in fast travel mode so it doesn't fall through to other menus.
+    return true
+  end
+
+  -- G8-07 stamps: the open palette takes every input, so panning stops.
+  if require("mvtk.ui.world_map_stamps").input(self, action_id, action, menu_pressed) then return true end
+  if map_input(self, action_id, action, false) then return true end
+
+  -- Handle mouse movement for screenshot marker hover
+  if not action_id then
+    -- Mouse move - check for hover over screenshot markers (only if not using controller selection)
+    if not self.marker_selection_active then
+      local dx, dy, inside = Viewport.pointer(action)
+      local marker = inside and pick_screenshot_marker(self, action.x, action.y) or nil
+      if marker then
+        if marker.id ~= self.hovered_marker_id then
+          self.hovered_marker_id = marker.id
+          show_screenshot_preview(self, marker, dx, dy)
+        end
+      elseif self.hovered_marker_id then
+        hide_screenshot_preview(self)
+      end
+    end
+    return
+  end
+
+  -- Handle button presses
+  if not action.pressed then return end
+
+  -- B button: delete selected marker if one is selected, otherwise close map
+  if InputPrompts.menu_matches("back", action_id) then
+    -- Back deletes a selected marker; a Close input its legend does not show
+    -- (P, Start) only closes the map.
+    if self.marker_selection_active and self.selected_marker_index > 0
+      and not require("mvtk.ui.menu_nav").unshown_close(action_id) then
+      -- Delete the selected marker
+      if delete_selected_marker(self) then
+        world_map_log("[WORLD_MAP] Marker deleted via B button")
+        return true  -- Don't close map after deleting
+      end
+    end
+    -- Close the map
+    clear_marker_selection(self)
+    set_enabled(self, false)
+    Pause.set(false)
+    if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+    -- Consumed: the player's pause key (Esc, P, Start) and map key (M) must not see the press that closed the map.
+    return true
+  end
+
+  -- A button: confirm selection / deselect marker
+  if InputPrompts.menu_matches("confirm", action_id) then
+    if self.marker_selection_active then
+      -- Deselect current marker; pointing selects it again only after the
+      -- cursor leaves it.
+      self._deselected_marker = self.selected_marker_index
+      clear_marker_selection(self)
+    end
+    return
+  end
+
+  -- LB / Tab, "Minimap" in the legend: close to the minimap panel, even one the player had switched off.
+  -- It used to cycle the minimap from its open-map mode, which is Off.
+  if action_id == hash("gamepad_lshoulder") or action_id == hash("key_tab") then
+    clear_marker_selection(self)
+    set_enabled(self, false, { source = "minimap" })
+    Pause.set(false)
+    if InputCtl and InputCtl.set_blocked then InputCtl.set_blocked(false) end
+    return true
+  end
+end

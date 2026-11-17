@@ -1,0 +1,136 @@
+-- Swinging blade recovered from the original kinematic hazard. All placed
+-- geometry is baked; contacts share the hazard policy and one player cooldown.
+local HazardRegistry = require "mvtk.hazards.hazard_registry"
+local PU = require "mvtk.prefabs.prefab_utils"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local SwitchState = require "mvtk.world.switch_state"
+
+go.property("pendulum_id", "")
+go.property("room_id", "")
+go.property("arc_degrees", 70)
+go.property("swing_seconds", 1.2)
+go.property("start_delay", 0)
+go.property("start_from_right", false)
+go.property("blade_width", 0)
+go.property("blade_height", 48)
+go.property("rect_width", 64)
+go.property("rect_height", 256)
+go.property("damage", 1)
+go.property("damage_type", "") -- empty/none uses slash
+go.property("damage_cooldown", 0.5)
+go.property("stun_t", -1)
+go.property("knockback_force", 300)
+go.property("knockback_lift", 150)
+go.property("on_contact", "type_default")
+go.property("return_damage", -1)
+go.property("enabled", true)
+
+-- The swing is stepped in update, not go.animate: menu pause keeps engine time
+-- running (mvtk/core/pause.lua), so an engine animation would swing behind menus.
+local function swing_to(self)
+    local angle = require("mvtk.hazards.pendulum_geometry").swing_angle(self.arc_degrees,
+        self.start_from_right, self.swing_seconds, self.start_delay, self.swing_clock)
+    if angle ~= self.last_angle then self.swing_sign = angle > self.last_angle and 1 or -1 end
+    self.last_angle = angle
+    go.set(".", "euler.z", angle)
+end
+
+local function start_swing(self)
+    self.swing_clock, self.swing_sign = 0, self.start_from_right and -1 or 1
+    local start = math.abs(self.arc_degrees) / 2 * (self.start_from_right and 1 or -1)
+    self.last_angle = start
+    go.set(".", "euler.z", start)
+end
+
+local function apply_enabled(self, enabled)
+    self.enabled, self.is_enabled = enabled == true, enabled == true
+    if self.is_enabled then start_swing(self)
+    else self.parts = {} end
+    msg.post("#blade", self.is_enabled and "enable" or "disable")
+    require("mvtk.core.util").record_component_enabled("#blade", self.is_enabled)
+end
+
+local function apply_signal(self, message_id, message)
+    if message_id == hash("activate") then apply_enabled(self, true)
+    elseif message_id == hash("deactivate") then apply_enabled(self, false)
+    elseif message_id == hash("toggle") then apply_enabled(self, not self.is_enabled)
+    elseif not ToggleMessages.handle(self, message_id, message, apply_enabled, {truthy = true}) then return false end
+    return true
+end
+
+local function contact(self)
+    if not HazardRegistry.elapsed_cooldown_ready(self.last_damage_at, "player", self.clock, self.damage_cooldown) then return end
+    HazardRegistry.mark_elapsed_cooldown(self.last_damage_at, "player", self.clock)
+    if not self._contact_mode then
+        local Contact = require "mvtk.hazards.hazard_contact"
+        local mode, lethal = Contact.resolve(self.on_contact, false, {name = "pendulum_hazard"})
+        local settings = Contact.settings()
+        self._contact_mode, self._contact_lethal = Contact.effective(mode, lethal, settings), lethal
+        self._return_damage = Contact.return_damage(self.return_damage, nil, settings)
+    end
+    local dtype = self.damage_type
+    if dtype == "" or dtype == "none" then dtype = "slash" end
+    local payload = {amount = self.damage, damage_type = dtype, source_actor = go.get_id(), source_attack = "pendulum_hazard",
+        kx = self.swing_sign * self.knockback_force, ky = self.knockback_lift,
+        stun_t = HazardRegistry.stun_duration(self.stun_t)}
+    if self._contact_mode == "damage" then
+        HazardRegistry.post_damage(PU.get_player_url(), payload)
+    else
+        msg.post(PU.get_player_url(), "mvtk_hazard_contact",
+            require("mvtk.hazards.hazard_contact").contact_message(payload, self._contact_mode,
+                self._contact_lethal, self._return_damage,
+                {hazard_id = self.pendulum_key, hazard_type = "pendulum_hazard"},
+                {x = self.sweep_position.x, y = self.sweep_position.y, w = self.sweep_width, h = self.sweep_height}))
+    end
+end
+
+function init(self)
+    self.clock, self.parts, self.last_damage_at = 0, {}, {}
+    self.pendulum_key = PU.resolve_id(self.pendulum_id) or tostring(go.get_id())
+    apply_enabled(self, self.enabled)
+    go.update_world_transform()
+    local pivot = go.get_world_position()
+    local dx, dy, w, h = require("mvtk.hazards.pendulum_geometry").swept_box(self.rect_height,
+        self.blade_width > 0 and self.blade_width or self.rect_width, self.blade_height, self.arc_degrees)
+    self.sweep_position, self.sweep_width, self.sweep_height = pivot + vmath.vector3(dx, dy, 0), w, h
+    require("mvtk.player.safe_ground").register_blocker(go.get_id(), self, self.sweep_position, w, h)
+    TriggerBus.register(self.pendulum_key, msg.url())
+    SwitchState.replay(require("mvtk.core.flags"), self.pendulum_key, function(on, text)
+        apply_signal(self, hash(text ~= "" and text or (on and "activate" or "deactivate")), {replayed = true})
+    end)
+end
+
+function update(self, dt)
+    if self._room_hidden then return end
+    if require("mvtk.core.pause").get() then return end
+    -- Signals that arrived during pause apply in order now, so a reset never sticks.
+    local pending = self.pending_signals
+    if pending then
+        self.pending_signals = nil
+        for _, entry in ipairs(pending) do apply_signal(self, entry[1], entry[2]) end
+    end
+    self.clock = self.clock + dt
+    if not self.is_enabled then return end
+    self.swing_clock = self.swing_clock + dt
+    swing_to(self)
+    if next(self.parts) then contact(self) end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if not self.is_enabled or (message.other_group or message.group) ~= hash("player") or not message.other_id then return end
+        -- Track exits even during pause: the engine keeps physics running.
+        self.parts[message.other_id] = message.enter and true or nil
+    elseif ToggleMessages.handle(self, message_id, message) then
+        -- Room sleep/wake must arrive even while gameplay signals are queued.
+    elseif require("mvtk.core.pause").get() then
+        self.pending_signals = self.pending_signals or {}
+        table.insert(self.pending_signals, {message_id, message})
+    else apply_signal(self, message_id, message) end
+end
+
+function final(self)
+    require("mvtk.player.safe_ground").unregister_blocker(go.get_id())
+    TriggerBus.unregister(self.pendulum_key, msg.url())
+end

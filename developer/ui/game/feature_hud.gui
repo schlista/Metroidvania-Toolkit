@@ -1,0 +1,318 @@
+script: "/developer/ui/game/feature_hud.gui_script"
+fonts {
+  name: "system"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+textures {
+  name: "gameplay_visuals"
+  texture: "/developer/assets/atlas/gameplay_visuals.atlas"
+}
+material: "/builtins/materials/gui.material"
+nodes {
+  position { x: 960.0 y: 540.0 }
+  size { x: 1920.0 y: 1080.0 }
+  type: TYPE_BOX
+  id: "root"
+  alpha: 0.0
+}
+nodes {
+  size { x: 400.0 y: 160.0 }
+  color { x: 0.06 y: 0.08 z: 0.12 }
+  type: TYPE_BOX
+  id: "notice_panel"
+  pivot: PIVOT_NW
+  parent: "root"
+  enabled: false
+}
+nodes {
+  position { x: 60.0 y: -12.0 }
+  scale { x: 1.428571429 y: 1.428571429 }
+  size { x: 229.600000000 y: 22.400000000 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "notice_title"
+  pivot: PIVOT_NW
+  parent: "notice_panel"
+  line_break: true
+  inherit_alpha: true
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  position { x: 12.0 y: -56.0 }
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 292.444444444 y: 71.555555556 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "notice_body"
+  pivot: PIVOT_NW
+  parent: "notice_panel"
+  line_break: true
+  inherit_alpha: true
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  position { x: 12.0 y: -12.0 }
+  size { x: 36.0 y: 36.0 }
+  type: TYPE_BOX
+  id: "notice_icon"
+  pivot: PIVOT_NW
+  parent: "notice_panel"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 280.000000000 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "quick_item_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.000000000 y: -22.000000000 }
+  size { x: 8.000000000 y: 5.000000000 }
+  type: TYPE_BOX
+  id: "quick_item_pip"
+  pivot: PIVOT_NW
+  parent: "quick_item_root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  size { x: 200.000000000 y: 108.000000000 }
+  type: TYPE_BOX
+  id: "status_chips_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  size { x: 200.000000000 y: 24.000000000 }
+  type: TYPE_BOX
+  id: "status_chip_bg"
+  pivot: PIVOT_NW
+  parent: "status_chips_root"
+  alpha: 0.3
+  enabled: false
+}
+nodes {
+  position { x: 6.000000000 y: -3.000000000 }
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 146.222222222 y: 14.000000000 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "status_chip_text"
+  pivot: PIVOT_NW
+  parent: "status_chips_root"
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 124.444444444 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "play_timer_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 155.555555556 y: 23.333333333 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "level_xp_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.000000000 y: -17.111111111 }
+  size { x: 155.555555556 y: 6.222222222 }
+  color { x: 0.12 y: 0.14 z: 0.18 }
+  type: TYPE_BOX
+  id: "level_xp_background"
+  pivot: PIVOT_NW
+  parent: "level_xp_root"
+  inherit_alpha: true
+}
+nodes {
+  position { x: 0.000000000 y: -17.111111111 }
+  size { x: 155.555555556 y: 6.222222222 }
+  color { x: 0.3 y: 0.7 z: 1.0 }
+  type: TYPE_BOX
+  id: "level_xp_fill"
+  pivot: PIVOT_NW
+  parent: "level_xp_root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_MANUAL
+}
+nodes {
+  size { x: 200.0 y: 66.0 }
+  type: TYPE_BOX
+  id: "powerups_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 155.555555556 y: 17.111111111 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "powerup_row"
+  pivot: PIVOT_NW
+  parent: "powerups_root"
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  size { x: 200.0 y: 24.0 }
+  type: TYPE_BOX
+  id: "weapon_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  size { x: 24.0 y: 24.0 }
+  type: TYPE_BOX
+  id: "weapon_icon"
+  pivot: PIVOT_NW
+  parent: "weapon_root"
+  enabled: false
+  size_mode: SIZE_MODE_MANUAL
+}
+nodes {
+  position { x: 28.0 }
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 133.777777778 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "weapon_label"
+  pivot: PIVOT_NW
+  parent: "weapon_root"
+  size_mode: SIZE_MODE_MANUAL
+
+  font_size: 14
+}
+nodes {
+  size { x: 440.0 y: 64.0 }
+  type: TYPE_BOX
+  id: "area_title_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  position { x: 220.0 }
+  scale { x: 1.428571429 y: 1.428571429 }
+  size { x: 308.000000000 y: 44.800000000 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "area_title_text"
+  pivot: PIVOT_N
+  line_break: true
+  parent: "area_title_root"
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 280.000000000 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "goal_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  enabled: false
+  size_mode: SIZE_MODE_MANUAL
+
+  font_size: 14
+}
+nodes {
+  size { x: 200.000000000 y: 48.000000000 }
+  type: TYPE_BOX
+  id: "trial_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 155.555555556 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "trial_goal"
+  pivot: PIVOT_NW
+  parent: "trial_root"
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.000000000 y: -24.000000000 }
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 155.555555556 y: 18.666666667 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "trial_clock"
+  pivot: PIVOT_NW
+  parent: "trial_root"
+
+  font_size: 14
+}
+nodes {
+  size { x: 240.0 y: 56.0 }
+  type: TYPE_BOX
+  id: "countdown_root"
+  pivot: PIVOT_NW
+  parent: "root"
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  position { x: 120.0 }
+  scale { x: 1.285714286 y: 1.285714286 }
+  size { x: 186.666666667 y: 17.111111111 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "countdown_label"
+  pivot: PIVOT_N
+  parent: "countdown_root"
+
+  font_size: 14
+}
+nodes {
+  position { x: 120.0 y: -22.0 }
+  scale { x: 1.428571429 y: 1.428571429 }
+  size { x: 168.000000000 y: 23.100000000 }
+  type: TYPE_TEXT
+  font: "system"
+  id: "countdown_clock"
+  pivot: PIVOT_N
+  parent: "countdown_root"
+
+  font_size: 14
+}
+adjust_reference: ADJUST_REFERENCE_PARENT
+max_nodes: 128

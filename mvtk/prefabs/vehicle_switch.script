@@ -1,0 +1,11 @@
+-- Separate baked component endpoint keeps track and activation channels distinct.
+-- TriggerBus payloads do not carry their destination channel.
+function on_message(self, message_id, message)
+    local signal = require("mvtk.world.switch_state").read_signal(message)
+    local on
+    if signal then on = signal.on
+    elseif message_id == hash("activate") or message_id == hash("trigger") then on = true
+    elseif message_id == hash("deactivate") then on = false
+    else return end
+    msg.post("#script", "vehicle_track_switch", {on=on})
+end

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Upgrade Station" type="upgrade_station" width="32" height="32">
+  <properties>
+   <property name="upgrade_catalog" type="string" propertytype="shops" value="forge"/>
+   <property name="presentation" type="class" propertytype="upgrade_station_presentation">
+    <properties>
+     <property name="prompt_text" type="string" value="Upgrade"/>
+     <property name="menu_title" type="string" value=""/>
+     <property name="range" type="int" value="96"/>
+     <property name="show_on_map" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="access" type="class" propertytype="upgrade_station_access">
+    <properties>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="locked_text" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="upgrade_station_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

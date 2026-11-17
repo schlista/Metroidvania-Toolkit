@@ -1,0 +1,29 @@
+-- An editable wave point; registering it never creates an enemy.
+go.property("encounter_id", "")
+go.property("room_id", "")
+go.property("spawn_id", "")
+go.property("enemy_type", "default")
+go.property("archetype", "")
+go.property("telegraph_effect", "")
+go.property("encounter_wave", 1)
+go.property("spawn_count", 1)
+go.property("size", -1)
+go.property("spawn_delay", 0)
+go.property("spawn_interval", 0.5)
+go.property("facing", 0)
+go.property("elite", false)
+
+local Registry = require "mvtk.enemies.encounter_registry"
+
+function init(self)
+    go.update_world_transform()
+    self.position = go.get_world_position()
+    Registry.register_spawn(self.room_id, self.spawn_id, self)
+    -- Recorded, so a streamed room's show (which re-enables every component)
+    -- keeps the editor marker hidden.
+    require("mvtk.core.util").post_component_enabled("#sprite", false)
+end
+
+function final(self)
+    Registry.unregister_spawn(self.room_id, self.spawn_id)
+end

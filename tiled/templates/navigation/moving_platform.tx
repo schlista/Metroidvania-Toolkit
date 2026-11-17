@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Moving Platform" type="platform" width="128" height="32">
+  <properties>
+   <property name="platform_type" propertytype="platform_types" value="horizontal"/>
+   <property name="platform_id" type="string" value=""/>
+   <property name="path" type="class" propertytype="moving_platform_path">
+    <properties>
+     <property name="path_name" type="string" value=""/>
+     <property name="distance" type="int" value="200"/>
+     <property name="loop_mode" propertytype="loop_modes" value="pingpong"/>
+    </properties>
+   </property>
+   <property name="motion_and_timing" type="class" propertytype="moving_platform_motion_and_timing">
+    <properties>
+     <property name="speed" type="int" value="50"/>
+     <property name="wait_time" type="float" value="1.0"/>
+     <property name="start_delay" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="collision_and_rider" type="class" propertytype="moving_platform_collision_and_rider">
+    <properties>
+     <property name="co_y_offset" type="float" value="0"/>
+     <property name="sensor_y_offset" type="float" value="0"/>
+     <property name="player_parent" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="moving_platform_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+     <property name="trigger_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="vehicle" type="class" propertytype="moving_platform_vehicle">
+    <properties>
+     <property name="vehicle_control" propertytype="vehicle_controls" value="none"/>
+     <property name="vehicle_max_speed" type="float" value="400"/>
+     <property name="vehicle_acceleration" type="float" value="600"/>
+     <property name="vehicle_brake" type="float" value="1200"/>
+     <property name="vehicle_drag" type="float" value="0"/>
+     <property name="vehicle_end" propertytype="vehicle_end_actions" value="stop"/>
+     <property name="vehicle_return_delay" type="float" value="2"/>
+     <property name="vehicle_switch_id" type="string" value=""/>
+     <property name="vehicle_alt_path" type="string" value=""/>
+     <property name="vehicle_rider_walks" type="bool" value="false"/>
+     <property name="vehicle_float" type="bool" value="false"/>
+     <property name="vehicle_float_offset" type="float" value="16"/>
+    </properties>
+   </property>
+   <property name="progression" type="class" propertytype="moving_platform_progression">
+    <properties>
+     <property name="progression_from" type="string" value=""/>
+     <property name="progression_to" type="string" value=""/>
+     <property name="progression_one_way" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

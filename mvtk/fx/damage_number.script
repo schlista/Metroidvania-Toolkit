@@ -1,0 +1,43 @@
+-- mvtk/fx/damage_number.script
+-- Displays a world-space floating damage number and fades out
+
+go.property("text", 1.0)
+go.property("label", "")
+go.property("label_key", "")
+go.property("color_r", 1.0)
+go.property("color_g", 1.0)
+go.property("color_b", 1.0)
+go.property("lifetime", 0.6)
+go.property("scale", 1.0)
+
+function init(self)
+  -- Live cap (CP04d): Gamefeel counts a number when it creates one; this
+  -- covers any other creator, and final releases the slot.
+  require("mvtk.core.spawn_budget").enter("damage_number", go.get_id())
+  self.t = self.lifetime or 0.6
+  self.base = go.get_position()
+  self.label_url = msg.url(nil, go.get_id(), hash("label"))
+  local display = require "mvtk.ui.display_text"
+  local text = self.label_key ~= "" and display.ui(self.label_key)
+    or (self.label ~= "" and display.render(self.label) or tostring(self.text))
+  go.set(self.label_url, "text", text)
+  local c = vmath.vector4(self.color_r or 1, self.color_g or 1, self.color_b or 1, 1)
+  go.set(self.label_url, "color", c)
+  local s = tonumber(self.scale) or 1.0
+  pcall(go.set_scale, vmath.vector3(s,s,1))
+end
+
+function update(self, dt)
+  self.t = self.t - dt
+  local k = math.max(0, self.t / (self.lifetime or 0.6))
+  local p = self.base + vmath.vector3(0, (1-k) * 24, 0)
+  go.set_position(p)
+  local col = go.get(self.label_url, "color")
+  col.w = k
+  go.set(self.label_url, "color", col)
+  if self.t <= 0 then go.delete('.') end
+end
+
+function final(self)
+  require("mvtk.core.spawn_budget").leave("damage_number", go.get_id())
+end

@@ -1,0 +1,17 @@
+script: "/developer/ui/game/cutscene_test.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+fonts {
+  name: "system"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+
+
+# Disabled, empty source for generated runtime text; never measured or registered for input.
+nodes {
+  type: TYPE_TEXT
+  id: "generated_text_template"
+  font: "system"
+  font_size: 14
+  enabled: false
+}

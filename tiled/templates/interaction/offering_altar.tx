@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Offering Altar" type="offering_altar" width="32" height="32">
+  <properties>
+   <property name="altar_id" type="string" value=""/>
+   <property name="offer" type="class" propertytype="offering_altar_offer">
+    <properties>
+     <property name="cost_currency" type="int" value="0"/>
+     <property name="cost_item" type="string" value=""/>
+     <property name="cost_item_count" type="int" value="1"/>
+    </properties>
+   </property>
+   <property name="payout" type="class" propertytype="offering_altar_payout">
+    <properties>
+     <property name="reward" type="string" value=""/>
+     <property name="reward_text" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="presentation" type="class" propertytype="offering_altar_presentation">
+    <properties>
+     <property name="prompt_text" type="string" value="Offer"/>
+     <property name="menu_title" type="string" value=""/>
+     <property name="range" type="int" value="96"/>
+     <property name="show_on_map" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="offering_altar_lifecycle">
+    <properties>
+     <property name="remove_after_use" type="bool" value="false"/>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="locked_text" type="string" value=""/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="offering_altar_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

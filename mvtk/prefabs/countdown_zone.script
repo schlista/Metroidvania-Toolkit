@@ -1,0 +1,28 @@
+-- Countdown Zone (WM09): a baked rectangle that starts, finishes or cancels
+-- the countdown it names. main.script owns the overlap and calls the service.
+local Payloads = require "mvtk.shared.trigger_payloads"
+local Util = require "mvtk.core.util"
+
+go.property("countdown_id", "")
+go.property("role", "start")
+go.property("width", 128)
+go.property("height", 128)
+go.property("room_id", "")
+go.property("object_id", 0)
+
+function init(self)
+    self.register_id = Util.room_key(self.room_id) .. "_countdown_" .. tostring(math.max(0, math.floor(self.object_id)))
+    -- The room collection is placed at its layout offset; read the world position after it applies.
+    go.update_world_transform()
+    msg.post("main:/main_go#script", "register_countdown_zone", Payloads.countdown({
+        id = self.register_id, owner = msg.url(), position = go.get_world_position(),
+        width = self.width, height = self.height, room_id = self.room_id,
+        countdown_id = self.countdown_id, role = self.role,
+    }))
+end
+
+function final(self)
+    if self.register_id then
+        msg.post("main:/main_go#script", "unregister_countdown_zone", {id = self.register_id})
+    end
+end

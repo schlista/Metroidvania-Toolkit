@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Movement Zone" type="movement_zone" width="256" height="256">
+  <properties>
+   <property name="movement_zone_id" type="string" value=""/>
+   <property name="preset" propertytype="movement_zones" value="low_gravity"/>
+   <property name="overrides" type="class" propertytype="movement_zone_overrides">
+    <properties>
+     <property name="gravity_mult" type="float" value="-1"/>
+     <property name="max_fall_mult" type="float" value="-1"/>
+     <property name="speed_mult" type="float" value="-1"/>
+     <property name="jump_mult" type="float" value="-1"/>
+     <property name="sink_speed" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="movement_zone_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

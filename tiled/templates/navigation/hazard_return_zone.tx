@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Hazard Return Zone" type="hazard_return_zone" width="192" height="128">
+  <properties>
+   <property name="return_zone_id" type="string" value=""/>
+   <property name="placement" type="class" propertytype="hazard_return_zone_placement">
+    <properties>
+     <property name="return_facing" type="int" value="0"/>
+     <property name="forget_return_point" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

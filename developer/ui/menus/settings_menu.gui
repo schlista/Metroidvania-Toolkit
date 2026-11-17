@@ -1,0 +1,2218 @@
+script: "/developer/ui/menus/settings_menu.gui_script"
+fonts {
+  name: "main"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "backdrop"
+  adjust_mode: ADJUST_MODE_FIT
+  alpha: 0.92
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1000.000000000
+    y: 900.000000000
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    y: 375.0
+  }
+  size {
+    x: 311.111111042
+    y: 38.888888880
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "SETTINGS"
+  font: "main"
+  id: "title"
+  shadow {
+    x: 1.0
+    y: 1.0
+    z: 1.0
+  }
+  parent: "root"
+  inherit_alpha: true
+  outline_alpha: 0.5
+  shadow_alpha: 0.3
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 310.0
+  }
+  size {
+    x: 960.000000000
+    y: 40.0
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "tab_bar"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -225.0
+  }
+  size {
+    x: 146.0
+    y: 38.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "tab_audio"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  size {
+    x: 195.999999975
+    y: 33.249999996
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "AUDIO"
+  font: "main"
+  id: "tab_audio_label"
+  parent: "tab_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: -75.0
+  }
+  size {
+    x: 146.0
+    y: 38.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "tab_graphics"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  size {
+    x: 195.999999975
+    y: 33.249999996
+  }
+  color {
+    x: 0.85
+    y: 0.85
+    z: 0.85
+  }
+  type: TYPE_TEXT
+  text: "DISPLAY"
+  font: "main"
+  id: "tab_graphics_label"
+  parent: "tab_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 75.0
+  }
+  size {
+    x: 146.0
+    y: 38.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "tab_controls"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  size {
+    x: 195.999999975
+    y: 33.249999996
+  }
+  color {
+    x: 0.85
+    y: 0.85
+    z: 0.85
+  }
+  type: TYPE_TEXT
+  text: "CONTROLS"
+  font: "main"
+  id: "tab_controls_label"
+  parent: "tab_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 920.000000000
+    y: 600.000000000
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "content_area"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 900.000000000
+    y: 600.000000000
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_audio"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.0
+    y: 60.0
+  }
+  size {
+    x: 252.777777722
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Master Volume"
+  font: "main"
+  id: "label_master"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 50.0
+    y: 60.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_master_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 160.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_master_fg"
+  pivot: PIVOT_W
+  parent: "slider_master_bg"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 160.0
+  }
+  size {
+    x: 38.888888880
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "80%"
+  font: "main"
+  id: "value_master"
+  parent: "slider_master_bg"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.0
+    y: 20.0
+  }
+  size {
+    x: 252.777777722
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Music Volume"
+  font: "main"
+  id: "label_music"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 50.0
+    y: 20.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_music_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 140.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_music_fg"
+  pivot: PIVOT_W
+  parent: "slider_music_bg"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 160.0
+  }
+  size {
+    x: 38.888888880
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "70%"
+  font: "main"
+  id: "value_music"
+  parent: "slider_music_bg"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.0
+    y: -20.0
+  }
+  size {
+    x: 252.777777722
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "SFX Volume"
+  font: "main"
+  id: "label_sfx"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 50.0
+    y: -20.0
+  }
+  size {
+    x: 200.0
+    y: 12.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "slider_sfx_bg"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: -100.0
+  }
+  size {
+    x: 160.0
+    y: 12.0
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_BOX
+  id: "slider_sfx_fg"
+  pivot: PIVOT_W
+  parent: "slider_sfx_bg"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 160.0
+  }
+  size {
+    x: 38.888888880
+    y: 15.555555552
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "80%"
+  font: "main"
+  id: "value_sfx"
+  parent: "slider_sfx_bg"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: -50.0
+    y: -70.0
+  }
+  size {
+    x: 120.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_mute"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 77.777777760
+    y: 19.444444440
+  }
+  type: TYPE_TEXT
+  text: "MUTE"
+  font: "main"
+  id: "btn_mute_label"
+  parent: "btn_mute"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 100.0
+    y: -170.0
+  }
+  size {
+    x: 140.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_audio"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 93.333333313
+    y: 19.444444440
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "RESET"
+  font: "main"
+  id: "btn_reset_audio_label"
+  parent: "btn_reset_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 60.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "master_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: 20.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "music_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 520.0
+    y: 35.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "sfx_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 520.0
+    y: 45.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "mute_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 520.0
+    y: 45.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "audio_reset_highlight"
+  parent: "page_audio"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  size {
+    x: 900.000000000
+    y: 600.000000000
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_graphics"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  position {
+    y: 30.0
+  }
+  size {
+    x: 700.000000000
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_window_mode"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 528.888888771
+    y: 21.777777773
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Window Mode: Windowed"
+  font: "main"
+  id: "btn_window_mode_label"
+  parent: "btn_window_mode"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 300.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_vsync"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 217.777777729
+    y: 19.444444440
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "VSync: ON"
+  font: "main"
+  id: "btn_vsync_label"
+  parent: "btn_vsync"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 300.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_show_fps"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 217.777777729
+    y: 19.444444440
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Show FPS: OFF"
+  font: "main"
+  id: "btn_show_fps_label"
+  parent: "btn_show_fps"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -275.0
+  }
+  size {
+    x: 160.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_graphics"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 108.888888865
+    y: 19.444444440
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "RESET"
+  font: "main"
+  id: "btn_reset_graphics_label"
+  parent: "btn_reset_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 30.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "window_mode_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -20.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "vsync_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -70.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "show_fps_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: -130.0
+  }
+  size {
+    x: 520.0
+    y: 40.0
+  }
+  color {
+    x: 0.12
+    y: 0.25
+    z: 0.50
+  }
+  type: TYPE_BOX
+  id: "graphics_reset_highlight"
+  parent: "page_graphics"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  size {
+    x: 900.000000000
+    y: 600.000000000
+  }
+  color {
+    x: 0.08
+    y: 0.08
+    z: 0.12
+  }
+  type: TYPE_BOX
+  id: "page_controls"
+  parent: "content_area"
+  inherit_alpha: true
+  alpha: 0.0
+  enabled: false
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    y: 140.0
+  }
+  size {
+    x: 388.888888802
+    y: 19.444444440
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Control Remapping"
+  font: "main"
+  id: "controls_title"
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: 114.000000000
+  }
+  size {
+    x: 743.749999907
+    y: 27.999999996
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Choose an action, then press a key or button"
+  font: "main"
+  id: "controls_subtitle"
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 90.0
+  }
+  size {
+    x: 500.0
+    y: 220.0
+  }
+  type: TYPE_BOX
+  id: "controls_list"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_jump_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: 80.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Jump:"
+  font: "main"
+  id: "controls_jump_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: 80.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_jump_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 54.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_dash_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: 54.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Dash:"
+  font: "main"
+  id: "controls_dash_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: 54.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_dash_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 28.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_attack_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: 28.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Attack:"
+  font: "main"
+  id: "controls_attack_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: 28.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_attack_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 2.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_special_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: 2.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Special:"
+  font: "main"
+  id: "controls_special_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: 2.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_special_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -24.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_ranged_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: -24.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Ranged Attack:"
+  font: "main"
+  id: "controls_ranged_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: -24.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_ranged_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -50.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_interact_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: -50.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Interact:"
+  font: "main"
+  id: "controls_interact_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: -50.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_interact_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -76.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_map_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: -76.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Minimap:"
+  font: "main"
+  id: "controls_map_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: -76.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_map_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -102.0
+  }
+  size {
+    x: 850.000000000
+    y: 28.0
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "controls_inventory_bg"
+  parent: "page_controls"
+  inherit_alpha: true
+  alpha: 0.0
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -400.000000000
+    y: -102.0
+  }
+  size {
+    x: 272.222222162
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "Inventory:"
+  font: "main"
+  id: "controls_inventory_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 20.000000000
+    y: -102.0
+  }
+  size {
+    x: 295.555555490
+    y: 18.666666663
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "main"
+  id: "controls_inventory_value"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -212.0
+  }
+  size {
+    x: 220.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_reset_controls"
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 155.555555521
+    y: 19.444444440
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.95
+  }
+  type: TYPE_TEXT
+  text: "RESET TO DEFAULTS"
+  font: "main"
+  id: "btn_reset_controls_label"
+  parent: "btn_reset_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -350.0
+  }
+  size {
+    x: 220.0
+    y: 36.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_back"
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 155.555555521
+    y: 19.444444440
+  }
+  type: TYPE_TEXT
+  text: "BACK"
+  font: "main"
+  id: "btn_back_label"
+  parent: "btn_back"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 1280.0
+    y: 720.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "restart_overlay"
+  inherit_alpha: true
+  alpha: 0.8
+  enabled: false
+}
+nodes {
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 900.000000000
+    y: 240.000000000
+  }
+  color {
+    x: 0.6
+    y: 0.4
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "restart_panel"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    x: 640.0
+    y: 420.0
+  }
+  size {
+    x: 717.499999910
+    y: 34.999999996
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "Restart Required"
+  font: "main"
+  id: "restart_title"
+  inherit_alpha: true
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    x: 640.0
+    y: 360.0
+  }
+  size {
+    x: 717.499999910
+    y: 55.999999993
+  }
+  color {
+    x: 0.9
+    y: 0.9
+    z: 0.9
+  }
+  type: TYPE_TEXT
+  text: "VSync changes require a restart.\n"
+  "\n"
+  "Restart now?"
+  font: "main"
+  id: "restart_message"
+  inherit_alpha: true
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    x: 640.0
+    y: 300.0
+  }
+  size {
+    x: 717.499999910
+    y: 34.999999996
+  }
+  color {
+    x: 0.7
+    y: 0.7
+    z: 0.7
+  }
+  type: TYPE_TEXT
+  text: "Enter: Restart  |  Esc: Cancel"
+  font: "main"
+  id: "restart_hint"
+  inherit_alpha: true
+  enabled: false
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -120.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_mute_when_unfocused"
+  parent: "page_audio"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: -120.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Mute when unfocused"
+  font: "main"
+  id: "btn_mute_when_unfocused_label"
+  pivot: PIVOT_W
+  parent: "page_audio"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -120.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_pause_on_focus_loss"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: -120.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Pause when unfocused"
+  font: "main"
+  id: "btn_pause_on_focus_loss_label"
+  pivot: PIVOT_W
+  parent: "page_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -168.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_pause_on_controller_disconnect"
+  parent: "page_controls"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: -168.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Pause on controller disconnect"
+  font: "main"
+  id: "btn_pause_on_controller_disconnect_label"
+  pivot: PIVOT_W
+  parent: "page_controls"
+  inherit_alpha: true
+
+  font_size: 14
+}
+
+nodes {
+  position {
+    y: -170.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_view_fill"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: -170.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Wide screens"
+  font: "main"
+  id: "btn_view_fill_label"
+  pivot: PIVOT_W
+  parent: "page_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: -220.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_brightness"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: -220.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Brightness"
+  font: "main"
+  id: "btn_brightness_label"
+  pivot: PIVOT_W
+  parent: "page_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 80.0
+  }
+  size {
+    x: 900.000000000
+    y: 32.000000000
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_language"
+  parent: "page_graphics"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -425.000000000
+    y: 80.0
+  }
+  size {
+    x: 404.444444355
+    y: 21.777777773
+  }
+  type: TYPE_TEXT
+  text: "Language"
+  font: "main"
+  id: "btn_language_label"
+  pivot: PIVOT_W
+  parent: "page_graphics"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position { x: 225.0 y: 0.0 }
+  size { x: 146.0 y: 38.0 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "tab_accessibility"
+  parent: "tab_bar"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { x: 0.0 y: 0.0 }
+  size { x: 195.999999975 y: 33.249999996 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "tab_accessibility_label"
+  parent: "tab_accessibility"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.0 y: 0.0 }
+  size { x: 900.000000000 y: 600.000000000 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "page_accessibility"
+  parent: "content_area"
+  inherit_alpha: true
+}
+nodes {
+  position { x: 0.0 y: 120.0 }
+  size { x: 900.000000000 y: 28.0 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "acc_row_bg"
+  parent: "page_accessibility"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: -425.000000000 y: 0.0 }
+  size { x: 451.111111011 y: 21.777777773 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "acc_row_label"
+  parent: "acc_row_bg"
+  inherit_alpha: true
+  pivot: PIVOT_W
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: 425.000000000 y: 0.0 }
+  size { x: 171.111111073 y: 21.777777773 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "acc_row_value"
+  parent: "acc_row_bg"
+  inherit_alpha: true
+  pivot: PIVOT_E
+
+  font_size: 14
+}
+nodes {
+  position { x: 0.0 y: -165.0 }
+  size { x: 280.0 y: 34.0 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "btn_reset_accessibility"
+  parent: "page_accessibility"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: 0.0 y: 0.0 }
+  size { x: 209.999999953 y: 21.777777773 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "btn_reset_accessibility_label"
+  parent: "btn_reset_accessibility"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position { x: -200.0 y: -220.0 }
+  size { x: 140.0 y: 32.0 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "acc_prev"
+  parent: "page_accessibility"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { x: 0.0 y: 0.0 }
+  size { x: 113.749999986 y: 24.499999997 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "acc_prev_label"
+  parent: "acc_prev"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  position { x: 200.0 y: -220.0 }
+  size { x: 140.0 y: 32.0 }
+  color { x: 0.22 y: 0.22 z: 0.28 }
+  type: TYPE_BOX
+  id: "acc_next"
+  parent: "page_accessibility"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { x: 0.0 y: 0.0 }
+  size { x: 113.749999986 y: 24.499999997 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "acc_next_label"
+  parent: "acc_next"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { x: 0.0 y: -220.0 }
+  size { x: 209.999999974 y: 24.499999997 }
+  color { x: 0.95 y: 0.95 z: 0.95 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "acc_page"
+  parent: "page_accessibility"
+  inherit_alpha: true
+
+  font_size: 14
+}
+material: "/builtins/materials/gui.material"
+
+# Disabled, empty source for generated runtime text; never measured or registered for input.
+nodes {
+  type: TYPE_TEXT
+  id: "generated_text_template"
+  font: "main"
+  font_size: 14
+  enabled: false
+}

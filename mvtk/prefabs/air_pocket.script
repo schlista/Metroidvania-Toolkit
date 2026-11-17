@@ -1,0 +1,40 @@
+-- Baked oxygen zone. Several player colliders may share a gameobject id.
+go.property("air_pocket_id", "")
+go.property("room_id", "")
+go.property("refill_rate", -1)
+
+local PU = require "mvtk.prefabs.prefab_utils"
+
+local function notify(self, inside)
+    local player = PU.get_player_url()
+    if player then
+        msg.post(player, "mvtk_air_pocket", {
+            key = self.key, inside = inside, rate = self.refill_rate,
+        })
+    end
+end
+
+function init(self)
+    self.key = go.get_id()
+    self.parts = {}
+    self.count = 0
+end
+
+function on_message(self, message_id, message)
+    if message_id ~= hash("trigger_response") or message.other_group ~= hash("player") then return end
+    local part = message.other_id
+    if message.enter then
+        self.parts[part] = (self.parts[part] or 0) + 1
+        self.count = self.count + 1
+        if self.count == 1 then notify(self, true) end
+    elseif self.parts[part] then
+        self.parts[part] = self.parts[part] - 1
+        if self.parts[part] == 0 then self.parts[part] = nil end
+        self.count = self.count - 1
+        if self.count == 0 then notify(self, false) end
+    end
+end
+
+function final(self)
+    if self.count > 0 then notify(self, false) end
+end

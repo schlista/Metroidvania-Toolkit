@@ -1,0 +1,215 @@
+-- mvtk/prefabs/fast_travel_bench.script
+-- Fast travel station with unlock/discovery system
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local FastTravel = require "mvtk.core.fast_travel"
+local Checkpoint = require "mvtk.core.checkpoint"
+local C = require "mvtk.core.constants"
+local Debug = require "developer.config.debug_config"
+local Presentation = require "mvtk.tiled.object_presentation"
+
+go.property("station_id", "")
+go.property("station_name", "")
+go.property("station_description", "")
+go.property("room_id", "")
+go.property("auto_unlock", false)
+go.property("unlock_cost", 0)
+go.property("show_on_map", true)
+go.property("sound_id", "")
+go.property("label_locked", "")
+go.property("label_unlocked", "")
+go.property("facing", 1)
+
+local function ft_log(...)
+  if Debug.gameplay.fast_travel or Debug.global.enable then
+    print(...)
+  end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+local function play_unlock_effect(self)
+  Presentation.emit("interacted")
+  PU.play_sound(self.sound_id)
+end
+
+local function try_unlock(self)
+  if self.is_unlocked then
+    return false
+  end
+
+  if self.activation_cooldown > 0 then
+    return false
+  end
+
+  local Wallet = require "mvtk.core.wallet"
+  if self.unlock_cost and self.unlock_cost > 0 then
+    if not Wallet.can_afford(self.unlock_cost) then
+      pcall(msg.post, msg.url("main:/toast_gui#toast"), hash("toast"), {
+        key = "gameplay.requires_cost", params={cost={currency=self.unlock_cost}},
+      })
+      return false
+    end
+  end
+
+  -- Unlock, charge and checkpoint belong to the same saved snapshot.
+  local success = false
+  Checkpoint.batch("fast_travel_unlock", function()
+    success = FastTravel.unlock(self.station_id_str)
+    if success then
+      if self.unlock_cost and self.unlock_cost > 0 then
+        Wallet.spend(self.unlock_cost, "fast_travel_unlock")
+      end
+      local pos = go.get_world_position()
+      Checkpoint.set_checkpoint(pos, self.room_id_str, "feet")
+    end
+  end)
+  if success then
+    self.is_unlocked = true
+    Presentation.restore("unlocked")
+    self.activation_cooldown = 1.0
+    -- Restore player health. Guard against stale C.URL.PLAYER (instance
+    -- may have been destroyed on room transition / respawn).
+    if C.URL and C.URL.PLAYER then
+      local ok_exists, exists = pcall(go.exists, C.URL.PLAYER)
+      if ok_exists and exists then
+        msg.post(C.URL.PLAYER, C.MSG.RESTORE_HEALTH or hash("mvtk_restore_health"), { reason = "rest" })
+      end
+    end
+
+    ft_log(string.format("[FAST_TRAVEL_STATION] Unlocked: %s", self.station_name_str))
+
+    -- Play unlock effect
+    play_unlock_effect(self)
+
+    -- Update interaction manager label
+    local Interaction = PU.get_interaction()
+    if Interaction and Interaction.update then
+      Interaction.update(msg.url(), {
+        label = require("mvtk.ui.menu_text").default(self.label_unlocked_str, "interaction.travel"),
+        priority = 8
+      })
+    end
+
+    return true
+  end
+
+  return false
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    pcall(go.update_world_transform)
+  -- Baked instances always carry a stable text id. The instance fallback is
+  -- for legacy callers; release builds cannot reverse an engine hash to a name.
+  self.station_id_str = PU.normalize_hash_string(self.station_id) or tostring(go.get_id())
+
+  -- Determine room ID
+  self.room_id_str = PU.normalize_hash_string(self.room_id) or "unknown"
+
+  -- Normalize authored display text
+  self.station_name_str = PU.normalize_hash_string(self.station_name) or require("developer.config.ui_text")["gameplay.travel_point"]
+
+  self.station_description_str = PU.normalize_hash_string(self.station_description) or ""
+
+  self.is_unlocked = false
+  self.activation_cooldown = 0
+  self.unlock_cost = tonumber(self.unlock_cost) or 0
+  self.show_on_map = (self.show_on_map ~= false)
+  self.label_locked_str = PU.normalize_hash_string(self.label_locked) or {key="interaction.activate"}
+  self.label_unlocked_str = PU.normalize_hash_string(self.label_unlocked) or {key="interaction.travel"}
+  self.facing_dir = tonumber(self.facing) or 1
+  if self.facing_dir == 0 then
+    self.facing_dir = 1
+  end
+
+  -- Register this station with the fast travel system
+  local pos = go.get_world_position()
+  FastTravel.register(self.station_id_str, {
+    pos = pos,
+    room_id = self.room_id_str,
+    name = self.station_name_str,
+    description = self.station_description_str,
+    auto_unlock = self.auto_unlock,
+    show_on_map = self.show_on_map,
+    icon = "fast_travel",
+    facing = self.facing_dir,
+    unlock_cost = self.unlock_cost,
+  })
+
+  -- Check if already unlocked
+  self.is_unlocked = FastTravel.is_unlocked(self.station_id_str)
+
+  Presentation.restore(self.is_unlocked and "unlocked" or "default")
+
+  -- The map icon comes from the prepared census (mvtk/map/map_tracking.lua), so the
+  -- station registers no map marker and its icon outlives the room (STAGE_7 D-S7B-2).
+
+  ft_log(string.format("[FAST_TRAVEL_STATION] Initialized: %s (%s) unlocked=%s",
+    self.station_name_str, self.station_id_str, tostring(self.is_unlocked)))
+
+  -- Register with interaction manager if available
+  local Interaction = PU.get_interaction()
+  if Interaction and Interaction.register then
+    local locked_label = self.label_locked_str
+    if self.unlock_cost > 0 then
+      locked_label = {key="interaction.cost", params={label=require("mvtk.ui.menu_text").default(locked_label, "interaction.activate"), cost={currency=self.unlock_cost}}}
+    end
+    Interaction.register(msg.url(), {
+      reports_result = true,
+      label = self.is_unlocked and require("mvtk.ui.menu_text").default(self.label_unlocked_str, "interaction.travel") or require("mvtk.ui.menu_text").default(locked_label, "interaction.activate"),
+      range = 64,
+      priority = self.is_unlocked and 8 or 10,
+      position_fn = function(url)
+        return go.get_world_position(url)
+      end
+    })
+  end
+end
+
+function final(self)
+  -- Unregister from interaction manager if available
+  local Interaction = PU.get_interaction()
+  if Interaction and Interaction.unregister then
+    Interaction.unregister(msg.url())
+  end
+end
+
+function update(self, dt)
+  if self.activation_cooldown > 0 then
+    self.activation_cooldown = self.activation_cooldown - dt
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("mvtk_interact") then
+    if self.is_unlocked then
+      Presentation.emit("interacted")
+      local posted = pcall(msg.post, "main:/world_map_gui#world_map", hash("open_world_map"), {
+        source = "fast_travel_bench",
+        mode = "fast_travel",
+        show_title = true,
+        show_legend = true,
+        interaction_result = message and message.interaction_result
+          and require("mvtk.game.interaction_result").defer(message) or nil,
+      })
+      return posted and (message and message.interaction_result and "pending" or true) or false
+    else
+      return try_unlock(self)
+    end
+  end
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

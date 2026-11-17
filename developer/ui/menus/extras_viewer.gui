@@ -1,0 +1,24 @@
+script: "/developer/ui/menus/extras_viewer.gui_script"
+fonts {
+  name: "default"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+textures {
+  name: "artwork"
+  texture: "/developer/ui/game/completion.atlas"
+}
+textures {
+  name: "gallery"
+  texture: "/developer/ui/menus/extras_gallery.atlas"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+
+# Disabled, empty source for generated runtime text; never measured or registered for input.
+nodes {
+  type: TYPE_TEXT
+  id: "generated_text_template"
+  font: "default"
+  font_size: 14
+  enabled: false
+}

@@ -1,0 +1,99 @@
+-- Baked return statue. RoomArrival owns the hold, room load and both fades.
+local PU = require "mvtk.prefabs.prefab_utils"
+local Util = require "mvtk.core.util"
+local Flags = require "mvtk.core.flags"
+local Wallet = require "mvtk.core.wallet"
+local Checkpoint = require "mvtk.core.checkpoint"
+local CheckpointReturn = require "mvtk.world.checkpoint_return"
+local FightLock = require "mvtk.bosses.fight_lock"
+local RoomManager = require "mvtk.map.streaming.room_manager"
+local Elevators = require "mvtk.elevators.elevator_manager"
+local Presentation = require "mvtk.tiled.object_presentation"
+local Audio = require "mvtk.audio.audio"
+local Pause = require "mvtk.core.pause"
+
+go.property("statue_id", "")
+go.property("label", "Return to checkpoint")
+go.property("range", 96)
+go.property("requires_flag", "")
+go.property("cost_currency", 0)
+go.property("cooldown", 1)
+go.property("fade_out", 0.5)
+go.property("fade_in", 0.5)
+go.property("sound_warp", "fast_travel")
+go.property("sound_fail", "gate_locked")
+go.property("show_toast", true)
+go.property("toast_success", "Returned to your checkpoint")
+go.property("toast_fail", "No checkpoint to return to")
+go.property("toast_cost", "")
+go.property("toast_blocked", "You cannot return right now")
+go.property("set_flag", "")
+
+local function sound(id)
+    if id ~= "" and id ~= "none" then Audio.sfx(id) end
+end
+
+local function toast(self, text)
+    if self.show_toast and text ~= "" then PU.toast(text) end
+end
+
+local function refuse(self, text)
+    sound(self.sound_fail)
+    if text then toast(self, text) end
+end
+
+function init(self)
+    self.cooldown_t = 0
+    PU.register_interaction({text=self.label}, self.range, nil, nil, true)
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function update(self, dt)
+    if Pause.get() then return end
+    self.cooldown_t = math.max(0, self.cooldown_t - dt)
+end
+
+function on_message(self, message_id, message)
+    if message_id ~= hash("mvtk_interact") then return end
+    if self.cooldown_t > 0 then return end
+    if self.requires_flag ~= "" and not Flags.has(self.requires_flag) then refuse(self); return end
+    local player_url = (message and message.actor) or PU.get_player_url()
+    if not player_url or not go.exists(player_url) then refuse(self); return end
+    if FightLock.is_locked(RoomManager.get_current_room()) then refuse(self, self.toast_blocked); return end
+    if #Elevators.ridden_ids() > 0 then refuse(self, self.toast_blocked); return end
+    -- A running countdown with block_travel (WM09) refuses the return too.
+    if require("mvtk.game.countdown").blocks_travel() then refuse(self, self.toast_blocked); return end
+    local cost = tonumber(self.cost_currency) or 0
+    if not Wallet.can_afford(cost) then
+        refuse(self, self.toast_cost ~= "" and self.toast_cost or {key="gameplay.need_cost", params={cost={currency=cost}}})
+        return
+    end
+    local target = CheckpointReturn.resolve(Checkpoint.data.checkpoint)
+    if not target then refuse(self, self.toast_fail); return end
+    -- Acceptance means enqueueing raised no error. A later room-load failure
+    -- does not refund the cost; RoomArrival reports and clears its own hold.
+    if not Util.safe_post(player_url, hash("mvtk_set_position"), {
+        position = target.position, room_id = target.room_id, position_kind = target.position_kind,
+        arrival_fade_out = self.fade_out, arrival_fade_in = self.fade_in,
+        reset_motion = true, reason = "warp_statue",
+    }) then refuse(self, self.toast_fail); return end
+    Wallet.spend(cost, "warp_statue")
+    sound(self.sound_warp)
+    if self.set_flag ~= "" then Flags.set(self.set_flag, true) end
+    Presentation.emit("interacted")
+    toast(self, self.toast_success)
+    self.cooldown_t = math.max(0, self.cooldown)
+    return true
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

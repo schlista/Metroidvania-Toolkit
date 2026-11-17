@@ -1,0 +1,2 @@
+-- Static GUI-context registry. Add a literal require when a block's owner lands.
+return { require "mvtk.ui.hud_blocks.notices", require "mvtk.ui.hud_blocks.quick_item", require "mvtk.ui.hud_blocks.status_chips", require "mvtk.ui.hud_blocks.play_timer", require "mvtk.ui.hud_blocks.level_xp", require "mvtk.ui.hud_blocks.weapon", require "mvtk.ui.hud_blocks.powerups", require "mvtk.ui.hud_blocks.area_title", require "mvtk.ui.hud_blocks.goal", require "mvtk.ui.hud_blocks.countdown", require "mvtk.ui.hud_blocks.trial" }

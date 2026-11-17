@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Encounter" type="encounter" width="512" height="256">
+  <properties>
+   <property name="encounter_id" value=""/>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="start" type="class" propertytype="encounter_start">
+    <properties>
+     <property name="encounter_start" propertytype="encounter_start_modes" value="on_enter"/>
+     <property name="requires_flag" value=""/>
+     <property name="start_delay" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="flow" type="class" propertytype="encounter_flow">
+    <properties>
+     <property name="lock_room" type="bool" value="true"/>
+     <property name="wave_delay" type="float" value="-1"/>
+     <property name="max_alive" type="int" value="0"/>
+     <property name="enemy_drops" type="bool" value="false"/>
+     <property name="show_wave_messages" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="music" type="class" propertytype="encounter_music">
+    <properties>
+     <property name="battle_music" propertytype="boss_music_tracks" value="none"/>
+     <property name="victory_music" propertytype="boss_music_tracks" value="none"/>
+    </properties>
+   </property>
+   <property name="rewards" type="class" propertytype="encounter_rewards">
+    <properties>
+     <property name="reward_collectible" propertytype="collectibles" value="none"/>
+     <property name="reward_amount" type="int" value="1"/>
+     <property name="clear_flag" value=""/>
+     <property name="repeatable" type="bool" value="false"/>
+     <property name="clear_message" value="open"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

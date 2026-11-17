@@ -1,0 +1,134 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+-- Blocks execute only in this GUI context; world owners send source data.
+local Blocks = require "mvtk.ui.hud_blocks"
+local Geometry = require "mvtk.ui.hud_block_layout"
+local HudLayout = require "mvtk.ui.hud_layout"
+local Viewport = require "mvtk.ui.viewport"
+local ViewPolicy = require "mvtk.render.view_policy"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local Layout = RuntimeSettings.section("hud_layout", require "developer.config.hud_layout")
+local Overrides = (RuntimeSettings.load() or {}).hud_layout or {}
+local Minimap = RuntimeSettings.section("minimap", require "developer.config.minimap_settings")
+local Pause = require "mvtk.core.pause"
+local StartupCover = require "mvtk.game.startup_cover"
+local InputCtl = require "mvtk.rooms.input_controller"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local DisplayText = require "mvtk.ui.display_text"
+local Util = require "mvtk.core.util"
+
+-- Blocks send source text or a {key, params} description; both re-render
+-- here whenever the language or prompt revision changes.
+local function render_text(record)
+    for node, text in pairs(record.text) do
+        local rendered = record.pre_rendered[node] and text or require("mvtk.ui.menu_text").render(text, DisplayText)
+        if record.rendered[node] ~= rendered then
+            gui.set_text(node, rendered)
+            record.rendered[node] = rendered
+        end
+    end
+end
+
+local function new_record(block)
+    local record = { block = block, state = {}, text = {}, rendered = {}, pre_rendered = {}, shown = false,
+        entry = Geometry.entry(block, Layout, Overrides), size = { w = block.size.w, h = block.size.h } }
+    record.state.layout = record.entry
+    record.state.hud_scale = (Layout.global or {}).scale or 1
+    record.state.max_width = Layout[block.max_width_key]
+    record.state.set_text = function(node, source, rendered)
+        record.pre_rendered[node] = rendered == true
+        record.text[node] = source or ""
+        if record.shown then render_text(record) end
+    end
+    block.init(record.state, gui.get_node)
+    record.root = gui.get_node(block.root or (block.id .. "_root"))
+    gui.set_enabled(record.root, false)
+    record.authored_scale = gui.get_scale(record.root)
+    return record
+end
+
+local function refresh(record)
+    local state, entry = record.state, record.entry
+    local shown = state.has_data == true and state.visible ~= false
+        and entry.enabled ~= false and entry.visible ~= false
+    local dirty = false
+    if shown ~= record.shown then
+        record.shown, dirty = shown, true
+        gui.set_enabled(record.root, shown)
+        if shown then render_text(record) end
+    end
+    local size = record.block.measure and record.block.measure(state) or record.block.size
+    if size.w ~= record.size.w or size.h ~= record.size.h then
+        record.size, dirty = { w = size.w, h = size.h }, true
+    end
+    return dirty
+end
+
+local function place(self)
+    local rect = Viewport.hud_rect(ViewPolicy.current().hud_frame)
+    if not rect then return end
+    local scale = (Layout.global or {}).scale or 1
+    local gap = Layout.column_gap or 12
+    local entries, height = Geometry.pack(self.blocks, Layout.feature_column, scale)
+    if self.column_height ~= height then
+        self.column_height = height
+        Util.safe_post("main:/minimap_gui#minimap", "hud_column", { height = height, gap = gap })
+    end
+    for id, record in pairs(self.blocks) do
+        if record.shown then
+            local entry = entries[id] or record.entry
+            if entry.follow_minimap then
+                entry = Geometry.below_minimap(entry, self.minimap, gap, Layout[record.block.top_floor_key])
+            end
+            local original = record.authored_scale
+            gui.set_scale(record.root, vmath.vector3(original.x * scale, original.y * scale, original.z))
+            gui.set_pivot(record.root, gui.PIVOT_NW)
+            local x, y = HudLayout.screen_top_left(entry, rect, record.size.w * scale, record.size.h * scale)
+            gui.set_screen_position(record.root, vmath.vector3(x, y, 0))
+        end
+    end
+    self.dirty = false
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.hud)
+    self.blocks = {}
+    self.minimap = Geometry.minimap(Minimap, 0, Layout.column_gap or 12, true)
+    for _, block in ipairs(Blocks) do self.blocks[block.id] = new_record(block) end
+    self.viewport_revision = Viewport.revision()
+    self.prompt_revision = DisplayText.revision()
+    self.dirty = true
+    for _, record in pairs(self.blocks) do refresh(record) end
+    place(self)
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("hud_block") then
+        local record = self.blocks[message.block]
+        if record then
+            record.state.has_data = true
+            record.block.on_data(record.state, message.data)
+            self.dirty = refresh(record) or self.dirty
+        end
+    elseif message_id == hash("hud_minimap_rect") then
+        local old = self.minimap
+        if old.shown ~= message.shown or old.top ~= message.top or old.bottom ~= message.bottom then
+            self.minimap, self.dirty = message, true
+        end
+    end
+end
+
+function update(self, dt)
+    local frozen = Pause.get() or InputCtl.get_blocked() or StartupCover.active()
+    local revision = DisplayText.revision()
+    for _, record in pairs(self.blocks) do
+        record.block.update(record.state, dt, frozen)
+        self.dirty = refresh(record) or self.dirty
+        if record.shown and self.prompt_revision ~= revision then render_text(record) end
+    end
+    self.prompt_revision = revision
+    local viewport_revision = Viewport.revision()
+    if self.viewport_revision ~= viewport_revision then
+        self.viewport_revision, self.dirty = viewport_revision, true
+    end
+    if self.dirty then place(self) end
+end

@@ -1,0 +1,17 @@
+script: "/developer/ui/game/boss_hp.gui_script"
+fonts {
+  name: "system"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+adjust_reference: ADJUST_REFERENCE_PARENT
+
+# Disabled, empty source for generated runtime text; never measured or registered for input.
+nodes {
+  type: TYPE_TEXT
+  id: "generated_text_template"
+  font: "system"
+  font_size: 14
+  enabled: false
+}

@@ -1,0 +1,45 @@
+-- Baked encounter sensor; spawned wave actors use the shared spawn service.
+go.property("encounter_id", "")
+go.property("room_id", "")
+go.property("encounter_start", "on_enter")
+go.property("requires_flag", "")
+go.property("target_id", "")
+go.property("clear_flag", "")
+go.property("clear_message", "open")
+go.property("battle_music", "")
+go.property("victory_music", "")
+go.property("reward_collectible", "")
+go.property("width", 512)
+go.property("height", 256)
+go.property("start_delay", 0)
+go.property("wave_delay", -1)
+go.property("max_alive", 0)
+go.property("reward_amount", 1)
+go.property("lock_room", true)
+go.property("enemy_drops", false)
+go.property("show_wave_messages", true)
+go.property("repeatable", false)
+
+local Registry = require "mvtk.enemies.encounter_registry"
+local Controller = require "mvtk.enemies.encounter_controller"
+
+function init(self)
+    go.update_world_transform()
+    self.position = go.get_world_position()
+    self.url = msg.url()
+    Registry.register_controller(self.room_id, self.encounter_id, self)
+    Controller.init(self)
+end
+
+function update(self, dt)
+    Controller.update(self, dt)
+end
+
+function on_message(self, message_id, message)
+    Controller.on_message(self, message_id, message)
+end
+
+function final(self)
+    Controller.final(self)
+    Registry.unregister_controller(self.room_id, self.encounter_id)
+end

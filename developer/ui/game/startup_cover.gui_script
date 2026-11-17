@@ -1,0 +1,40 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+local StartupCover = require "mvtk.game.startup_cover"
+local DisplayText = require "mvtk.ui.display_text"
+local Viewport = require "mvtk.ui.viewport"
+
+local function layout(self)
+    local w, h = Viewport.design_size()
+    if self.width == w and self.height == h then return end
+    self.width, self.height = w, h
+    -- Stretch handles the physical window; use the configured design size as
+    -- its source rectangle, including projects larger than the authored scene.
+    gui.set_size(self.cover, vmath.vector3(w, h, 0))
+    gui.set_position(self.cover, vmath.vector3(w / 2, h / 2, 0))
+    gui.set_position(self.loading, vmath.vector3(w / 2, self.loading_y, 0))
+end
+
+local function paint(self)
+    layout(self)
+    local alpha = StartupCover.alpha()
+    local color = StartupCover.color()
+    gui.set_enabled(self.cover, alpha > 0)
+    -- Loading belongs only to the opaque wait, never the revealed world.
+    gui.set_enabled(self.loading, alpha == 1)
+    if color then gui.set_color(self.cover, vmath.vector4(color.r, color.g, color.b, alpha)) end
+    gui.set_text(self.loading, DisplayText.ui("gameplay.loading"))
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.transitions)
+    self.cover, self.loading = gui.get_node("cover"), gui.get_node("loading")
+    self.loading_y = gui.get_position(self.loading).y
+    paint(self)
+end
+function update(self, dt)
+    StartupCover.tick(dt)
+    paint(self)
+end
+function on_message(self, message_id)
+    if message_id == hash("startup_cover_refresh") then paint(self) end
+end

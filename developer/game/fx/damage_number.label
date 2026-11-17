@@ -1,0 +1,14 @@
+font: "/developer/assets/fonts/ui_label.font"
+material: "/builtins/fonts/label-vector.material"
+text: "1"
+size {
+  x: 24.0
+  y: 24.0
+  z: 0.0
+  w: 0.0
+}
+pivot: PIVOT_CENTER
+line_break: false
+leading: 1.0
+tracking: 0.0
+font_size: 14

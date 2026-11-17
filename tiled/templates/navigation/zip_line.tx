@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Zip Line" type="zip_line" width="64" height="64">
+  <properties>
+   <property name="zip_id" type="string" value="" />
+   <property name="path_ref" type="object" value="0" />
+   <property name="ride" type="class" propertytype="zip_line_ride">
+    <properties>
+     <property name="speed" type="float" value="800" />
+     <property name="exit_boost" type="float" value="0" />
+     <property name="auto_start" type="bool" value="false" />
+    </properties>
+   </property>
+   <property name="prompt" type="class" propertytype="zip_line_prompt">
+    <properties>
+     <property name="label" type="string" value="Ride" />
+     <property name="range" type="float" value="96" />
+    </properties>
+   </property>
+   <property name="progression_from" type="string" value="" />
+   <property name="progression_to" type="string" value="" />
+   <property name="progression_one_way" type="bool" value="true" />
+   <property name="mvtk_template_version" type="string" value="2.8.0" />
+  </properties>
+ </object>
+</template>

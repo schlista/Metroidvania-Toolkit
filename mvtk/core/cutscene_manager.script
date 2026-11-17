@@ -1,0 +1,468 @@
+-- mvtk/core/cutscene_manager.script
+local C = require "mvtk.core.constants"
+local Pause = require "mvtk.core.pause"
+local Input = require "mvtk.rooms.input_controller"
+local InputBindings = require "mvtk.core.input_bindings"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local WindowEvents = require "mvtk.core.window_events"
+local Policy = require "mvtk.game.cutscene_policy"
+local VideoVariants = require "mvtk.game.video_variants"
+local Localization = require "mvtk.core.localization"
+local Settings = require "mvtk.core.settings"
+local DialogueRegistry = require "mvtk.dialogue.dialogue_registry"
+local StartupCover = require "mvtk.game.startup_cover"
+
+local Util = require "mvtk.core.util"
+local SafeRequire = require "mvtk.core.safe_require"
+local Debug = Util.require_config("developer.config.debug_config")
+
+local MSG_PLAY_CUTSCENE = hash("play_cutscene")
+local MSG_FADE_DONE = hash("fade_done")
+local MSG_VIDEO_DONE = hash("video_done")
+local MSG_DLG_CLOSED = hash("dlg_closed")
+local MSG_PLAY_TEST_CLIP = hash("play_test_clip")
+
+local CUTS = nil
+local VIDEOS = nil
+
+local next_step -- forward declaration
+local hint
+
+local function cutscene_log(...)
+    if (Debug.global and Debug.global.enable) or (Debug.gameplay and Debug.gameplay.main) then
+        print(...)
+    end
+end
+
+local function load_cuts()
+    if not CUTS then
+        CUTS = {}
+
+        local function merge(src)
+            if type(src) ~= "table" then
+                return
+            end
+            for id, seq in pairs(src) do
+                if type(id) == "string" and type(seq) == "table" then
+                    CUTS[id] = seq
+                end
+            end
+        end
+
+        -- Both files are intentionally optional: projects without cutscenes
+        -- omit the base file, and the generated file only exists once Tiled
+        -- has exported cutscene objects. Use quiet() to avoid boot warnings.
+        local ok_base, base = SafeRequire.quiet("developer.config.narrative.cutscenes", "mvtk.core.cutscene_manager")
+        if ok_base then
+            merge(base)
+        end
+
+        local ok_generated, generated = SafeRequire.quiet("developer.config.narrative.cutscenes_generated", "mvtk.core.cutscene_manager")
+        if ok_generated then
+            merge(generated)
+        end
+    end
+    return CUTS
+end
+
+local function load_videos()
+    if VIDEOS == nil then
+        local ok, mod = SafeRequire.quiet("developer.config.narrative.videos", "mvtk.core.cutscene_manager")
+        VIDEOS = ok and mod or {}
+    end
+    return VIDEOS
+end
+
+local function post(url, id, data)
+    local ok = pcall(msg.post, url, id, data or {})
+    return ok
+end
+
+local function non_empty_string(value)
+    if value == nil then return nil end
+    local s = tostring(value)
+    if s == "" then return nil end
+    return s
+end
+
+local function is_editor_build()
+    return os.getenv("DM_SERVICE_PORT") ~= nil
+end
+
+local function cancel_video_timer(self)
+    if self.video_timeout_timer then
+        pcall(timer.cancel, self.video_timeout_timer)
+        self.video_timeout_timer = nil
+    end
+end
+
+local function clear_video_player(self)
+    cancel_video_timer(self)
+    self.video_waiting = false
+    self.video_uri = nil
+    self.video_clip_id = nil
+
+    local handle = self.video_handle
+    self.video_handle = nil
+    if handle then post(C.url("CUTSCENE_VIDEO"), "set_caption_video", {playing=false}) end
+    if handle and videoplayer then
+        pcall(videoplayer.stop, handle)
+        pcall(videoplayer.destroy, handle)
+    end
+end
+
+local function resolve_video_step(step)
+    local clip_id = non_empty_string(step.video_id) or non_empty_string(step.id) or "unnamed_clip"
+    local spec = load_videos()[clip_id]
+    if type(spec) ~= "table" then
+        spec = {}
+    end
+
+    local resolved = VideoVariants.resolve(spec, step, {
+        language = Localization.language(),
+        captions = Settings.get_accessibility().captions.enabled == true,
+        editor = is_editor_build(),
+    })
+    resolved.clip_id, resolved.spec = clip_id, spec
+    return resolved
+end
+
+local function play_video_fallback(self, step)
+    local spec = resolve_video_step(step).spec
+    local title, caption = spec.fallback_title or "", spec.fallback_caption or ""
+    if not title:match("%S") and not caption:match("%S") then return false end
+    local target = step.url or C.url("CUTSCENE_VIDEO") or msg.url("main:/cutscene_test_gui#cutscene_test")
+    self.fallback_target = target
+    local ok = post(target, MSG_PLAY_TEST_CLIP, {
+        id = step.id or step.video_id,
+        title = title,
+        caption = caption,
+        duration = tonumber(spec.fallback_seconds) or 3.0,
+        done = msg.url(),
+        token = self.awaiting_token,
+    })
+
+    if ok then
+        cutscene_log(string.format("[CUTSCENE] video fallback target=%s clip=%s", tostring(target), tostring(step.id or step.video_id)))
+        return true
+    end
+
+    cutscene_log(string.format("[CUTSCENE] video fallback failed target=%s", tostring(target)))
+    return false
+end
+
+local function on_video_finished(self, reason)
+    if not self.video_waiting then
+        return
+    end
+
+    local clip = self.video_clip_id
+    local uri = self.video_uri
+    clear_video_player(self)
+
+    cutscene_log(string.format(
+        "[CUTSCENE] video_done cutscene=%s clip=%s uri=%s reason=%s",
+        tostring(self.active_id or ""),
+        tostring(clip or ""),
+        tostring(uri or ""),
+        tostring(reason or "finished")
+    ))
+
+    if self.active then
+        hint(self, true)
+        if (reason == "failed" or reason == "start_failed")
+            and play_video_fallback(self, self.queue[self.step_i]) then return end
+        next_step(self)
+    end
+end
+
+local function video_event_callback(self, video, event, data)
+    if not self.video_waiting then
+        return
+    end
+    if video ~= self.video_handle then
+        return
+    end
+
+    if event == videoplayer.VIDEO_EVENT_READY then
+        cutscene_log(string.format(
+            "[CUTSCENE] video_ready cutscene=%s clip=%s uri=%s",
+            tostring(self.active_id or ""),
+            tostring(self.video_clip_id or ""),
+            tostring(self.video_uri or "")
+        ))
+        local ok_start, err_start = pcall(videoplayer.start, video)
+        if not ok_start then
+            cutscene_log(string.format("[CUTSCENE] video_start_failed clip=%s err=%s", tostring(self.video_clip_id or ""), tostring(err_start)))
+            on_video_finished(self, "start_failed")
+        end
+    elseif event == videoplayer.VIDEO_EVENT_FINISHED then
+        on_video_finished(self, "finished")
+    elseif event == videoplayer.VIDEO_EVENT_FAILED then
+        cutscene_log(string.format("[CUTSCENE] video_failed clip=%s data=%s", tostring(self.video_clip_id or ""), tostring(data)))
+        on_video_finished(self, "failed")
+    end
+end
+
+local function play_native_video(self, step)
+    if not videoplayer then
+        cutscene_log("[CUTSCENE] videoplayer extension unavailable")
+        return false
+    end
+
+    local resolved = resolve_video_step(step)
+    if not resolved.uri then
+        cutscene_log(string.format(
+            "[CUTSCENE] video unresolved cutscene=%s clip=%s (no uri/editor_uri found)",
+            tostring(self.active_id or ""),
+            tostring(resolved.clip_id)
+        ))
+        return false
+    end
+
+    clear_video_player(self)
+
+    cutscene_log(string.format(
+        "[CUTSCENE] video_resolve cutscene=%s clip=%s uri=%s editor=%s play_sound=%s",
+        tostring(self.active_id or ""),
+        tostring(resolved.clip_id),
+        tostring(resolved.uri),
+        tostring(is_editor_build()),
+        tostring(resolved.play_sound)
+    ))
+
+    local token = self.awaiting_token
+    local ok_create, handle_or_err = pcall(videoplayer.create, resolved.uri, {
+        play_sound = resolved.play_sound
+    }, function(instance, video, event, data)
+        if self.active and self.awaiting_token == token then video_event_callback(self, video, event, data) end
+    end)
+    if not ok_create then
+        cutscene_log(string.format("[CUTSCENE] video_create_failed clip=%s err=%s", tostring(resolved.clip_id), tostring(handle_or_err)))
+        return false
+    end
+
+    if not handle_or_err then
+        cutscene_log(string.format("[CUTSCENE] video_create_failed clip=%s reason=nil_handle", tostring(resolved.clip_id)))
+        return false
+    end
+
+    self.video_handle = handle_or_err
+    self.video_waiting = true
+    self.video_uri = resolved.uri
+    self.video_clip_id = resolved.clip_id
+
+    -- Native video covers the game; discard any live caption and suppress new ones.
+    post(C.url("CUTSCENE_VIDEO"), "set_caption_video", {playing=true})
+
+    pcall(videoplayer.set_visible, self.video_handle, 1)
+
+    if resolved.timeout > 0 then
+        self.video_timeout_timer = timer.delay(resolved.timeout, false, function()
+            if self.video_waiting and self.awaiting_token == token then
+                cutscene_log(string.format(
+                    "[CUTSCENE] video_timeout cutscene=%s clip=%s timeout=%.2f",
+                    tostring(self.active_id or ""),
+                    tostring(self.video_clip_id or ""),
+                    resolved.timeout
+                ))
+                on_video_finished(self, "timeout")
+            end
+        end)
+    end
+
+    return true
+end
+
+local begin
+
+local function settings()
+    return RuntimeSettings.section("cutscenes", require "developer.config.narrative.cutscene_settings")
+end
+
+hint = function(self, visible)
+    post("main:/toast_gui#toast", "dismiss_toast", {tag="cutscene_skip"})
+    if not visible or not self.can_skip then return end
+    local cfg = settings()
+    local row
+    for _, entry in ipairs(InputBindings.remappable()) do
+        if entry.action == cfg.skip_action then row = entry.id; break end
+    end
+    if not row then return end
+    local text = cfg.skip_hint or ""
+    if text ~= "" then post("main:/toast_gui#toast", "toast", {text=text,params={skip=InputPrompts.token(row)},persistent=true,tag="cutscene_skip"}) end
+end
+
+local function cancel_wait(self)
+    if self.wait_timer then timer.cancel(self.wait_timer); self.wait_timer = nil end
+end
+
+local function finish(self)
+    local awaiting = self.awaiting
+    self.awaiting, self.awaiting_token = nil, nil
+    cancel_wait(self)
+    clear_video_player(self)
+    post(C.url("CUTSCENE_VIDEO"), "hide_caption", {kind="scene"})
+    if awaiting == "video" then
+        post(self.fallback_target or C.url("CUTSCENE_VIDEO"), "stop_test_clip", {})
+    elseif awaiting == "dialogue" then
+        post(C.url("DIALOGUE_GUI"), "close_dialogue", {})
+    end
+    if self.black then post(C.URL.FADE_GUI, C.MSG.FADE_FROM_BLACK, {}); self.black = false end
+    hint(self, false)
+    self.active, self.active_id, self.queue = false, nil, nil
+    self.skip_held, self.skip_time = {}, 0
+    Pause.set(false)
+    Input.set_blocked(false)
+    Input.clear_all()
+    msg.post(".", "release_input_focus")
+end
+
+function init(self)
+    self.active, self.pending, self.step_i = false, {}, 0
+    self.serial, self.skip_time, self.skip_held = 0, 0, {}
+    self.window_subscription = WindowEvents.subscribe(function(event)
+        if event == window.WINDOW_EVENT_FOCUS_LOST then self.skip_held, self.skip_time = {}, 0 end
+    end)
+end
+
+begin = function(self, id, from_pending)
+    if self.active or Pause.get() or Input.get_blocked() or (not from_pending and #self.pending > 0) then
+        self.pending[#self.pending + 1] = tostring(id)
+        return
+    end
+    local scene = load_cuts()[id]
+    if type(scene) ~= "table" then StartupCover.opening_failed(id); return end
+    self.active, self.active_id, self.queue, self.step_i = true, tostring(id), Policy.steps(scene), 0
+    local cfg = settings()
+    self.can_skip = cfg.allow_skip ~= false and cfg.skip_action ~= "PAUSE_TOGGLE"
+        and cfg.skip_action ~= "SETTINGS_TOGGLE" and Policy.skippable(scene, DialogueRegistry.get)
+    self.skip_time, self.skip_held, self.black = 0, {}, false
+    Input.clear_all()
+    Pause.set(true)
+    Input.set_blocked(true)
+    msg.post(".", "acquire_input_focus")
+    msg.post(C.URL.FADE_GUI, "enable")
+    if StartupCover.claim_opening(id) then
+        self.black = true
+        post(C.URL.FADE_GUI, "startup_cutscene_black")
+    end
+    hint(self, true)
+    next_step(self)
+end
+
+next_step = function(self)
+    self.awaiting, self.awaiting_token = nil, nil
+    cancel_wait(self)
+    self.step_i = self.step_i + 1
+    local step = self.queue and self.queue[self.step_i]
+    if not step then
+        finish(self)
+        return
+    end
+    self.serial = self.serial + 1
+    local token = self.serial
+    self.awaiting_token = token
+    if step.type == "fade" then
+        if tostring(step.to or "in") == "in" then
+            self.black, self.awaiting = true, "fade"
+            post(C.URL.FADE_GUI, C.MSG.FADE_TO_BLACK, {done=msg.url(),token=token})
+        else
+            if self.black then post(C.URL.FADE_GUI, C.MSG.FADE_FROM_BLACK, {}); self.black = false end
+            next_step(self)
+        end
+    elseif step.type == "wait" then
+        self.awaiting = "wait"
+        self.wait_timer = timer.delay(step.t or 0.2, false, function()
+            if self.active and self.awaiting == "wait" and self.awaiting_token == token then
+                self.wait_timer = nil
+                next_step(self)
+            end
+        end)
+    elseif step.type == "caption" then
+        local duration = tonumber(step.t) or 3.0
+        post(C.url("CUTSCENE_VIDEO"), "show_caption", {
+            kind="scene", text=step.text or "", speaker=step.speaker or "", duration=duration, token=token,
+        })
+        if step.wait == false then next_step(self); return end
+        self.awaiting = "caption"
+        self.wait_timer = timer.delay(duration, false, function()
+            if self.active and self.awaiting == "caption" and self.awaiting_token == token then
+                self.wait_timer = nil
+                next_step(self)
+            end
+        end)
+    elseif step.type == "dialogue" then
+        self.awaiting = "dialogue"
+        post(C.url("DIALOGUE_GUI"), "open_dialogue", {id=step.id,from_cutscene=true,token=token})
+    elseif step.type == "video" then
+        self.awaiting = "video"
+        if play_native_video(self, step) then
+            hint(self, false)
+        else
+            if not play_video_fallback(self, step) then next_step(self) end
+        end
+    elseif step.type == "message" then
+        if step.url and step.id then post(step.url, step.id, step.data) end
+        next_step(self)
+    else
+        next_step(self)
+    end
+end
+
+local function skip(self)
+    for i = self.step_i + 1, #self.queue do
+        local step = self.queue[i]
+        if step.type == "message" and step.url and step.id then post(step.url, step.id, step.data) end
+    end
+    finish(self)
+end
+
+function update(self, dt)
+    if self.active then
+        if not Pause.get() then Pause.set(true) end
+        if not Input.get_blocked() then Input.set_blocked(true) end
+        if self.can_skip and next(self.skip_held) then
+            self.skip_time = self.skip_time + dt
+            if self.skip_time >= (tonumber(settings().skip_hold_seconds) or 0.8) then skip(self) end
+        else self.skip_time = 0 end
+    end
+    if not self.active and not Pause.get() and not Input.get_blocked() and #self.pending > 0 then
+        begin(self, table.remove(self.pending, 1), true)
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.active or not self.can_skip or not action or not InputBindings.is(settings().skip_action, action_id) then return end
+    if action.released then self.skip_held[action_id] = nil
+    elseif action.pressed or action.repeated or (tonumber(action.value) or 0) > 0 then self.skip_held[action_id] = true end
+    if not next(self.skip_held) then self.skip_time = 0 end
+    -- Always forward device and controller lifecycle input to the shared controller.
+end
+
+function on_message(self, message_id, message, sender)
+    message = message or {}
+    if message_id == MSG_PLAY_CUTSCENE then
+        local id = message.id or message.cutscene_id
+        if id then begin(self, tostring(id)) end
+        return
+    end
+    if not self.active or message.token ~= self.awaiting_token then return end
+    if (message_id == MSG_FADE_DONE and self.awaiting == "fade")
+        or (message_id == MSG_VIDEO_DONE and self.awaiting == "video" and not message.canceled)
+        or (message_id == MSG_DLG_CLOSED and self.awaiting == "dialogue") then
+        next_step(self)
+    end
+end
+
+function final(self)
+    WindowEvents.unsubscribe(self.window_subscription)
+    self.pending = {}
+    if self.active then finish(self)
+    else
+        cancel_wait(self)
+        clear_video_player(self)
+        msg.post(".", "release_input_focus")
+    end
+end

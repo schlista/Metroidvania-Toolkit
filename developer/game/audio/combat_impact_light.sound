@@ -1,0 +1,3 @@
+sound: "/developer/assets/sfx/combat_impact_light.wav"
+looping: 0
+group: "sfx"

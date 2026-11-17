@@ -1,0 +1,482 @@
+-- mvtk/debug/debug_overlay.gui_script
+-- In-game debug overlay showing FPS, player stats, and debug controls
+
+local DebugDraw = require "mvtk.debug.debug_draw"
+local SoundDebugOk, SoundDebug = pcall(require, "mvtk.audio.sound_debug")
+local LoggerOk, Logger = pcall(require, "mvtk.core.logger")
+local Config = require "developer.config.debug_config"
+local Prefab = require "mvtk.prefabs.prefab_utils"
+local InputCtl = require "mvtk.rooms.input_controller"
+local Pause = require "mvtk.core.pause"
+local Game = require "mvtk.game.game_manager"
+local DevMenu = require "mvtk.debug.dev_menu"
+local Cheats = require "mvtk.debug.dev_cheats"
+local Saves = require "mvtk.debug.dev_saves"
+local Stats = require "mvtk.debug.dev_stats"
+local Practice = require "mvtk.debug.boss_practice"
+local Projection = require "mvtk.debug.dev_projection"
+local CameraState = require "mvtk.camera.camera_state"
+local Viewport = require "mvtk.ui.viewport"
+local Checkpoint = require "mvtk.core.checkpoint"
+local Nav = require "mvtk.ui.menu_nav"
+local RenderLayers = require "mvtk.ui.render_layers"
+local DisplayText = require "mvtk.ui.display_text"
+local MenuText = require "mvtk.ui.menu_text"
+local PromptStyle = require "mvtk.ui.prompt_style"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local Layout = RuntimeSettings.section("hud_layout", require "developer.config.hud_layout")
+-- The HUD hides its abilities line by default (a testing aid), so the overlay lists them.
+local HudAbilities = require "mvtk.ui.hud_abilities"
+local AbilityConfig = require "developer.config.abilities"
+local FlagsOk, Flags = pcall(require, "mvtk.core.flags")
+
+local function text(node, value) gui.set_text(node, DisplayText.render(value)) end
+
+-- Current log level names for display
+local LOG_LEVEL_NAMES = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR" }
+local current_log_level_index = 3 -- Default to INFO
+
+-- FPS tracking
+local fps_update_rate = 0.5 -- Update FPS every 0.5 seconds
+local frame_count = 0
+local fps_timer = 0
+local current_fps = 60
+
+-- Player data (updated via messages)
+local player_data = {
+    position = vmath.vector3(0, 0, 0),
+    state = "unknown",
+    combat_attack = nil,
+    combat_attack_t = 0,
+    combat_attack_phase = nil,
+    combat_queued_attack = nil,
+    combat_counter_t = 0,
+    parry_window_t = 0,
+    parry_cooldown_t = 0,
+    parry_last_perfect = false,
+    health = 0,
+    max_health = 0,
+    energy = 0,
+    max_energy = 0,
+    stamina = 0,
+    max_stamina = 0,
+    velocity = vmath.vector3(0, 0, 0),
+    grounded = false,
+    room = "none",
+}
+
+-- Debug flags
+local debug_flags = {
+    overlay_visible = false,
+    collision_boxes = false,
+    hitboxes = false,
+    audio_tracing = SoundDebugOk and SoundDebug.is_installed and SoundDebug.is_installed() or false,
+}
+
+local function stats_node()
+    local node = gui.new_text_node(vmath.vector3(), "")
+    gui.set_font(node, "system_font")
+    gui.set_pivot(node, gui.PIVOT_NW)
+    gui.set_scale(node, vmath.vector3(0.5, 0.5, 1))
+    gui.set_enabled(node, false)
+    return node
+end
+
+local function paint_stats(self)
+    -- Allocate once on first use; reuse the pool across toggles and rooms.
+    if Stats.enabled and not self.actor_labels then
+        self.actor_labels = {}
+        for i = 1, 24 do self.actor_labels[i] = stats_node() end
+        self.dps_panel = stats_node()
+    end
+    if not self.actor_labels then return end
+    local picture = Viewport.design_bounds("picture")
+    local used = 0
+    if Stats.labels_enabled and picture then
+        for _, actor in ipairs(Stats.actors()) do
+            local x, y, visible = Projection.project(actor.position, CameraState.view_bounds, picture)
+            if visible and used < 24 then
+                used = used + 1
+                local node = self.actor_labels[used]
+                gui.set_position(node, vmath.vector3(x, y + 24, 0))
+                text(node, string.format("%s\nHP %.1f / %.1f", actor.label, actor.hp, actor.max_hp))
+                gui.set_enabled(node, true)
+            end
+        end
+    end
+    for i = used + 1, #self.actor_labels do gui.set_enabled(self.actor_labels[i], false) end
+    gui.set_enabled(self.dps_panel, Stats.dps_enabled and picture ~= nil)
+    if Stats.dps_enabled and picture then
+        local snap = Stats.damage_snapshot()
+        local lines = {string.format("DPS (5 s): %.1f\nPeak: %.1f / Damage: %.1f\nLast 10 hits:",
+            snap.dps, snap.peak, snap.total)}
+        for _, hit in ipairs(snap.hits) do
+            lines[#lines + 1] = string.format("%s: %.1f", hit.target, hit.amount)
+        end
+        gui.set_position(self.dps_panel, vmath.vector3(picture.max_x - 480, picture.max_y - 48, 0))
+        text(self.dps_panel, table.concat(lines, "\n"))
+    end
+end
+
+function init(self)
+    self.container = gui.get_node("container")
+    self.menu_root = gui.get_node("menu_root")
+    gui.set_enabled(self.container, false)
+    gui.set_enabled(self.menu_root, false)
+    self.enabled = Prefab.is_dev_build() and Config.dev_tools and Config.dev_tools.enabled == true
+    if not self.enabled then return end
+    Stats.reset()
+    Cheats.register_menu(DevMenu)
+    Saves.register_menu(DevMenu)
+    Stats.register_menu(DevMenu, function() paint_stats(self) end)
+    Practice.register_menu(DevMenu)
+    self.save_banner_plate = gui.get_node("save_banner_plate")
+    self.save_banner = gui.get_node("save_banner")
+    text(self.save_banner, "Saving off (developer tools)")
+    gui.set_font(self.save_banner, "system_font")
+    local banner_style={text_color={r=1,g=0.75,b=0.2,a=1},plate_color=Layout.message_plate}
+    PromptStyle.authored_plate(gui,self.save_banner_plate,banner_style)
+    PromptStyle.tint(gui,self.save_banner,self.save_banner_plate,banner_style,1)
+    gui.set_enabled(self.save_banner_plate, false)
+    gui.set_enabled(self.save_banner, false)
+    self.title = gui.get_node("title")
+    self.debug_text = gui.get_node("debug_text")
+    self.help_text = gui.get_node("help_text")
+    self.menu_title = gui.get_node("menu_title")
+    self.menu_filter = gui.get_node("menu_filter")
+    self.menu_footer = gui.get_node("menu_footer")
+    self.row_template = gui.get_node("row_template")
+    gui.set_enabled(self.row_template, false)
+    debug_flags.overlay_visible = Config.dev_tools.start_visible == true
+    gui.set_enabled(self.container, debug_flags.overlay_visible)
+    gui.set_render_order(RenderLayers.dev_tools)
+    text(self.title, "DEBUG OVERLAY [F1]")
+    text(self.help_text, "F1: Overlay   F2: Physics   F3: Hitboxes\nF4: Dev Menu   F5: Audio trace\nF6: Log level   F7: Reload combat config")
+    msg.post(".", "acquire_input_focus")
+end
+
+local function close_menu(self)
+    if not self.menu then return end
+    self.menu = nil
+    for _, node in ipairs(self.menu_rows) do gui.delete_node(node) end
+    self.menu_rows = nil
+    gui.set_enabled(self.menu_root, false)
+    Pause.set(self.previous_pause)
+    InputCtl.set_blocked(self.previous_blocked)
+    msg.post(".", "release_input_focus")
+    msg.post(".", "acquire_input_focus") -- Keep the debug hotkeys available.
+end
+
+function final(self)
+    if not self.enabled then return end
+    Stats.reset()
+    close_menu(self)
+    DebugDraw.set_draw_collision_boxes(false)
+    DebugDraw.set_draw_hitboxes(false)
+    msg.post(".", "release_input_focus")
+end
+
+-- Update FPS counter
+local function update_fps(dt)
+    frame_count = frame_count + 1
+    fps_timer = fps_timer + dt
+
+    if fps_timer >= fps_update_rate then
+        current_fps = math.floor(frame_count / fps_timer)
+        frame_count = 0
+        fps_timer = 0
+    end
+end
+
+-- Format player state for display
+local function get_state_display(state)
+    if type(state) == "userdata" then
+        return tostring(state)
+    end
+    return state or "unknown"
+end
+
+-- Update debug text display
+local function update_debug_text(self)
+    local lines = {}
+
+    -- FPS
+    table.insert(lines, string.format("FPS: %d", current_fps))
+
+    -- Player position
+    table.insert(lines, string.format("Position: %.0f, %.0f",
+        player_data.position.x, player_data.position.y))
+
+    -- Player velocity
+    table.insert(lines, string.format("Velocity: %.0f, %.0f",
+        player_data.velocity.x, player_data.velocity.y))
+
+    -- Player state
+    table.insert(lines, string.format("State: %s", get_state_display(player_data.state)))
+
+    -- Unlocked abilities, as the HUD's optional abilities line labels them (untranslated)
+    local abilities = HudAbilities.text(HudAbilities.list(AbilityConfig.abilities or {}, function(id)
+        return FlagsOk and Flags and Flags.has(id)
+    end))
+    table.insert(lines, string.format("Abilities: %s", abilities ~= "" and abilities or "none"))
+
+    -- Combat state
+    table.insert(lines, string.format("Attack: %s", player_data.combat_attack or "none"))
+    if player_data.combat_attack then
+        table.insert(lines, string.format("Attack Stage: %s @ %.2fs",
+            player_data.combat_attack_phase or "unknown",
+            player_data.combat_attack_t or 0))
+    end
+    if player_data.combat_queued_attack then
+        table.insert(lines, string.format("Queued Attack: %s", player_data.combat_queued_attack))
+    end
+    table.insert(lines, string.format("Counter Window: %.2fs", player_data.combat_counter_t or 0))
+    table.insert(lines, string.format("Parry Window: %.2fs", player_data.parry_window_t or 0))
+    table.insert(lines, string.format("Parry Cooldown: %.2fs", player_data.parry_cooldown_t or 0))
+    table.insert(lines, string.format("Last Parry Perfect: %s",
+        player_data.parry_last_perfect and "Yes" or "No"))
+
+    -- Grounded status
+    local grounded_str = player_data.grounded and "Yes" or "No"
+    table.insert(lines, string.format("Grounded: %s", grounded_str))
+
+    -- Health
+    table.insert(lines, string.format("Health: %.1f / %.1f",
+        player_data.health, player_data.max_health))
+
+    -- Energy
+    table.insert(lines, string.format("Energy: %.1f / %.1f",
+        player_data.energy, player_data.max_energy))
+
+    -- Stamina
+    table.insert(lines, string.format("Stamina: %.0f / %.0f",
+        player_data.stamina, player_data.max_stamina))
+
+    -- Current room
+    table.insert(lines, string.format("Room: %s", player_data.room or "none"))
+
+    -- Debug flags status
+    table.insert(lines, "")
+    table.insert(lines, string.format("Collision Boxes: %s",
+        debug_flags.collision_boxes and "ON" or "OFF"))
+    table.insert(lines, string.format("Hitboxes: %s",
+        debug_flags.hitboxes and "ON" or "OFF"))
+    table.insert(lines, string.format("Audio Tracing: %s",
+        debug_flags.audio_tracing and "ON" or "OFF"))
+    table.insert(lines, string.format("Log Level: %s",
+        LOG_LEVEL_NAMES[current_log_level_index] or "INFO"))
+
+    text(self.debug_text, table.concat(lines, "\n"))
+end
+
+-- Toggle overlay visibility
+local function toggle_overlay(self)
+    debug_flags.overlay_visible = not debug_flags.overlay_visible
+    gui.set_enabled(self.container, debug_flags.overlay_visible)
+
+    if debug_flags.overlay_visible then
+        print("✅ Debug overlay: ON")
+    else
+        print("❌ Debug overlay: OFF")
+    end
+end
+
+-- Toggle collision box visualization
+local function toggle_collision_boxes()
+    debug_flags.collision_boxes = not debug_flags.collision_boxes
+    DebugDraw.set_draw_collision_boxes(debug_flags.collision_boxes)
+
+    if debug_flags.collision_boxes then
+        print("✅ Collision boxes: ON")
+    else
+        print("❌ Collision boxes: OFF")
+    end
+end
+
+-- Toggle hitbox visualization
+local function toggle_hitboxes()
+    debug_flags.hitboxes = not debug_flags.hitboxes
+    DebugDraw.set_draw_hitboxes(debug_flags.hitboxes)
+
+    if debug_flags.hitboxes then
+        print("✅ Hitboxes: ON")
+    else
+        print("❌ Hitboxes: OFF")
+    end
+end
+
+local function clone_rows(self)
+    local rows = {}
+    local first = gui.get_position(self.row_template)
+    local step = gui.get_size(self.row_template).y
+    for i = 1, self.menu.model.page_size do
+        local node = gui.clone(self.row_template)
+        gui.set_position(node, vmath.vector3(first.x, first.y - (i - 1) * step, first.z))
+        rows[i] = node
+    end
+    return rows
+end
+
+local function paint_menu(self)
+    local view = self.menu.model.view()
+    local saves = view.tabs[view.tab_index].id == "saves"
+    -- Every page, Saves included, pages through the same bounded row pool.
+    text(self.menu_title, "Dev Menu / " .. view.tabs[view.tab_index].title)
+    text(self.menu_filter, (saves and "Flag prefix: " or "Filter: ") .. self.menu.query)
+    gui.set_text(self.menu_footer, MenuText.render(view.status ~= "" and view.status or "Arrows: select/page   Enter: choose   Esc: close\nType: filter   Backspace: erase   Tab/F4: next page") .. "\n" .. MenuText.render(view.page_text))
+    for i, node in ipairs(self.menu_rows) do
+        local row = view.rows[i]
+        gui.set_enabled(node, row ~= nil)
+        if row then text(node, (view.selected == i and "> " or "  ") .. DisplayText.render(row.label)) end
+    end
+end
+
+local function open_menu(self)
+    if InputCtl.get_blocked() or Pause.get() or not Game.is_playing() then return false end
+    self.previous_pause, self.previous_blocked = Pause.get(), InputCtl.get_blocked()
+    self.menu = DevMenu.new()
+    self.menu_rows = clone_rows(self)
+    gui.set_enabled(self.menu_root, true)
+    msg.post(".", "acquire_input_focus")
+    InputCtl.set_blocked(true, "dev_menu")
+    Pause.set(true)
+    paint_menu(self)
+    return true
+end
+
+-- Toggle audio tracing (SoundDebug wrappers)
+local function toggle_audio_tracing()
+    if not SoundDebugOk or not SoundDebug then
+        print("❌ SoundDebug module not available")
+        return
+    end
+    
+    debug_flags.audio_tracing = not debug_flags.audio_tracing
+    
+    if debug_flags.audio_tracing then
+        SoundDebug.install()
+        print("✅ Audio tracing: ON (sound.play/stop calls will be logged)")
+    else
+        SoundDebug.uninstall()
+        print("❌ Audio tracing: OFF (normal sound behavior)")
+    end
+end
+
+-- Cycle through log levels (INFO -> WARN -> DEBUG -> TRACE -> ERROR -> INFO)
+local function toggle_log_level()
+    if not LoggerOk or not Logger then
+        print("❌ Logger module not available")
+        return
+    end
+    
+    -- Cycle to next level
+    current_log_level_index = current_log_level_index + 1
+    if current_log_level_index > #LOG_LEVEL_NAMES then
+        current_log_level_index = 1
+    end
+    
+    local level_name = LOG_LEVEL_NAMES[current_log_level_index]
+    local level_value = Logger.LEVEL[level_name]
+    
+    if level_value then
+        Logger.set_level(level_value)
+        print(string.format("📊 Log level: %s", level_name))
+    end
+end
+
+function update(self, dt)
+    if not self.enabled then return end
+    if Stats.enabled then paint_stats(self) end
+    Cheats.update()
+    Practice.update(dt)
+    local practice = Checkpoint.is_save_suspended_by("boss_practice")
+    text(self.save_banner, practice and "Saving off (boss practice)" or "Saving off (developer tools)")
+    gui.set_enabled(self.save_banner, practice or Checkpoint.is_save_suspended_by("dev_tools"))
+    gui.set_enabled(self.save_banner_plate, practice or Checkpoint.is_save_suspended_by("dev_tools"))
+    -- Update FPS counter
+    update_fps(dt)
+
+    -- Update debug text display
+    if debug_flags.overlay_visible then
+        update_debug_text(self)
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if not self.enabled then return end
+    if message_id == hash("debug_player_data") then
+        -- Update player data from message
+        if message.position then player_data.position = message.position end
+        if message.state then player_data.state = message.state end
+        player_data.combat_attack = message.combat_attack
+        if message.combat_attack_t ~= nil then player_data.combat_attack_t = message.combat_attack_t end
+        player_data.combat_attack_phase = message.combat_attack_phase
+        player_data.combat_queued_attack = message.combat_queued_attack
+        if message.combat_counter_t ~= nil then player_data.combat_counter_t = message.combat_counter_t end
+        if message.parry_window_t ~= nil then player_data.parry_window_t = message.parry_window_t end
+        if message.parry_cooldown_t ~= nil then player_data.parry_cooldown_t = message.parry_cooldown_t end
+        if message.parry_last_perfect ~= nil then player_data.parry_last_perfect = message.parry_last_perfect end
+        if message.health ~= nil then player_data.health = message.health end
+        if message.max_health ~= nil then player_data.max_health = message.max_health end
+        if message.energy ~= nil then player_data.energy = message.energy end
+        if message.max_energy ~= nil then player_data.max_energy = message.max_energy end
+        if message.stamina ~= nil then player_data.stamina = message.stamina end
+        if message.max_stamina ~= nil then player_data.max_stamina = message.max_stamina end
+        if message.velocity then player_data.velocity = message.velocity end
+        if message.grounded ~= nil then player_data.grounded = message.grounded end
+        if message.room then player_data.room = message.room end
+
+    elseif message_id == hash("profiler_updated") then
+        -- Defold profiler data (contains FPS info)
+        -- We calculate FPS manually above, but could use this too
+    end
+end
+
+function on_input(self, action_id, action)
+    if not self.enabled then return false end
+    if InputCtl.note_device then InputCtl.note_device(action_id, action) end
+    if Nav.lifecycle(action_id) then
+        if self.menu then self.menu.nav.reset(); self.menu.model.cancel_hold() end
+        return false
+    end
+    action = action or {}
+    if self.menu then
+        if InputCtl.accepts_gamepad and not InputCtl.accepts_gamepad(action) then return true end
+        local result = self.menu.input(action_id, action)
+        if result and result.close then close_menu(self) else paint_menu(self) end
+        return true
+    end
+    if action_id == hash("key_f1") and action.pressed then
+        toggle_overlay(self)
+        return true
+    elseif action_id == hash("key_f2") and action.pressed then
+        toggle_collision_boxes()
+        return true
+    elseif action_id == hash("key_f3") and action.pressed then
+        toggle_hitboxes()
+        return true
+    elseif action_id == hash("key_f4") and action.pressed then
+        return open_menu(self)
+    elseif action_id == hash("key_f5") and action.pressed then
+        toggle_audio_tracing()
+        return true
+    elseif action_id == hash("key_f6") and action.pressed then
+        toggle_log_level()
+        return true
+    elseif action_id == hash("key_f7") and action.pressed then
+        -- Hot-reload the resolved combat config so edits to
+        -- developer/config/combat_config.lua take effect on the next swing
+        -- without a full project restart. Pair with Defold's "Project →
+        -- Reload Resources" so the underlying .lua is also re-read.
+        local ok, CombatConfig = pcall(require, "mvtk.combat.config")
+        if ok and CombatConfig and CombatConfig.reload then
+            CombatConfig.reload()
+            print("[combat] config reloaded")
+        else
+            print("[combat] reload failed: mvtk.combat.config not available")
+        end
+        return true
+    end
+
+    return false
+end

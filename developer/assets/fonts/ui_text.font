@@ -1,0 +1,5 @@
+font: "/developer/assets/fonts/DejaVuSansMono-Bold.ttf"
+material: "/builtins/fonts/font-vector.material"
+size: 14
+vector_font_mode: VECTOR_FONT_MODE_VECTOR
+characters: " !\"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~—▶"

@@ -1,0 +1,41 @@
+-- developer/config/narrative/videos.lua
+-- Video clip catalog used by cutscene steps with type = "video".
+-- Naming flow:
+--   Tiled trigger property cutscene_id -> cutscenes.lua entry -> video_id below -> MP4 uri/editor_uri
+--
+-- uri:
+--   Path used in bundled builds.
+-- editor_uri:
+--   Optional path used when running from the Defold editor (project-relative).
+-- play_sound:
+--   true plays the clip's audio; false keeps it muted (muted clips autoplay
+--   more reliably).
+-- timeout:
+--   Failsafe in seconds: the cutscene continues if the platform video fails,
+--   so input is never locked.
+-- variants:
+--   Optional entries keyed by a configured language code (for example es),
+--   subtitled, or a language code followed by _subtitled (es_subtitled).
+--   Each entry has uri/editor_uri and optional play_sound/timeout overrides;
+--   omitted playback settings use this clip's values (defaults: false/20 seconds).
+--   With Captions on, try language_subtitled, language, subtitled, then this base
+--   clip. With Captions off, try language, then base. Unusable paths fall through.
+--   Editor runs prefer editor_uri, then uri; bundles use uri only. An explicit
+--   step uri/editor_uri bypasses variants. Variant files are optional and increase
+--   bundle size; put every editor_uri under common/ or a platform subfolder.
+--   Captions are never drawn over a playing video: the video player covers the
+--   game window. Supply burned-in subtitles in the subtitled variant instead.
+-- fallback_title / fallback_caption:
+--   Creator source text (translated at display), both default blank. The dim card
+--   shows this text where video is unavailable, cannot start or fails during play.
+--   If both are blank, show nothing and continue. A normal finish or timeout never
+--   shows the card. Step title/subtitle/caption fields do not supply fallback text.
+-- fallback_seconds:
+--   Card duration in seconds, default 3.0 (minimum displayed duration 0.4 seconds).
+
+return {
+    -- Add your clips here, for example:
+    -- my_clip = { editor_uri = "developer/assets/cutscenes/common/my_clip.mp4", uri = "my_clip.mp4", play_sound = true, timeout = 30.0 },
+    -- Add variants inside that clip, for example:
+    -- variants = { subtitled = { editor_uri = "developer/assets/cutscenes/common/my_clip_sub.mp4", uri = "my_clip_sub.mp4" } },
+}

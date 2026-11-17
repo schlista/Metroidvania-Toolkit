@@ -1,0 +1,60 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local ViewPolicy = require "mvtk.render.view_policy"
+
+local function place(node, x, y, w, h)
+    gui.set_enabled(node, w > 0 and h > 0)
+    if w <= 0 or h <= 0 then return end
+    gui.set_position(node, vmath.vector3(x + w / 2, y + h / 2, 0))
+    gui.set_size(node, vmath.vector3(w, h, 0))
+end
+
+local function layout(self)
+    local b = Viewport.design_bounds("picture")
+    self.viewport_revision = Viewport.revision()
+    if not b then
+        for _, node in pairs(self.boxes) do gui.set_enabled(node, false) end
+        return
+    end
+    local policy = ViewPolicy.current()
+    local c = policy.letterbox_color
+    for _, node in pairs(self.boxes) do gui.set_color(node, vmath.vector4(c.r, c.g, c.b, 1)) end
+    local w, h = b.max_x - b.min_x, b.max_y - b.min_y
+    local m = self.mask
+    local outer = b
+    if policy.scale_rule == "integer" then
+        -- Keep the picture-to-GUI band below the HUD, even when room masking
+        -- is disabled. Reuse the four boxes without changing room fractions.
+        local safe = Viewport.design_bounds("safe")
+        outer = { min_x = math.min(b.min_x, safe.min_x), min_y = math.min(b.min_y, safe.min_y),
+            max_x = math.max(b.max_x, safe.max_x), max_y = math.max(b.max_y, safe.max_y) }
+    end
+    local ow, oh = outer.max_x - outer.min_x, outer.max_y - outer.min_y
+    place(self.boxes.left, outer.min_x, outer.min_y, b.min_x + w * m.left - outer.min_x, oh)
+    place(self.boxes.right, b.max_x - w * m.right, outer.min_y, outer.max_x - b.max_x + w * m.right, oh)
+    place(self.boxes.bottom, outer.min_x, outer.min_y, ow, b.min_y + h * m.bottom - outer.min_y)
+    place(self.boxes.top, outer.min_x, b.max_y - h * m.top, ow, outer.max_y - b.max_y + h * m.top)
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.view_mask)
+    self.mask = { left = 0, right = 0, bottom = 0, top = 0 }
+    self.boxes = {}
+    for _, key in ipairs({ "left", "right", "bottom", "top" }) do
+        self.boxes[key] = gui.new_box_node(vmath.vector3(), vmath.vector3())
+        gui.set_pivot(self.boxes[key], gui.PIVOT_CENTER)
+        gui.set_enabled(self.boxes[key], false)
+    end
+    layout(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_view_mask") then
+        self.mask = message
+        layout(self)
+    end
+end
+
+function update(self, dt)
+    if self.viewport_revision ~= Viewport.revision() then layout(self) end
+end

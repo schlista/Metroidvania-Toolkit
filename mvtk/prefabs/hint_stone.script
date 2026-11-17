@@ -1,0 +1,141 @@
+-- mvtk/prefabs/hint_stone.script
+-- Interactive hint stone that shows tutorial-style popup text.
+
+local Flags = require "mvtk.core.flags"
+local PU = require "mvtk.prefabs.prefab_utils"
+
+local DEFAULT_LABEL = {key="interaction.inspect"}
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("hint_id", "")
+go.property("label", "")
+go.property("range", 96)
+go.property("title", "")
+go.property("body", "")
+go.property("position", "")
+go.property("duration", 4.0)
+go.property("trigger_once", false)
+go.property("set_flag", "")
+go.property("requires_flag", "")
+go.property("sound_id", "")
+-- Goal hints (G8-13b): see mvtk/prefabs/hint_goal.lua.
+go.property("show_current_goal", false)
+go.property("reveal_goal_target", false)
+go.property("goal_hint_cost", 0)
+
+
+local function current_label(self)
+    local label = require("mvtk.ui.menu_text").default(self.label_str or DEFAULT_LABEL, "interaction.inspect")
+    if not self.show_current_goal then return label end
+    local HintGoal = require "mvtk.prefabs.hint_goal"
+    return HintGoal.label(label, HintGoal.offer(self))
+end
+
+local function update_label(self)
+    PU.update_interaction_label(current_label(self))
+end
+
+local function apply_props(self, props)
+    props = props or {}
+    if props.title ~= nil then self.title_str = tostring(props.title) end
+    if props.body ~= nil then self.body_str = tostring(props.body) end
+    if props.position ~= nil then self.position_str = tostring(props.position) end
+    if props.label ~= nil then self.label_str = tostring(props.label) end
+    if props.duration ~= nil then self.duration = tonumber(props.duration) or self.duration end
+    if props.show_current_goal ~= nil then self.show_current_goal = props.show_current_goal == true end
+    if props.reveal_goal_target ~= nil then self.reveal_goal_target = props.reveal_goal_target == true end
+    if props.goal_hint_cost ~= nil then self.goal_hint_cost = tonumber(props.goal_hint_cost) or self.goal_hint_cost end
+    update_label(self)
+end
+
+local function show_hint(self, body)
+    local title = self.title_str or {key="gameplay.hint"}
+    body = body or self.body_str or ""
+    local pos = self.position_str or "top"
+    pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("show_tutorial"), {
+        title = require("mvtk.ui.menu_text").default(title, "gameplay.hint"),
+        description = body,
+        duration = self.duration,
+        position = pos,
+    })
+end
+
+function init(self)
+    self.hint_id_key = PU.resolve_id(self.hint_id) or tostring(go.get_id())
+    self.label_str = PU.normalize_hash_string(self.label) or DEFAULT_LABEL
+    self.title_str = PU.normalize_hash_string(self.title) or {key="gameplay.hint"}
+    self.body_str = PU.normalize_hash_string(self.body) or ""
+    self.position_str = PU.normalize_hash_string(self.position) or "top"
+    self.flag_id_str = PU.normalize_hash_string(self.set_flag)
+    self.requires_flag_str = PU.normalize_hash_string(self.requires_flag)
+
+    PU.register_interaction(current_label(self), self.range, 4, nil, true)
+end
+
+function update(self)
+    -- Goal mode only: the price leaves the label once paid or when the goal changes.
+    if not self.show_current_goal or (self.trigger_once and self._used) then return end
+    local goal_revision, flag_revision = require("mvtk.prefabs.hint_goal").revision()
+    if goal_revision ~= self._goal_revision or flag_revision ~= self._flag_revision then
+        self._goal_revision, self._flag_revision = goal_revision, flag_revision
+        update_label(self)
+    end
+end
+
+function final(self)
+    PU.unregister_interaction()
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("apply_tiled_props") and message and message.properties then
+        apply_props(self, message.properties)
+        return
+    end
+
+    if message_id ~= hash("mvtk_interact") then
+        return
+    end
+
+    if self.trigger_once and self._used then
+        return
+    end
+
+    if self.requires_flag_str and not Flags.has(self.requires_flag_str) then
+        return
+    end
+
+    local body = self.body_str
+    if self.show_current_goal then
+        local HintGoal = require "mvtk.prefabs.hint_goal"
+        local accepted
+        body, accepted = HintGoal.use(HintGoal.offer(self), self.body_str)
+        if not accepted then
+            -- Too little currency: the same popup says so; nothing is charged or set.
+            show_hint(self, body)
+            return
+        end
+    end
+
+    if self.flag_id_str then
+        Flags.set(self.flag_id_str, true)
+    end
+
+    PU.play_sound(self.sound_id)
+    show_hint(self, body)
+    require("mvtk.tiled.object_presentation").emit("interacted")
+
+    if self.trigger_once then
+        self._used = true
+        PU.unregister_interaction()
+    end
+    return true
+end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

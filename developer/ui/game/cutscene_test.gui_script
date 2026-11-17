@@ -1,0 +1,210 @@
+local GeneratedText = require "mvtk.ui.generated_text"
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local DisplayText = require "mvtk.ui.display_text"
+local C = require "mvtk.core.constants"
+local Settings = require "mvtk.core.settings"
+local Accessibility = require "mvtk.ui.accessibility"
+
+local MSG_PLAY = hash("play_test_clip")
+local MSG_STOP = hash("stop_test_clip")
+local MSG_DONE = hash("video_done")
+
+local function clamp01(v)
+    if v < 0 then return 0 end
+    if v > 1 then return 1 end
+    return v
+end
+
+local function set_alpha(node, a)
+    local c = gui.get_color(node)
+    c.w = clamp01(a)
+    gui.set_color(node, c)
+end
+
+local function set_visible(self, visible)
+    local input = require("mvtk.rooms.input_controller")
+    if input.set_hud_covered then input.set_hud_covered(self, visible) end
+    gui.set_enabled(self.overlay, visible)
+    gui.set_enabled(self.title, visible)
+    gui.set_enabled(self.subtitle, visible)
+end
+
+local function hide_caption(self)
+    self.caption = nil
+    gui.set_enabled(self.caption_box, false)
+    gui.set_enabled(self.caption_text, false)
+end
+
+local function refresh_caption(self)
+    local caption = self.caption
+    if not caption then return end
+    local text = DisplayText.render(caption.text)
+    if caption.kind == "sound" then
+        text = DisplayText.ui("caption.sound_line", {text=text})
+    elseif caption.speaker ~= "" then
+        text = DisplayText.ui("caption.speaker_line", {speaker=DisplayText.render(caption.speaker), text=text})
+    end
+    local view = Settings.get_accessibility()
+    local scale = Accessibility.text_scale(view, "reading")
+    -- D-B3: centred band 480-1440 x 296-426, with 20 px horizontal padding.
+    local width = 920 / scale
+    local metrics = GeneratedText.metrics(gui.get_font_resource("system"), text, {width=width, line_break=true}, resource)
+    gui.set_text(self.caption_text, text)
+    gui.set_scale(self.caption_text, vmath.vector3(scale, scale, 1))
+    gui.set_size(self.caption_text, vmath.vector3(width, metrics.height, 0))
+    gui.set_size(self.caption_box, vmath.vector3(metrics.width * scale + 40, metrics.height * scale + 24, 0))
+    local background = view.captions.background
+    gui.set_color(self.caption_box, vmath.vector4(0, 0, 0, background == "solid" and 0.9 or 0.55))
+    gui.set_enabled(self.caption_box, background ~= "off")
+    gui.set_enabled(self.caption_text, true)
+    self._caption_text_revision = DisplayText.revision()
+    self._caption_settings_revision = Settings.accessibility_revision()
+end
+
+local function layout(self)
+    local w, h = Viewport.design_size()
+    self._w = w
+    self._h = h
+
+    Viewport.cover(self.overlay)
+    self._view_revision = Viewport.revision()
+
+    gui.set_position(self.title, vmath.vector3(w * 0.5, h * 0.68, 0))
+    gui.set_position(self.subtitle, vmath.vector3(w * 0.5, h * 0.18, 0))
+    gui.set_position(self.caption_box, vmath.vector3(w * 0.5, 361, 0))
+    gui.set_position(self.caption_text, vmath.vector3(w * 0.5, 361, 0))
+end
+
+local function refresh_text(self)
+    gui.set_text(self.title, DisplayText.render(self.title_source or ""))
+    gui.set_text(self.subtitle, DisplayText.render(self.subtitle_source or ""))
+    self._text_revision = DisplayText.revision()
+end
+
+local function finish_clip(self, canceled)
+    if not self.active then
+        return
+    end
+    self.active = false
+    set_visible(self, false)
+
+    local done_target = self.done_target or msg.url("main:/cutscene_manager#cutscene")
+    pcall(msg.post, done_target, MSG_DONE, {
+        clip_id = self.clip_id or "",
+        canceled = canceled and true or false,
+        token = self.token,
+    })
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.captions)
+    self.overlay = gui.new_box_node(vmath.vector3(0, 0, 0), vmath.vector3(1, 1, 0))
+    self.title = GeneratedText.new(gui, "/developer/ui/game/cutscene_test.gui", vmath.vector3(0, 0, 0), "")
+    self.subtitle = GeneratedText.new(gui, "/developer/ui/game/cutscene_test.gui", vmath.vector3(0, 0, 0), "")
+    self.caption_box = gui.new_box_node(vmath.vector3(0, 0, 0), vmath.vector3(1, 1, 0))
+    self.caption_text = GeneratedText.new(gui, "/developer/ui/game/cutscene_test.gui", vmath.vector3(0, 0, 0), "")
+    gui.set_font(self.caption_text, "system")
+    gui.set_line_break(self.caption_text, true)
+    gui.set_pivot(self.caption_box, gui.PIVOT_CENTER)
+    gui.set_pivot(self.caption_text, gui.PIVOT_CENTER)
+    gui.set_color(self.caption_text, vmath.vector4(1, 1, 1, 1))
+
+    gui.set_pivot(self.overlay, gui.PIVOT_CENTER)
+    gui.set_color(self.overlay, vmath.vector4(0, 0, 0, 0.0))
+
+    gui.set_pivot(self.title, gui.PIVOT_CENTER)
+    gui.set_font(self.title, "system")
+    gui.set_color(self.title, vmath.vector4(1, 1, 1, 0.0))
+    gui.set_scale(self.title, vmath.vector3(1.5, 1.5, 1))
+
+    gui.set_pivot(self.subtitle, gui.PIVOT_CENTER)
+    gui.set_font(self.subtitle, "system")
+    gui.set_color(self.subtitle, vmath.vector4(0.95, 0.95, 0.95, 0.0))
+    gui.set_scale(self.subtitle, vmath.vector3(1.0, 1.0, 1))
+
+    self.active = false
+    self.t = 0
+    self.duration = 3.0
+    self.done_target = nil
+    self.clip_id = ""
+
+    layout(self)
+    set_visible(self, false)
+    hide_caption(self)
+    self.caption_video = false
+
+    if C and C.set_url then
+        C.set_url("CUTSCENE_VIDEO", msg.url())
+    end
+end
+
+function update(self, dt)
+    if self._view_revision ~= Viewport.revision() then layout(self) end
+    if self.caption then
+        self.caption.elapsed = self.caption.elapsed + dt
+        if self.caption.elapsed >= self.caption.duration then hide_caption(self)
+        elseif self._caption_text_revision ~= DisplayText.revision()
+            or self._caption_settings_revision ~= Settings.accessibility_revision() then refresh_caption(self) end
+    end
+    if not self.active then
+        return
+    end
+    if self._text_revision ~= DisplayText.revision() then refresh_text(self) end
+
+    self.t = self.t + dt
+    local p = clamp01(self.t / math.max(0.01, self.duration))
+
+    local fade = 1.0
+    if p < 0.14 then
+        fade = p / 0.14
+    elseif p > 0.86 then
+        fade = (1.0 - p) / 0.14
+    end
+    fade = clamp01(fade)
+
+    set_alpha(self.overlay, 0.84 * fade)
+    set_alpha(self.title, 1.00 * fade)
+    set_alpha(self.subtitle, 0.92 * fade)
+
+    if p >= 1.0 then
+        finish_clip(self, false)
+    end
+end
+
+function final(self)
+    local input = require("mvtk.rooms.input_controller")
+    if input.set_hud_covered then input.set_hud_covered(self, false) end
+end
+
+function on_message(self, message_id, message, sender)
+    message = message or {}
+    if message_id == hash("show_caption") then
+        local kind = message.kind or "scene"
+        if self.caption_video or (kind == "sound" and self.caption and self.caption.kind == "scene") then return end
+        if not tostring(message.text or ""):match("%S") then return end
+        self.caption = {kind=kind, text=message.text, speaker=message.speaker or "", token=message.token,
+            duration=math.max(0.01, tonumber(message.duration) or 3.0), elapsed=0}
+        refresh_caption(self)
+    elseif message_id == hash("hide_caption") then
+        if self.caption and self.caption.kind == message.kind then hide_caption(self) end
+    elseif message_id == hash("set_caption_video") then
+        self.caption_video = message.playing == true
+        if self.caption_video then hide_caption(self) end
+    elseif message_id == MSG_PLAY then
+        layout(self)
+        self.t = 0
+        self.token = message and message.token
+        self.active = true
+        self.duration = math.max(0.4, tonumber(message and (message.duration or message.t)) or 3.0)
+        self.done_target = (message and (message.done or message.done_url)) or sender or msg.url("main:/cutscene_manager#cutscene")
+        self.clip_id = tostring((message and (message.id or message.clip_id)) or "cutscene_test_clip")
+
+        self.title_source = message and message.title
+        self.subtitle_source = message and (message.subtitle or message.caption)
+        refresh_text(self)
+        set_visible(self, true)
+    elseif message_id == MSG_STOP then
+        finish_clip(self, true)
+    end
+end

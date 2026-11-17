@@ -1,0 +1,54 @@
+script: "/developer/ui/game/toast.gui_script"
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT
+fonts { name: "system" font: "/developer/assets/fonts/ui_text.font" }
+nodes {
+  size { x: 1.0 y: 1.0 }
+  color { x: 0.0 y: 0.0 z: 0.0 }
+  type: TYPE_BOX
+  id: "plate"
+  alpha: 0.75
+}
+nodes {
+  position { x: 480.0 y: 300.0 }
+  size { x: 800.0 y: 60.0 }
+  scale { x: 1.857142857 y: 1.857142857 }
+  type: TYPE_TEXT
+  id: "label"
+  font: "system"
+  color { x: 1.0 y: 1.0 z: 1.0 }
+  alpha: 0.0
+  font_size: 14
+}
+nodes {
+  position { x: 480.0 y: 300.0 }
+  size { x: 800.0 y: 96.0 }
+  type: TYPE_BOX
+  id: "read_more_clip"
+  clipping_mode: CLIPPING_MODE_STENCIL
+  clipping_visible: false
+}
+nodes {
+  position { x: -400.0 }
+  size { x: 800.0 y: 60.0 }
+  scale { x: 1.857142857 y: 1.857142857 }
+  type: TYPE_TEXT
+  id: "read_more_text"
+  parent: "read_more_clip"
+  pivot: PIVOT_W
+  font: "system"
+  alpha: 0.0
+  font_size: 14
+}
+nodes {
+  position { x: 880.0 y: 300.0 }
+  size { x: 80.0 y: 60.0 }
+  scale { x: 1.857142857 y: 1.857142857 }
+  type: TYPE_TEXT
+  id: "read_more_marker"
+  pivot: PIVOT_E
+  font: "system"
+  alpha: 0.0
+  font_size: 14
+}
+ 

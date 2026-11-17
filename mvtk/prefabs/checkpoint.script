@@ -1,0 +1,174 @@
+-- mvtk/prefabs/checkpoint.script
+-- ============================================================================
+-- CHECKPOINT (Auto-Save Point)
+-- ============================================================================
+-- Automatically saves player progress when they touch this zone.
+-- Unlike save_point, no interaction is required.
+--
+-- TILED PROPERTIES:
+--   checkpoint_id   - Unique identifier
+--   respawn_facing  - Reserved; does not change respawn facing yet
+--   trigger_once        - If true, only activates once per session
+--   sound_id        - Sound to play when activated
+--   particle_id     - Particle effect when activated
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+local PU = require "mvtk.prefabs.prefab_utils"
+local Flags = require "mvtk.core.flags"
+local Debug = require "developer.config.debug_config"
+local Checkpoint = require "mvtk.core.checkpoint"
+local RoomGeometry = require "mvtk.map.streaming.room_geometry"
+local Presentation = require "mvtk.tiled.object_presentation"
+
+go.property("checkpoint_id", "")
+go.property("respawn_facing", 1)
+go.property("trigger_once", false)
+go.property("sound_id", "save_point")
+go.property("particle_id", "checkpoint_glow")
+go.property("room_id", "")
+go.property("requires_flag", "")  -- if set, checkpoint only activates when this flag is true
+go.property("set_flag", "")       -- if set, this flag is set true on first activation
+
+local PLAYER_GROUP = hash("player")
+
+local function size_diag_enabled()
+    return (Debug.global and Debug.global.enable)
+        or (Debug.tiled and Debug.tiled.spawner)
+        or (Debug.gameplay and Debug.gameplay.checkpoint)
+end
+
+local function fmt_vec3(v)
+    if type(v) ~= "userdata" or v.x == nil or v.y == nil or v.z == nil then
+        return "nil"
+    end
+    return string.format("(%.3f, %.3f, %.3f)", v.x, v.y, v.z)
+end
+
+local function log_size_diag(self)
+    if not size_diag_enabled() then
+        return
+    end
+
+    local pos = go.get_world_position()
+    local scale = go.get_scale()
+
+    print(string.format(
+        "[CHECKPOINT] SIZE_DIAG id=%s checkpoint_id=%s pos=%s root_scale=%s",
+        tostring(go.get_id()),
+        tostring(self and self.checkpoint_id or ""),
+        fmt_vec3(pos),
+        fmt_vec3(scale)
+    ))
+
+    if scale and math.abs(scale.x - scale.y) > 0.001 then
+        print(string.format(
+            "[CHECKPOINT] SIZE_WARNING non-uniform root scale x=%.3f y=%.3f; Defold trigger collision will follow the smallest axis. Use a room-local generated prototype for exact Tiled bounds.",
+            scale.x,
+            scale.y
+        ))
+    end
+end
+
+-----------------------------------------------------------
+-- Local Helper Functions
+-----------------------------------------------------------
+
+-- Active means the current respawn location, not activation history. Save
+-- points and loaded saves replace this same location without touching us.
+local function is_current(self)
+    local cp = Checkpoint.data and Checkpoint.data.checkpoint
+    local pos = self.checkpoint_position
+    return cp ~= nil
+        and RoomGeometry.normalize_room_id(cp.room_id) == self.checkpoint_room
+        and tonumber(cp.x) ~= nil and tonumber(cp.y) ~= nil
+        and math.abs(cp.x - pos.x) <= 1 and math.abs(cp.y - pos.y) <= 1
+end
+
+local function restore_presentation(self)
+    local active = is_current(self)
+    if self.presentation_active == active then return end
+    self.presentation_active = active
+    Presentation.restore(active and "active" or "default")
+end
+
+local function activate(self)
+    -- Check if already activated (for one-time checkpoints)
+    if self.trigger_once and self.activated then
+        return
+    end
+
+    local pos = go.get_world_position()
+    local room_id = PU.normalize_hash_string(self.room_id)
+    if is_current(self) then
+        return
+    end
+
+    -- Gate on required flag
+    if self.requires_flag ~= "" and not Flags.get(self.requires_flag) then
+        return
+    end
+
+    local saved = Checkpoint.batch("checkpoint", function()
+        -- Include the authored flag in the same durable snapshot as the point.
+        if self.set_flag ~= "" then
+            Flags.set(self.set_flag, true)
+        end
+        Checkpoint.set_checkpoint(pos, room_id, "feet")
+    end)
+    if not saved then return end
+    self.activated = true
+
+    -- Play sound
+    PU.play_sound(self.sound_id)
+
+    -- Play particle effect
+    self.presentation_active = true
+    Presentation.emit("interacted", "active")
+
+    print(string.format("[CHECKPOINT] Activated checkpoint '%s'", tostring(self.checkpoint_id)))
+end
+
+-----------------------------------------------------------
+-- Lifecycle Functions
+-----------------------------------------------------------
+
+function init(self)
+    pcall(go.update_world_transform)
+    self.activated = false
+    self.touching = {}
+    self.checkpoint_position = go.get_world_position()
+    local room = PU.normalize_hash_string(self.room_id)
+        or require("mvtk.map.streaming.room_manager").get_current_room()
+    self.checkpoint_room = RoomGeometry.normalize_room_id(room)
+    restore_presentation(self)
+    log_size_diag(self)
+end
+
+function update(self, dt)
+    restore_presentation(self)
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if (message.other_group or message.group) == PLAYER_GROUP and message.other_id then
+            if message.enter then
+                local first = next(self.touching) == nil
+                self.touching[message.other_id] = true
+                if first then activate(self) end
+            else
+                self.touching[message.other_id] = nil
+            end
+        end
+
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        if props.respawn_facing then self.respawn_facing = props.respawn_facing end
+        if props.trigger_once ~= nil then self.trigger_once = props.trigger_once end
+        if props.requires_flag and props.requires_flag ~= "" then self.requires_flag = props.requires_flag end
+        if props.set_flag and props.set_flag ~= "" then self.set_flag = props.set_flag end
+    end
+end

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Combat Trial" type="combat_trial" width="64" height="96">
+  <properties>
+   <property name="trial_id" type="string" value=""/>
+   <property name="trial_name" type="string" value=""/>
+   <property name="encounter_ref" type="object" value="0"/>
+   <property name="label" type="string" value="Begin trial"/>
+   <property name="range" type="float" value="96"/>
+   <property name="goal" type="class" propertytype="combat_trial_goal">
+    <properties>
+     <property name="trial_goal" propertytype="trial_goals" value="clear"/>
+     <property name="defeat_target" type="int" value="10"/>
+     <property name="time_limit" type="float" value="0"/>
+     <property name="no_damage" type="bool" value="false"/>
+    </properties>
+   </property>
+   <property name="ranks" type="class" propertytype="combat_trial_ranks">
+    <properties>
+     <property name="rank_1" type="float" value="-1"/>
+     <property name="rank_2" type="float" value="-1"/>
+     <property name="rank_3" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="rewards" type="class" propertytype="combat_trial_rewards">
+    <properties>
+     <property name="trial_reward" type="string" value=""/>
+     <property name="clear_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="access" type="class" propertytype="combat_trial_access">
+    <properties>
+     <property name="requires_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="limits" type="class" propertytype="combat_trial_limits">
+    <properties>
+     <property name="disabled_abilities" propertytype="ability_flags" value=""/>
+     <property name="disabled_attacks" propertytype="attack_tags" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

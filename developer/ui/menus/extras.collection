@@ -1,0 +1,22 @@
+name: "extras"
+instances {
+  id: "audio"
+  prototype: "/developer/game/audio/audio_controller.go"
+}
+scale_along_z: 0
+embedded_instances {
+  id: "list_menu_gui"
+  data: "components {\n"
+  "  id: \"list_menu\"\n"
+  "  component: \"/developer/ui/menus/list_menu.gui\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "extras_host"
+  data: "components {\n"
+  "  id: \"gui\"\n"
+  "  component: \"/developer/ui/menus/extras_viewer.gui\"\n"
+  "}\n"
+  ""
+}

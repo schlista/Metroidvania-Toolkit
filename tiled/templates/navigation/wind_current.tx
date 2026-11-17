@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Wind Current" type="wind_current" width="256" height="256">
+  <properties>
+   <property name="current_id" type="string" value="" />
+   <property name="direction" type="string" propertytype="directions" value="right" />
+   <property name="force" type="class" propertytype="wind_current_force">
+    <properties>
+     <property name="wind_mode" type="string" propertytype="wind_modes" value="push" />
+     <property name="push_speed" type="float" value="300" />
+     <property name="angle" type="float" value="0" />
+     <property name="lift_gravity_multiple" type="float" value="1.6" />
+     <property name="max_rise_speed" type="float" value="600" />
+    </properties>
+   </property>
+   <property name="timing" type="class" propertytype="wind_current_timing">
+    <properties>
+     <property name="on_seconds" type="float" value="0" />
+     <property name="off_seconds" type="float" value="0" />
+     <property name="start_delay" type="float" value="0" />
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="wind_current_activation">
+    <properties>
+     <property name="enabled" type="bool" value="true" />
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0" />
+  </properties>
+ </object>
+</template>

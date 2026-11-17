@@ -1,0 +1,51 @@
+-- Baked rectangle; the main script owns overlap and consumption.
+local Payloads = require "mvtk.shared.trigger_payloads"
+local Util = require "mvtk.core.util"
+
+go.property("quest_id", "")
+go.property("trigger_id", "")
+go.property("action", "advance")
+go.property("step_id", "")
+go.property("once_flag", "")
+go.property("requires_quest", "")
+go.property("requires_quest_state", "any")
+go.property("requires_flag", "")
+go.property("skip_if_flag", "")
+go.property("set_flag", "")
+go.property("auto_play", true)
+go.property("trigger_once", true)
+go.property("persist_once", true)
+go.property("consume_on_fire", true)
+go.property("width", 128)
+go.property("height", 128)
+go.property("room_id", "")
+go.property("object_id", 0)
+
+function init(self)
+    self.register_id = Util.room_key(self.room_id) .. "_quest_" .. tostring(math.max(0, math.floor(self.object_id)))
+    go.update_world_transform()
+    msg.post("main:/main_go#script", "register_quest_trigger", Payloads.quest({
+        id = self.register_id, owner = msg.url(), position = go.get_world_position(),
+        width = self.width, height = self.height, room_id = self.room_id,
+        quest_id = self.quest_id,
+        trigger_id = self.trigger_id,
+        action = self.action,
+        step_id = self.step_id,
+        once_flag = self.once_flag,
+        requires_quest = self.requires_quest,
+        requires_quest_state = self.requires_quest_state,
+        requires_flag = self.requires_flag,
+        skip_if_flag = self.skip_if_flag,
+        set_flag = self.set_flag,
+        auto_play = self.auto_play,
+        trigger_once = self.trigger_once,
+        persist_once = self.persist_once,
+        consume_on_fire = self.consume_on_fire,
+    }))
+end
+
+function final(self)
+    if self.register_id then
+        msg.post("main:/main_go#script", "unregister_quest_trigger", {id = self.register_id})
+    end
+end

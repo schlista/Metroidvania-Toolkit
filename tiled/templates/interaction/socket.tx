@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Socket" type="socket" width="96" height="96">
+  <properties>
+   <property name="socket_id" type="string" value=""/>
+   <property name="target_id" type="string" value=""/>
+   <property name="target_ref" type="object" value="0"/>
+   <property name="acceptance" type="class" propertytype="socket_accepts">
+    <properties>
+     <property name="accepts" type="string" propertytype="carry_kind_filters" value="any"/>
+     <property name="accepts_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="response" type="class" propertytype="socket_response">
+    <properties>
+     <property name="message_on" type="string" value="activate"/>
+     <property name="message_off" type="string" value="deactivate"/>
+     <property name="persist_state" type="bool" value="false"/>
+     <property name="persist_key" type="string" value=""/>
+     <property name="set_flag_on" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

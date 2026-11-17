@@ -1,0 +1,586 @@
+local GeneratedText = require "mvtk.ui.generated_text"
+local ViewPolicy = require "mvtk.render.view_policy"
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local DisplayText = require "mvtk.ui.display_text"
+-- developer/ui/game/boss_health_bar.gui_script
+-- Displays boss health bar at the configured screen edge.
+-- Styling is driven by developer/config/boss_ui.lua.
+
+local ok_boss_ui, BossUI = pcall(require, "mvtk.bosses.boss_ui")
+if not ok_boss_ui then BossUI = nil end
+
+local ok_util, Util = pcall(require, "mvtk.core.util")
+
+local UiConfig = {}
+if ok_util and Util and Util.require_config then
+    UiConfig = Util.require_config("developer.config.boss_ui", {}) or {}
+else
+    local ok_cfg, cfg = pcall(require, "developer.config.boss_ui")
+    if ok_cfg and type(cfg) == "table" then
+        UiConfig = cfg
+    end
+end
+
+local M = {}
+
+local DEFAULTS = {
+    bar_width = 600,
+    slot_gap = 16,
+    max_bars = 3,
+    bar_height = 24,
+    health_bar_position = "top",
+    margin_top = 40,
+    margin_bottom = 40,
+    name_offset_y = 20,
+    phase_offset_y = 10,
+    bar_padding = 2,
+    show_stagger_gauge = true,
+    stagger_bar_height = 6,
+    stagger_offset_y = 4,
+    color_stagger = { 0.9, 0.75, 0.2, 1.0 },
+    color_name = { 1.0, 1.0, 0.7, 1.0 },
+    color_bg = { 0.1, 0.1, 0.1, 0.8 },
+    color_hp_text = { 1.0, 1.0, 1.0, 1.0 },
+    color_phase = { 1.0, 0.5, 0.5, 0.9 },
+    color_phase_flash = { 1.0, 1.0, 0.0, 1.0 },
+    health_fill_tiers = {
+        { above = 0.6, color = { 0.9, 0.2, 0.2, 1.0 } },
+        { above = 0.3, color = { 0.9, 0.5, 0.1, 1.0 } },
+        { above = 0.0, color = { 0.9, 0.9, 0.1, 1.0 } },
+    },
+    fade_in_duration = 0.3,
+    fade_out_duration = 1.0,
+    phase_flash_duration = 0.5,
+}
+
+local function cfg_number(key, fallback)
+    local value = tonumber(UiConfig[key])
+    return value or fallback
+end
+
+local function normalize_position(value, fallback)
+    local function normalize_one(candidate)
+        local raw_value = candidate
+        if ok_util and Util and Util.normalize_hash_string then
+            raw_value = Util.normalize_hash_string(candidate) or candidate
+        end
+        local raw = tostring(raw_value or ""):lower()
+        if raw == "top" or raw == "bottom" then
+            return raw
+        end
+        return nil
+    end
+
+    return normalize_one(value)
+        or normalize_one(fallback)
+        or DEFAULTS.health_bar_position
+end
+
+local function color_to_v4(rgba, fallback)
+    local src = type(rgba) == "table" and rgba or fallback
+    return vmath.vector4(
+        tonumber(src[1]) or fallback[1],
+        tonumber(src[2]) or fallback[2],
+        tonumber(src[3]) or fallback[3],
+        tonumber(src[4]) or fallback[4]
+    )
+end
+
+local function normalize_fill_tiers(tiers)
+    local source = type(tiers) == "table" and tiers or DEFAULTS.health_fill_tiers
+    local normalized = {}
+
+    for _, tier in ipairs(source) do
+        if type(tier) == "table" then
+            table.insert(normalized, {
+                above = tonumber(tier.above) or 0,
+                color = color_to_v4(tier.color, DEFAULTS.health_fill_tiers[#normalized + 1]
+                    and DEFAULTS.health_fill_tiers[#normalized + 1].color
+                    or DEFAULTS.health_fill_tiers[#DEFAULTS.health_fill_tiers].color),
+            })
+        end
+    end
+
+    if #normalized == 0 then
+        for _, tier in ipairs(DEFAULTS.health_fill_tiers) do
+            table.insert(normalized, {
+                above = tier.above,
+                color = color_to_v4(tier.color, tier.color),
+            })
+        end
+    end
+
+    return normalized
+end
+
+local STYLE = {
+    bar_width = cfg_number("bar_width", DEFAULTS.bar_width),
+    slot_gap = math.max(0, cfg_number("slot_gap", DEFAULTS.slot_gap)),
+    max_bars = math.max(1, math.min(3, math.floor(cfg_number("max_bars", DEFAULTS.max_bars)))) ,
+    bar_height = cfg_number("bar_height", DEFAULTS.bar_height),
+    health_bar_position = normalize_position(UiConfig.health_bar_position or UiConfig.position, DEFAULTS.health_bar_position),
+    margin_top = cfg_number("margin_top", DEFAULTS.margin_top),
+    margin_bottom = cfg_number("margin_bottom", DEFAULTS.margin_bottom),
+    name_offset_y = cfg_number("name_offset_y", DEFAULTS.name_offset_y),
+    phase_offset_y = cfg_number("phase_offset_y", DEFAULTS.phase_offset_y),
+    bar_padding = cfg_number("bar_padding", DEFAULTS.bar_padding),
+    show_stagger_gauge = UiConfig.show_stagger_gauge ~= false,
+    stagger_bar_height = cfg_number("stagger_bar_height", DEFAULTS.stagger_bar_height),
+    stagger_offset_y = cfg_number("stagger_offset_y", DEFAULTS.stagger_offset_y),
+    color_stagger = color_to_v4(UiConfig.color_stagger, DEFAULTS.color_stagger),
+    color_name = color_to_v4(UiConfig.color_name, DEFAULTS.color_name),
+    color_bg = color_to_v4(UiConfig.color_bg, DEFAULTS.color_bg),
+    color_hp_text = color_to_v4(UiConfig.color_hp_text, DEFAULTS.color_hp_text),
+    color_phase = color_to_v4(UiConfig.color_phase, DEFAULTS.color_phase),
+    color_phase_flash = color_to_v4(UiConfig.color_phase_flash, DEFAULTS.color_phase_flash),
+    health_fill_tiers = normalize_fill_tiers(UiConfig.health_fill_tiers),
+    fade_in_duration = cfg_number("fade_in_duration", DEFAULTS.fade_in_duration),
+    fade_out_duration = cfg_number("fade_out_duration", DEFAULTS.fade_out_duration),
+    phase_flash_duration = cfg_number("phase_flash_duration", DEFAULTS.phase_flash_duration),
+}
+
+local function with_alpha(color, alpha)
+    return vmath.vector4(color.x, color.y, color.z, alpha)
+end
+
+local function clamp01(value)
+    return math.max(0, math.min(1, tonumber(value) or 0))
+end
+
+local function get_fill_color(fraction)
+    for _, tier in ipairs(STYLE.health_fill_tiers) do
+        if fraction > tier.above then
+            return tier.color
+        end
+    end
+    return STYLE.health_fill_tiers[#STYLE.health_fill_tiers].color
+end
+
+local function get_bar_position(self)
+    local x = (self._bounds.min_x + self._bounds.max_x) / 2 - STYLE.bar_width / 2 + (self._slot_offset or 0)
+    if self.health_bar_position == "bottom" then
+        return vmath.vector3(x, self._bounds.min_y + STYLE.margin_bottom + STYLE.bar_height, 0)
+    end
+    return vmath.vector3(x, self._bounds.max_y - STYLE.margin_top, 0)
+end
+
+local function get_fill_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(bar_pos.x + STYLE.bar_padding, bar_pos.y - STYLE.bar_padding, 0)
+end
+
+local function get_name_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(bar_pos.x + (self._slot_width or STYLE.bar_width) / 2, bar_pos.y + STYLE.name_offset_y, 0)
+end
+
+local function get_phase_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(bar_pos.x + (self._slot_width or STYLE.bar_width) / 2, bar_pos.y - (STYLE.bar_height + STYLE.phase_offset_y), 0)
+end
+
+local function get_hp_text_position(self)
+    local bar_pos = get_bar_position(self)
+    return vmath.vector3(bar_pos.x + (self._slot_width or STYLE.bar_width) / 2, bar_pos.y - STYLE.bar_height / 2, 0)
+end
+
+local function get_fill_size(fraction, self)
+    local inner_width = math.max(0, (self and self._slot_width or STYLE.bar_width) - STYLE.bar_padding * 2)
+    local inner_height = math.max(0, STYLE.bar_height - STYLE.bar_padding * 2)
+    return vmath.vector3(inner_width * fraction, inner_height, 0)
+end
+
+local function set_ui_enabled(self, enabled)
+    gui.set_enabled(self.boss_name, enabled)
+    gui.set_enabled(self.hp_bg, enabled)
+    gui.set_enabled(self.hp_fg, enabled)
+    gui.set_enabled(self.hp_text, enabled)
+    gui.set_enabled(self.phase_text, enabled)
+    if self.stagger_bg then
+        gui.set_enabled(self.stagger_bg, enabled and self.has_stagger)
+        gui.set_enabled(self.stagger_fg, enabled and self.has_stagger)
+    end
+end
+
+local function get_stagger_position(self)
+    local pos = get_bar_position(self)
+    return vmath.vector3(pos.x, pos.y - STYLE.bar_height - STYLE.stagger_offset_y, 0)
+end
+
+local function refresh_stagger(self)
+    if not self.stagger_bg then return end
+    local fraction = self.staggered and 1 or clamp01(self.stagger_fraction)
+    gui.set_size(self.stagger_fg, vmath.vector3((self._slot_width or STYLE.bar_width) * fraction, STYLE.stagger_bar_height, 0))
+    gui.set_color(self.stagger_bg, STYLE.color_bg)
+    gui.set_color(self.stagger_fg, STYLE.color_stagger)
+end
+
+local function ensure_stagger_nodes(self)
+    if not self.has_stagger or self.stagger_bg then return end
+    local size = vmath.vector3(self._slot_width or STYLE.bar_width, STYLE.stagger_bar_height, 0)
+    self.stagger_bg = gui.new_box_node(get_stagger_position(self), size)
+    self.stagger_fg = gui.new_box_node(get_stagger_position(self), size)
+    gui.set_pivot(self.stagger_bg, gui.PIVOT_NW)
+    gui.set_pivot(self.stagger_fg, gui.PIVOT_NW)
+    gui.set_size_mode(self.stagger_bg, gui.SIZE_MODE_MANUAL)
+    gui.set_size_mode(self.stagger_fg, gui.SIZE_MODE_MANUAL)
+end
+
+local function update_phase_label(self)
+    if self.total_phases > 1 then
+        gui.set_text(self.phase_text, DisplayText.ui(self._compact and "boss.phase_short" or "boss.phase", {current=self.current_phase, total=self.total_phases}))
+    else
+        gui.set_text(self.phase_text, "")
+    end
+end
+
+local function refresh_bar_visuals(self)
+    local fraction = clamp01(self.hp / math.max(1, self.hp_max))
+    gui.set_size(self.hp_fg, get_fill_size(fraction, self))
+    gui.set_color(self.hp_fg, get_fill_color(fraction))
+    gui.set_text(self.hp_text, DisplayText.ui("boss.health", {percent=math.floor(fraction * 100), current=math.floor(self.hp), total=math.floor(self.hp_max)}))
+end
+
+local function apply_base_colors(self)
+    gui.set_color(self.boss_name, STYLE.color_name)
+    gui.set_color(self.hp_bg, STYLE.color_bg)
+    gui.set_color(self.hp_text, STYLE.color_hp_text)
+    gui.set_color(self.phase_text, STYLE.color_phase)
+    refresh_bar_visuals(self)
+    refresh_stagger(self)
+end
+
+local NODE_FIELDS = {"boss_name", "hp_bg", "hp_fg", "hp_text", "phase_text", "stagger_bg", "stagger_fg"}
+
+local function create_nodes(self)
+    self.boss_name = GeneratedText.new(gui, "/developer/ui/game/boss_health_bar.gui", get_name_position(self), "")
+    gui.set_font(self.boss_name, "system")
+    gui.set_pivot(self.boss_name, gui.PIVOT_N)
+
+    self.hp_bg = gui.new_box_node(get_bar_position(self), vmath.vector3(STYLE.bar_width, STYLE.bar_height, 0))
+    gui.set_pivot(self.hp_bg, gui.PIVOT_NW)
+
+    self.hp_fg = gui.new_box_node(get_fill_position(self), get_fill_size(1))
+    gui.set_pivot(self.hp_fg, gui.PIVOT_NW)
+
+    self.hp_text = GeneratedText.new(gui, "/developer/ui/game/boss_health_bar.gui", get_hp_text_position(self), "")
+    gui.set_font(self.hp_text, "system")
+    gui.set_pivot(self.hp_text, gui.PIVOT_CENTER)
+
+    self.phase_text = GeneratedText.new(gui, "/developer/ui/game/boss_health_bar.gui", get_phase_position(self), "")
+    gui.set_font(self.phase_text, "system")
+    gui.set_pivot(self.phase_text, gui.PIVOT_N)
+
+end
+
+local function defaults(self)
+    self.health_bar_position = STYLE.health_bar_position
+    self.visible, self.active = false, false
+    self.boss_name_str, self.hp, self.hp_max = "", 0, 1
+    self.current_phase, self.total_phases = 1, 1
+    self.has_stagger, self.stagger_fraction, self.staggered = false, 0, false
+    self.show, self.hide, self.fade_out, self.reposition = M.show, M.hide, M.fade_out, M.reposition
+end
+
+-- Keep slot one's public fields for existing HUD integrations.
+local function alias_first(self)
+    local first = self._displayed and self._displayed[1]
+    if not first then self.visible = false; return end
+    for _, key in ipairs(NODE_FIELDS) do self[key] = first[key] end
+    for _, key in ipairs({"visible", "boss_id", "boss_name_str", "hp", "hp_max", "current_phase",
+        "total_phases", "has_stagger", "stagger_fraction", "staggered"}) do self[key] = first[key] end
+end
+
+local function fit_name(slot)
+    if slot._compact then
+        local text = slot.boss_name_str and DisplayText.render(slot.boss_name_str) or DisplayText.ui("boss.name_upper")
+        local metrics = GeneratedText.metrics(gui.get_font_resource("system"), text, nil, resource)
+        local scale = math.min(1, slot._slot_width / math.max(1, metrics.width))
+        gui.set_scale(slot.boss_name, vmath.vector3(scale, scale, 1))
+        slot._name_scaled = true
+    elseif slot._name_scaled then
+        gui.set_scale(slot.boss_name, vmath.vector3(1, 1, 1))
+        slot._name_scaled = false
+    end
+end
+
+function M.layout(self)
+    local selected, highest, group, newest = {}, -math.huge, nil, -math.huge
+    for _, slot in ipairs(self._order) do
+        if slot.active and (slot.priority > highest
+            or slot.priority == highest and slot._shown > newest) then
+            highest, group, newest = slot.priority, slot.group_id, slot._shown
+        end
+    end
+    for _, slot in ipairs(self._order) do
+        if slot.active and slot.priority == highest and slot.group_id == group and #selected < STYLE.max_bars then
+            selected[#selected + 1] = slot
+        end
+    end
+    local retained = {}
+    for _, slot in ipairs(selected) do retained[slot] = true end
+    for _, slot in ipairs(self._order) do
+        if slot.boss_name and not retained[slot] then
+            if slot.fading then slot.active, slot.fading = false, false end
+            slot.visible = false
+            set_ui_enabled(slot, false)
+            for _, key in ipairs(NODE_FIELDS) do
+                if slot[key] then gui.cancel_animations(slot[key], gui.PROP_COLOR) end
+                slot[key] = nil
+            end
+            slot._pool = nil
+        end
+    end
+    -- Release pool assignments before reusing their bounded node sets.
+    for _, pool in ipairs(self._pools) do
+        if pool.owner and not retained[pool.owner] then pool.owner = nil end
+    end
+    local width = (STYLE.bar_width - math.min(STYLE.slot_gap, STYLE.bar_width / math.max(1, #selected))
+        * math.max(0, #selected - 1)) / math.max(1, #selected)
+    local gap = math.min(STYLE.slot_gap, STYLE.bar_width / math.max(1, #selected))
+    for index, slot in ipairs(selected) do
+        local fresh = not slot._pool
+        if fresh then
+            local pool
+            for _, candidate in ipairs(self._pools) do if not candidate.owner then pool = candidate; break end end
+            if not pool then
+                pool = {_bounds=self._bounds, health_bar_position=slot.health_bar_position}
+                create_nodes(pool)
+                self._pools[#self._pools + 1] = pool
+            end
+            slot._pool, pool.owner = pool, slot
+            for _, key in ipairs(NODE_FIELDS) do slot[key] = pool[key] end
+            slot._name_scaled = pool.name_scaled
+        end
+        slot._bounds = self._bounds
+        slot._slot_width, slot._slot_offset, slot._compact = width, (index - 1) * (width + gap), #selected > 1
+        ensure_stagger_nodes(slot)
+        for _, key in ipairs(NODE_FIELDS) do slot._pool[key] = slot[key] end
+        slot:reposition()
+        gui.set_size(slot.hp_bg, vmath.vector3(width, STYLE.bar_height, 0))
+        if slot.stagger_bg then gui.set_size(slot.stagger_bg, vmath.vector3(width, STYLE.stagger_bar_height, 0)) end
+        gui.set_text(slot.boss_name, slot.boss_name_str and DisplayText.render(slot.boss_name_str) or DisplayText.ui("boss.name_upper"))
+        update_phase_label(slot)
+        fit_name(slot)
+        slot._pool.name_scaled = slot._name_scaled
+        slot.visible = true
+        set_ui_enabled(slot, true)
+        if fresh or slot._reshow then slot:show(); slot._reshow = nil
+        elseif not slot.fading then apply_base_colors(slot) end
+    end
+    self._displayed = selected
+    if #selected == 0 then M.reposition(self) end
+    alias_first(self)
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.hud)
+    self._boss_ui_url = msg.url()
+    if BossUI then BossUI.register(self._boss_ui_url) end
+    self._bounds = Viewport.design_bounds(ViewPolicy.current().hud_frame)
+    if not self._bounds then
+        local w, h = Viewport.design_size()
+        self._bounds = {min_x=0,min_y=0,max_x=w,max_y=h}
+    end
+    self._viewport_revision = Viewport.revision()
+    defaults(self)
+    create_nodes(self)
+    apply_base_colors(self)
+    set_ui_enabled(self, false)
+    local pool = {}
+    for _, key in ipairs(NODE_FIELDS) do pool[key] = self[key] end
+    self._pools, self._slots, self._order, self._displayed = {pool}, {}, {}, {}
+    self._show_serial = 0
+    -- Replay only after nodes and routing exist: registry sends are asynchronous
+    -- in the engine, but this also works for immediate integrations.
+    local ok_mgr, BossManager = pcall(require, "mvtk.bosses.boss_manager")
+    if ok_mgr and BossManager and BossManager.refresh_boss_health_bars then BossManager.refresh_boss_health_bars() end
+end
+
+function final(self)
+    if BossUI and self._boss_ui_url then
+        BossUI.unregister(self._boss_ui_url)
+    end
+end
+
+function update(self, dt)
+    if self._viewport_revision ~= Viewport.revision() then
+        self._bounds = Viewport.design_bounds(ViewPolicy.current().hud_frame) or self._bounds
+        self._viewport_revision = Viewport.revision()
+        M.layout(self)
+    end
+    for _, slot in ipairs(self._displayed) do
+        if slot.visible and not slot.fading then
+            if slot._text_revision ~= DisplayText.revision() then
+                gui.set_text(slot.boss_name, slot.boss_name_str and DisplayText.render(slot.boss_name_str) or DisplayText.ui("boss.name_upper"))
+                update_phase_label(slot)
+                fit_name(slot)
+                slot._text_revision = DisplayText.revision()
+            end
+            refresh_bar_visuals(slot)
+        end
+    end
+    alias_first(self)
+end
+
+local function slot_message(self, message_id, message, sender)
+    if message_id == hash("show_boss_health") then
+        self.boss_id = message.boss_id
+        self.boss_name_str = message.boss_name
+        self.hp = message.hp or 100
+        self.hp_max = message.hp_max or 100
+        self.current_phase = message.current_phase or 1
+        self.total_phases = message.total_phases or 1
+        self.has_stagger = message.stagger == true and STYLE.show_stagger_gauge
+        self.stagger_fraction = clamp01(message.stagger_fraction)
+        self.staggered = message.staggered == true
+        self.health_bar_position = normalize_position(
+            message.health_bar_position or message.boss_health_bar_position or message.hud_position,
+            STYLE.health_bar_position
+        )
+
+        if not self.boss_name then return end
+        ensure_stagger_nodes(self)
+        self:reposition()
+        gui.set_text(self.boss_name, self.boss_name_str and DisplayText.render(self.boss_name_str) or DisplayText.ui("boss.name_upper"))
+        update_phase_label(self)
+        apply_base_colors(self)
+        self:show()
+
+    elseif message_id == hash("update_boss_health") then
+        self.hp = message.hp or self.hp
+        self.hp_max = message.hp_max or self.hp_max
+
+    elseif message_id == hash("update_boss_stagger") then
+        if self.has_stagger and (not message.boss_id or message.boss_id == self.boss_id) then
+            self.stagger_fraction = clamp01(message.fraction)
+            self.staggered = message.staggered == true
+            refresh_stagger(self)
+        end
+
+    elseif message_id == hash("update_boss_phase") then
+        self.current_phase = message.current_phase or self.current_phase
+        self.total_phases = message.total_phases or self.total_phases
+        if not self.phase_text then return end
+        update_phase_label(self)
+
+        if message.phase_changed then
+            gui.set_color(self.phase_text, STYLE.color_phase_flash)
+            gui.animate(
+                self.phase_text,
+                gui.PROP_COLOR,
+                STYLE.color_phase,
+                gui.EASING_INOUTQUAD,
+                STYLE.phase_flash_duration
+            )
+        end
+
+    elseif message_id == hash("hide_boss_health") then
+        self:hide()
+
+    elseif message_id == hash("boss_defeated") then
+        self:fade_out()
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    -- A phase-only consumer can use the existing receiver before init.
+    if not self._slots then return slot_message(self, message_id, message, sender) end
+    local id = message.boss_id or "default"
+    local slot = self._slots[id]
+    if message_id == hash("show_boss_health") then
+        if not slot then
+            slot = {_host=self, _bounds=self._bounds}
+            defaults(slot)
+            self._slots[id] = slot
+            self._order[#self._order + 1] = slot
+        end
+        slot.active, slot.fading, slot._reshow = true, false, true
+        self._show_serial = self._show_serial + 1
+        slot._shown = self._show_serial
+        slot.group_id, slot.priority = message.group_id or "default", tonumber(message.priority) or 2
+        slot_message(slot, message_id, message, sender)
+        M.layout(self)
+    elseif slot then
+        slot_message(slot, message_id, message, sender)
+        alias_first(self)
+    elseif not message.boss_id and self._displayed[1] then
+        -- Legacy id-less control messages still address slot one.
+        slot_message(self._displayed[1], message_id, message, sender)
+        alias_first(self)
+    end
+end
+
+function M.show(self)
+    -- Disabled nodes suspend fades. Reusing the gauge must also cancel the
+    -- name's old completion callback, which would hide the next boss's HUD.
+    for _, key in ipairs(NODE_FIELDS) do
+        if self[key] and gui.cancel_animations then gui.cancel_animations(self[key], gui.PROP_COLOR) end
+    end
+    self.visible = true
+    set_ui_enabled(self, true)
+    apply_base_colors(self)
+    gui.set_color(self.boss_name, with_alpha(STYLE.color_name, 0))
+    gui.animate(
+        self.boss_name,
+        gui.PROP_COLOR,
+        STYLE.color_name,
+        gui.EASING_INOUTQUAD,
+        STYLE.fade_in_duration
+    )
+end
+
+function M.hide(self)
+    self.visible, self.active, self.fading = false, false, false
+    if self.boss_name then set_ui_enabled(self, false) end
+    if self._host then M.layout(self._host) end
+end
+
+function M.fade_out(self)
+    if not self.boss_name then return self:hide() end
+    self.fading = true
+    gui.animate(
+        self.boss_name,
+        gui.PROP_COLOR,
+        with_alpha(STYLE.color_name, 0),
+        gui.EASING_INOUTQUAD,
+        STYLE.fade_out_duration,
+        0,
+        function()
+            self:hide()
+        end
+    )
+    gui.animate(self.hp_bg, gui.PROP_COLOR, with_alpha(STYLE.color_bg, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.hp_fg, gui.PROP_COLOR, with_alpha(get_fill_color(clamp01(self.hp / math.max(1, self.hp_max))), 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.hp_text, gui.PROP_COLOR, with_alpha(STYLE.color_hp_text, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    gui.animate(self.phase_text, gui.PROP_COLOR, with_alpha(STYLE.color_phase, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    if self.stagger_bg then
+        gui.animate(self.stagger_bg, gui.PROP_COLOR, with_alpha(STYLE.color_bg, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+        gui.animate(self.stagger_fg, gui.PROP_COLOR, with_alpha(STYLE.color_stagger, 0), gui.EASING_INOUTQUAD, STYLE.fade_out_duration)
+    end
+end
+
+function M.reposition(self)
+    if self.boss_name then
+        gui.set_position(self.boss_name, get_name_position(self))
+    end
+    if self.hp_bg then
+        gui.set_position(self.hp_bg, get_bar_position(self))
+    end
+    if self.hp_fg then
+        gui.set_position(self.hp_fg, get_fill_position(self))
+    end
+    if self.hp_text then
+        gui.set_position(self.hp_text, get_hp_text_position(self))
+    end
+    if self.phase_text then
+        gui.set_position(self.phase_text, get_phase_position(self))
+    end
+    if self.stagger_bg then
+        gui.set_position(self.stagger_bg, get_stagger_position(self))
+        gui.set_position(self.stagger_fg, get_stagger_position(self))
+    end
+end
+
+return M

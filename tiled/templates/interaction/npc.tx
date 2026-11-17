@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="NPC" type="npc" width="32" height="32">
+  <properties>
+   <property name="npc_type" propertytype="npcs" value="villager_male"/>
+   <property name="npc_id" type="string" value=""/>
+   <property name="npc_name" type="string" value=""/>
+   <property name="appearance" type="class" propertytype="npc_appearance">
+    <properties>
+     <property name="facing" type="int" value="1"/>
+    </properties>
+   </property>
+   <property name="dialogue" type="class" propertytype="npc_dialogue">
+    <properties>
+     <property name="dialogue_id" type="string" value=""/>
+     <property name="dialogue_text" type="string" value=""/>
+     <property name="interaction_range" type="float" value="48"/>
+    </properties>
+   </property>
+   <property name="vendor" type="class" propertytype="npc_vendor">
+    <properties>
+     <property name="vendor_shop" propertytype="shops" value="none"/>
+     <property name="vendor_flag" type="string" value=""/>
+     <property name="vendor_greeting" propertytype="vendor_greetings" value="first_visit"/>
+     <property name="buys_items" type="bool" value="true"/>
+     <property name="sell_share" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="npc_lifecycle">
+    <properties>
+     <property name="despawn_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="behavior" type="class" propertytype="npc_behavior">
+    <properties>
+     <property name="show_new_dialogue_marker" type="bool" value="false"/>
+     <property name="face_player" type="bool" value="false"/>
+     <property name="barks" type="string" value=""/>
+     <property name="bark_range" type="float" value="96"/>
+     <property name="bark_cooldown" type="float" value="8"/>
+     <property name="wander_width" type="float" value="0"/>
+     <property name="wander_speed" type="float" value="30"/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="npc_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="world_state" type="class" propertytype="npc_world_state">
+    <properties>
+     <property name="appear_when" type="string" value=""/>
+     <property name="remove_when" type="string" value=""/>
+     <property name="presence_timing" propertytype="presence_timings" value="enter"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

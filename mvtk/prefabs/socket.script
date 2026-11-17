@@ -1,0 +1,90 @@
+-- A baked overlap receiver. Saved channels are replayed by their receivers.
+local Flags = require "mvtk.core.flags"
+local State = require "mvtk.world.switch_state"
+local Bus = require "mvtk.world.trigger_bus"
+local PU = require "mvtk.prefabs.prefab_utils"
+local Pause = require "mvtk.core.pause"
+local Presentation = require "mvtk.tiled.object_presentation"
+
+go.property("socket_id", "")
+go.property("room_id", "")
+go.property("target_id", "")
+go.property("accepts", "any")
+go.property("accepts_id", "")
+go.property("message_on", "activate")
+go.property("message_off", "deactivate")
+go.property("persist_state", false)
+go.property("persist_key", "")
+go.property("set_flag_on", "")
+
+local function interaction(self, enabled)
+    if self.registered == enabled then return end
+    self.registered = enabled
+    if enabled then
+        local cfg = require("mvtk.core.util").require_config("developer.config.interaction")
+        PU.register_interaction({key="interaction.take"}, cfg.default_range, cfg.default_priority, nil, true)
+    else PU.unregister_interaction() end
+end
+
+local function emit(self, on)
+    local text = on and self.message_on or self.message_off
+    if self.persist_state then
+        State.write_own(Flags, self.persist_key, on)
+        State.write_channel(Flags, self.target_id, on, text)
+    end
+    if on and self.set_flag_on ~= "" and not Flags.has(self.set_flag_on) then
+        Flags.set(self.set_flag_on, true)
+    end
+    if self.target_id ~= "" then
+        Bus.emit(self.target_id, hash(text), {lever_id=self.socket_id,
+            state=on and "on" or "off", kind="socket", persist=self.persist_state})
+    end
+    Presentation.restore(on and "filled" or "empty")
+end
+
+function init(self)
+    go.update_world_transform()
+    self.position = go.get_world_position()
+    self.registered = false
+    self.filled = self.persist_state and State.read_own(Flags, self.persist_key) == true
+    Presentation.set_state_fallbacks(require("developer.config.object_art").socket_state_fallbacks)
+    Presentation.restore(self.filled and "filled" or "empty")
+end
+
+function on_message(self, message_id, message, sender)
+    if Pause.get() and message_id ~= hash("socket_taken") and message_id ~= hash("socket_filled")
+        and message_id ~= hash("socket_rejected") then return end
+    if message_id == hash("socket_offer") and not self.filled and not self.pending then
+        if not message.object or (self.accepts ~= "any" and self.accepts ~= message.kind)
+            or (self.accepts_id ~= "" and self.accepts_id ~= message.carry_id) then return end
+        self.pending, self.object = true, message.object
+        msg.post(self.object, "carry_socketed", {x=self.position.x, y=self.position.y, consume=self.persist_state})
+    elseif message_id == hash("socket_filled") and self.pending and sender == self.object then
+        -- A fuse expiry or pickup can race the overlap offer. Commit only after
+        -- the carryable confirms the snap (and, when persistent, consumption).
+        self.pending, self.filled = false, true
+        emit(self, true)
+        interaction(self, not self.persist_state)
+    elseif message_id == hash("socket_rejected") and self.pending and sender == self.object then
+        self.pending, self.object = false, nil
+    elseif message_id == hash("mvtk_interact") and self.filled and not self.persist_state and self.object then
+        -- Keep the socket occupied until the player actually accepts the begin.
+        msg.post(self.object, "carry_take", {})
+        return true
+    elseif message_id == hash("socket_taken") and self.filled and not self.persist_state and sender == self.object then
+        self.filled, self.object = false, nil
+        interaction(self, false)
+        emit(self, false)
+    end
+end
+
+function final(self) interaction(self, false) end
+
+local receive_message = on_message
+function on_message(self, message_id, message, sender)
+    local accepted = receive_message(self, message_id, message, sender)
+    if message_id == hash("mvtk_interact") and message and message.interaction_result then
+        require("mvtk.game.interaction_result").report(message, accepted)
+    end
+    return accepted
+end

@@ -1,0 +1,7 @@
+#version 140
+in vec2 texcoord0;
+out vec2 var_uv;
+void main() {
+    var_uv = texcoord0;
+    gl_Position = vec4(texcoord0 * 2.0 - 1.0, 0.0, 1.0);
+}

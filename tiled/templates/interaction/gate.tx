@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Gate" type="gate" width="128" height="128">
+  <properties>
+   <property name="gate_type" propertytype="gates" value="key_gate"/>
+   <property name="gate_id" type="string" value=""/>
+   <property name="requirements" type="class" propertytype="gate_requirements">
+    <properties>
+     <property name="required_key" propertytype="keys" value="normal"/>
+     <property name="required_item" propertytype="collectibles" value="none"/>
+     <property name="required_ability" propertytype="optional_abilities" value="none"/>
+     <property name="required_abilities" propertytype="ability_flags" value=""/>
+     <property name="requirement_logic" propertytype="requirement_logic" value="all"/>
+     <property name="required_action" propertytype="actions" value="none"/>
+     <property name="required_energy" type="int" value="-1"/>
+    </properties>
+   </property>
+   <property name="state_and_persistence" type="class" propertytype="gate_state_and_persistence">
+    <properties>
+     <property name="group_id" type="string" value=""/>
+     <property name="starts_open" type="bool" value="false"/>
+     <property name="stays_open" type="bool" value="true"/>
+     <property name="persist_unlock" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="sequence" type="class" propertytype="gate_sequence">
+    <properties>
+     <property name="sequence_order" type="string" value=""/>
+     <property name="reset_on_wrong" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="stages" type="class" propertytype="gate_stages">
+    <properties>
+     <property name="stage_flags" type="string" value=""/>
+     <property name="stages_required" type="int" value="-1"/>
+    </properties>
+   </property>
+   <property name="messaging" type="class" propertytype="gate_messaging">
+    <properties>
+     <property name="open_message" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="art_item" type="string" value=""/>
+   <property name="art_feedback" type="class" propertytype="gate_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="interact_effect" type="string" propertytype="particle_effects" value="none"/>
+     <property name="effect_offset_x" type="float" value="0"/>
+     <property name="effect_offset_y" type="float" value="0"/>
+     <property name="effect_scale" type="float" value="1"/>
+     <property name="effect_cooldown" type="float" value="0"/>
+    </properties>
+   </property>
+   <property name="world_state" type="class" propertytype="gate_world_state">
+    <properties>
+     <property name="appear_when" type="string" value=""/>
+     <property name="remove_when" type="string" value=""/>
+     <property name="presence_timing" propertytype="presence_timings" value="enter"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

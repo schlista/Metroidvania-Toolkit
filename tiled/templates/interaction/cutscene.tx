@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Cutscene Trigger" type="cutscene" width="128" height="128">
+  <properties>
+   <property name="cutscene_id" type="string" value=""/>
+   <property name="trigger_id" type="string" value=""/>
+   <property name="content" type="class" propertytype="cutscene_trigger_content">
+    <properties>
+     <property name="cutscene_dialogue_id" type="string" value=""/>
+     <property name="video_id" type="string" value=""/>
+     <property name="video_play_sound" type="bool" value="false"/>
+     <property name="video_timeout" type="float" value="12"/>
+     <property name="cutscene_use_fade" type="bool" value="true"/>
+     <property name="cutscene_wait" type="float" value="0.2"/>
+    </properties>
+   </property>
+   <property name="playback" type="class" propertytype="cutscene_trigger_playback">
+    <properties>
+     <property name="auto_play" type="bool" value="true"/>
+     <property name="skippable" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="lifecycle" type="class" propertytype="cutscene_trigger_lifecycle">
+    <properties>
+     <property name="trigger_once" type="bool" value="true"/>
+     <property name="persist_once" type="bool" value="true"/>
+     <property name="once_flag" type="string" value=""/>
+     <property name="consume_on_fire" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="conditions_and_outcomes" type="class" propertytype="cutscene_trigger_conditions_and_outcomes">
+    <properties>
+     <property name="requires_flag" type="string" value=""/>
+     <property name="skip_if_flag" type="string" value=""/>
+     <property name="set_flag" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

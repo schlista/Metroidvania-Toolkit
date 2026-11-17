@@ -1,0 +1,79 @@
+-- Baked player-only movement volume; each occupied zone refreshes one lease.
+local PlayerStats = require "mvtk.player.player_stats"
+local PU = require "mvtk.prefabs.prefab_utils"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+local TriggerBus = require "mvtk.world.trigger_bus"
+local SwitchState = require "mvtk.world.switch_state"
+
+go.property("movement_zone_id", "")
+go.property("room_id", "")
+go.property("preset", "low_gravity")
+go.property("gravity_mult", -1)
+go.property("max_fall_mult", -1)
+go.property("speed_mult", -1)
+go.property("jump_mult", -1)
+go.property("sink_speed", -1)
+go.property("enabled", true)
+
+local function apply_enabled(self, enabled)
+    self.enabled = enabled
+    if not enabled then
+        self.parts = {}
+        PlayerStats.clear_source("zone:" .. self.zone_key)
+    end
+end
+
+local function apply_signal(self, message_id, message)
+    if message_id == hash("activate") then apply_enabled(self, true)
+    elseif message_id == hash("deactivate") then apply_enabled(self, false)
+    elseif message_id == hash("toggle") then apply_enabled(self, not self.enabled)
+    else return ToggleMessages.handle(self, message_id, message, apply_enabled) end
+    return true
+end
+
+local function resolve(value, key, preset, neutral)
+    if value == -1 then value = preset[key] end
+    return tonumber(value) or neutral
+end
+
+function init(self)
+    self.zone_key = PU.resolve_id(self.movement_zone_id) or tostring(msg.url())
+    self.parts = {}
+    local preset = require("developer.config.movement_zone_types")[self.preset] or {}
+    self.values = {}
+    for _, key in ipairs({"gravity_mult", "max_fall_mult", "speed_mult", "jump_mult"}) do
+        self.values[key] = resolve(self[key], key, preset, 1)
+    end
+    self.sink_speed = resolve(self.sink_speed, "sink_speed", preset, 0)
+    self.escape_jumps = preset.escape_jumps == true
+    apply_enabled(self, self.enabled)
+    TriggerBus.register(self.zone_key, msg.url())
+    SwitchState.replay(require("mvtk.core.flags"), self.zone_key, function(on, text)
+        apply_signal(self, hash(text ~= "" and text or (on and "activate" or "deactivate")), {replayed = true})
+    end)
+end
+
+function update(self, dt)
+    if self._room_hidden then return end
+    if require("mvtk.core.pause").get() or not self.enabled or not next(self.parts) then return end
+    PlayerStats.set_source("zone:" .. self.zone_key, self.values,
+        {layer = "temporary", lease = true, group = "zone"})
+    if self.sink_speed > 0 then
+        msg.post(PU.get_player_url(), "mvtk_env_push", {vx = 0, vy = -self.sink_speed})
+    end
+    if self.escape_jumps then msg.post(PU.get_player_url(), "mvtk_zone_escape", {}) end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if not self.enabled or (message.other_group or message.group) ~= hash("player") or not message.other_id then return end
+        self.parts[message.other_id] = message.enter and true or nil
+        if not next(self.parts) then PlayerStats.clear_source("zone:" .. self.zone_key) end
+    else apply_signal(self, message_id, message) end
+end
+
+function final(self)
+    self.parts = {}
+    PlayerStats.clear_source("zone:" .. self.zone_key)
+    TriggerBus.unregister(self.zone_key, msg.url())
+end

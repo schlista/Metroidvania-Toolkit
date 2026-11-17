@@ -1,0 +1,35 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+local Completion=require "mvtk.game.completion"
+local Screen=require "mvtk.ui.completion_screen"
+local Pause=require "mvtk.core.pause"
+local Audio=require "mvtk.audio.audio"
+local InputCtl=require "mvtk.rooms.input_controller"
+function init(self)
+    gui.set_render_order(RenderLayers.completion)
+end
+local function release(self)
+    self.screen=nil; Pause.set(false); msg.post(".","release_input_focus")
+    msg.post("/host#script","completion_resume")
+end
+function update(self,dt)
+    if self.screen then Screen.update(self.screen); return end
+    local event,err=Completion.update(dt)
+    if event then
+        local cfg=Completion.presentation()
+        msg.post(".","acquire_input_focus"); Pause.set(true)
+        msg.post("/host#script","completion_freeze")
+        if event=="show" and cfg.music~="" then Audio.music(cfg.music,{t=0}) end
+        self.screen=Screen.open(cfg,Completion.data(),{error=err,artwork=true,
+            close=function()
+                release(self)
+                if err then return end
+                msg.post("boot:/host#script","back_to_menu")
+            end,
+            retry=function() release(self); Completion.retry() end})
+    end
+end
+function on_input(self,id,action)
+    if InputCtl and InputCtl.note_device then InputCtl.note_device(id,action) end
+    if self.screen then return Screen.input(self.screen,id,action) end
+end
+function final(self) Pause.set(false) end

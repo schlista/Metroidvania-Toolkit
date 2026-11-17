@@ -1,0 +1,42 @@
+-- Baked lever properties stay here for the engine and editor.
+local SwitchCore = require "mvtk.prefabs.switch_core"
+
+go.property("room_id", "") -- Room ownership emitted by Create Rooms.
+go.property("lever_id", "")
+go.property("persist_state", false)
+go.property("persist_key", "")
+go.property("target_id", "")
+go.property("starts_on", false)
+go.property("toggle", true)
+go.property("message_on", "")
+go.property("call_landing", "")
+go.property("message_off", "")
+go.property("label_on", "")
+go.property("label_off", "")
+go.property("range", 96)
+go.property("cooldown", 0.2)
+go.property("set_flag_on", "")
+go.property("set_flag_off", "")
+go.property("requires_flag", "")
+go.property("sound_on", "")
+go.property("sound_off", "")
+go.property("on_animation", "")
+go.property("off_animation", "")
+
+go.property("reset_delay", 0)
+
+function init(self)
+    SwitchCore.init(self)
+end
+
+function final(self)
+    SwitchCore.final(self)
+end
+
+function update(self, dt)
+    SwitchCore.update(self, dt)
+end
+
+function on_message(self, message_id, message, sender)
+    SwitchCore.on_message(self, message_id, message, sender)
+end

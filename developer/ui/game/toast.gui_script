@@ -1,0 +1,258 @@
+local GeneratedText = require "mvtk.ui.generated_text"
+local ViewPolicy = require "mvtk.render.view_policy"
+local RenderLayers = require "mvtk.ui.render_layers"
+local Viewport = require "mvtk.ui.viewport"
+local DisplayText = require "mvtk.ui.display_text"
+local StartupCover = require "mvtk.game.startup_cover"
+local NoticeQueue = require "mvtk.ui.notice_queue"
+local Notices = require "mvtk.ui.notices"
+local Pause = require "mvtk.core.pause"
+local InputCtl = require "mvtk.rooms.input_controller"
+local ToastInteract = require "mvtk.ui.toast_interact"
+local Reading = require "mvtk.ui.reading_text"
+local RuntimeSettings = require "developer.config.runtime_settings"
+local PromptStyle = require "mvtk.ui.prompt_style"
+local Layout = RuntimeSettings.section("hud_layout", require "developer.config.hud_layout")
+local Style = PromptStyle.entry(Layout, "toast", (RuntimeSettings.load() or {}).hud_layout)
+
+local function paint(self, alpha)
+  PromptStyle.tint(gui, self.label, self.bg, Style, alpha)
+  if self._more then PromptStyle.tint(gui, self.label, nil, Style, 0) end
+  PromptStyle.tint(gui, self.read_text, nil, Style, self._more and alpha or 0)
+  local marked = self._more and not self._read_more_done
+  PromptStyle.tint(gui, self.marker, nil, Style, marked and alpha or 0)
+  local visible = alpha * (Style.opacity or 1) * ((Style.text_color or {}).a or 1) > 0
+  ToastInteract.set(self._read_more_owner, marked and visible)
+end
+
+local function set_alpha(self, alpha)
+  self.alpha = math.max(0, math.min(1, alpha))
+  paint(self, self.alpha)
+end
+
+local function measure(font, text, leading, tracking)
+  return GeneratedText.metrics(font, text, {line_break=false, leading=leading, tracking=tracking}, resource)
+end
+
+local function prefix(text, width, scale, font, leading, tracking)
+  local count = 0
+  for _ in text:gmatch("[^\128-\191]") do count = count + 1 end
+  local low, high, best = 0, count, ""
+  while low <= high do
+    local mid = math.floor((low + high) / 2)
+    local candidate = Notices.trim(text, mid)
+    if measure(font, candidate, leading, tracking).width * scale <= width then
+      best, low = candidate, mid + 1
+    else
+      high = mid - 1
+    end
+  end
+  return best
+end
+
+local function fit_read_more(self)
+  self._more = nil
+  local cfg = Style.read_more
+  if type(cfg) ~= "table" or cfg.enabled ~= true then return end
+  local text = self._rendered_text or ""
+  local full = text:gsub("[\r\n]+", " | ")
+  local fitted = gui.get_text(self.label)
+  -- Joining authored lines alone does not mean that any text was lost.
+  if fitted == text or fitted == full then return end
+
+  local marker = DisplayText.ui("toast.read_more")
+  local root_scale = gui.get_scale(self.label)
+  local text_size = gui.get_size(self.label)
+  local point, plate_size = gui.get_position(self.label), gui.get_size(self.bg)
+  -- Read the geometry already applied by the shared fitter, including its
+  -- optional defaults, rather than assuming every style field was supplied.
+  local available = text_size.x * root_scale.x
+  if marker == "" or not (available > 0 and root_scale.x > 0) then return end
+  local font_name = gui.get_font(self.label)
+  local font = gui.get_font_resource(font_name)
+  local leading, tracking = gui.get_leading(self.label), gui.get_tracking(self.label)
+  local plate_width = Style.max_width
+  if not plate_width then
+    local fitted_extent = GeneratedText.metrics(font, fitted,
+      {width=text_size.x,line_break=true,leading=leading,tracking=tracking}, resource)
+    plate_width = available + math.max(0, plate_size.x-fitted_extent.width*root_scale.x)
+  end
+  local marker_units = measure(font, marker, leading, tracking).width
+  local gap_units = measure(font, " ", leading, tracking).width
+  local glyph_units = measure(font, Notices.trim(full, 1), leading, tracking).width
+  -- As with the fitter's height cap, a very narrow band caps only this cut
+  -- line's glyphs so its complete marker and a source glyph still fit.
+  local glyph_scale = math.min(root_scale.x, available/math.max(1, marker_units+gap_units+glyph_units))
+  local scale = vmath.vector3(glyph_scale, glyph_scale, 1)
+  local marker_width, gap = marker_units*glyph_scale, gap_units*glyph_scale
+  local width = math.max(0, available-marker_width-gap)
+  local full_width = measure(font, full, leading, tracking).width * scale.x
+  self._more = {full=full, width=width, max_offset=math.max(0, full_width-width),
+    speed=cfg.speed_px_per_second}
+  self._scroll_offset = math.min(self._scroll_offset or 0, self._more.max_offset)
+  if self._read_more_done then self._scroll_offset = self._more.max_offset end
+
+  for _, node in ipairs({self.read_text, self.marker}) do
+    gui.set_font(node, font_name)
+    gui.set_leading(node, leading)
+    gui.set_tracking(node, tracking)
+    gui.set_scale(node, scale)
+    gui.set_line_break(node, false)
+  end
+  -- Keep the existing fitted height and authored plate. Only the shortened
+  -- line uses the clipping viewport; ordinary messages keep their old layout.
+  gui.set_size(self.bg, vmath.vector3(plate_width, plate_size.y, 0))
+  gui.set_size(self.clip, vmath.vector3(width, plate_size.y, 0))
+  gui.set_position(self.clip, vmath.vector3(point.x-available/2+width/2, point.y, 0))
+  gui.set_pivot(self.read_text, gui.PIVOT_W)
+  gui.set_size(self.read_text, vmath.vector3(width/scale.x, text_size.y, 0))
+  gui.set_position(self.read_text, vmath.vector3(-width/2-self._scroll_offset, 0, 0))
+  gui.set_text(self.read_text, (self._scrolling or self._read_more_done) and full
+    or prefix(full, width, scale.x, font, leading, tracking))
+  gui.set_pivot(self.marker, gui.PIVOT_E)
+  gui.set_size(self.marker, vmath.vector3(marker_width/scale.x, text_size.y, 0))
+  gui.set_position(self.marker, vmath.vector3(point.x+available/2, point.y, 0))
+  gui.set_text(self.marker, marker)
+end
+
+local function layout(self)
+  local bounds = Viewport.design_bounds(ViewPolicy.current().hud_frame) or self._bounds
+  if not bounds then
+    local w,h = Viewport.design_size()
+    bounds = {min_x=0,min_y=0,max_x=w,max_y=h}
+  end
+  self._bounds = bounds
+  self._viewport_revision = Viewport.revision()
+  PromptStyle.position(gui, self.label, self.bg, Style, bounds)
+  PromptStyle.fit(gui, resource, self.label, self.bg, self._rendered_text or "", Style,
+    (Layout.global or {}).scale or 1, Reading.scale())
+  fit_read_more(self)
+  paint(self, self.alpha or 0)
+  self._reading_revision = Reading.revision()
+end
+
+local function set_text(self, source, key, params, keep_read_state)
+  if not keep_read_state then
+    self._scroll_offset, self._scrolling, self._read_more_done = 0, false, false
+    ToastInteract.release(self._read_more_owner)
+  end
+  self._text_source, self._text_key, self._text_params = source, key, params
+  -- Legacy top-level params are source strings. Descriptions already mark
+  -- nested sources; keep input tokens until the display renderer expands them.
+  local text_params = {}
+  for name, param in pairs(params or {}) do
+    text_params[name] = type(param)=="string" and name~="skip" and {text=param} or param
+  end
+  local value = key and {key=key, params=text_params}
+    or (type(source)=="table" and source or {text=source, params=text_params})
+  local text = require("mvtk.ui.menu_text").render(value, DisplayText)
+  if self._notice_source then text = Notices.toast_text(self._notice_source, DisplayText) end
+  self._rendered_text = text
+  self._prompt_revision = DisplayText.revision()
+  layout(self)
+end
+
+local function finish_scroll(self)
+  self._scrolling, self._read_more_done = false, true
+  self._rise, self._fall = false, false
+  if self._notice_source then
+    self.notices.elapsed, self.notices.alpha = self.notices.fade_in, 1
+  else
+    self.t = self._duration
+  end
+end
+
+local function start_scroll(self)
+  self._scrolling = true
+  self._rise, self._fall = false, false
+  gui.set_text(self.read_text, self._more.full)
+  set_alpha(self, 1)
+end
+
+function init(self)
+  gui.set_render_order(RenderLayers.popups)
+  self._read_more_owner = {}
+  self.label, self.bg = gui.get_node("label"), gui.get_node("plate")
+  self.clip = gui.get_node("read_more_clip")
+  self.read_text, self.marker = gui.get_node("read_more_text"), gui.get_node("read_more_marker")
+  gui.set_pivot(self.bg, gui.PIVOT_CENTER)
+  PromptStyle.authored_plate(gui, self.bg, Style)
+  self.t, self.alpha, self._scroll_offset = 0, 0, 0
+  self.fade_in, self.fade_out = Style.fade_in, Style.fade_out
+  self.notices = NoticeQueue.new(Style)
+  layout(self)
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("toast") then
+    if message and message.notice_ref then
+      local notice = Notices.take(message.notice_ref)
+      if notice then NoticeQueue.push(self.notices, notice) end
+      return
+    end
+    self._notice_source = nil
+    set_text(self, message and message.text or "", message and message.key, message and message.params)
+    self.tag = message and message.tag
+    self.persistent = message and message.persistent == true
+    self._duration = math.max(1.5, tonumber(message and message.duration) or 1.5)
+    self.t = self._duration
+    self._rise, self._fall = true, false
+    set_alpha(self, 0)
+  elseif message_id == hash("dismiss_toast") and self.tag == (message and message.tag) then
+    self.t, self.persistent = 0, false
+    self._rise, self._fall, self._scrolling = false, false, false
+    set_alpha(self, 0)
+  end
+end
+
+function update(self, dt)
+  if self._viewport_revision ~= Viewport.revision() then layout(self) end
+  if (self._notice_source or self.persistent or (self.t or 0)>0 or self._fall or self._scrolling)
+    and (self._prompt_revision ~= DisplayText.revision() or self._reading_revision ~= Reading.revision()) then
+    set_text(self, self._text_source, self._text_key, self._text_params, true)
+  end
+  if Pause.get() or InputCtl.get_blocked() or StartupCover.active() then
+    paint(self, 0)
+    return
+  end
+
+  if ToastInteract.take(self._read_more_owner) and self._more
+    and not self._read_more_done and not self._scrolling then start_scroll(self) end
+  if self._scrolling then
+    if not self._more then
+      finish_scroll(self)
+    else
+      self._scroll_offset = math.min(self._more.max_offset,
+        self._scroll_offset + self._more.speed * math.max(0, dt))
+      gui.set_position(self.read_text, vmath.vector3(-self._more.width/2-self._scroll_offset, 0, 0))
+      if self._scroll_offset >= self._more.max_offset then finish_scroll(self) end
+    end
+    set_alpha(self, 1)
+    return
+  end
+
+  if self._notice_source or (not self.persistent and (self.t or 0)<=0 and not self._fall) then
+    local notice, alpha = NoticeQueue.tick(self.notices, dt)
+    if notice ~= self._notice_source then
+      self._notice_source = notice
+      if notice then set_text(self, "") end
+    end
+    if notice then set_alpha(self, alpha); return end
+    set_alpha(self, 0)
+  end
+  if self._rise then
+    set_alpha(self, self.fade_in==0 and 1 or self.alpha+dt/self.fade_in)
+    if self.alpha>=1 then self._rise=false end
+  elseif not self.persistent and (self.t or 0)>0 then
+    self.t = self.t-dt
+    if self.t<=0 then self._fall=true end
+  elseif self._fall then
+    set_alpha(self, self.fade_out==0 and 0 or self.alpha-dt/self.fade_out)
+    if self.alpha<=0 then self._fall=false end
+  end
+  paint(self, self.alpha)
+end
+
+function final(self)
+  ToastInteract.release(self._read_more_owner)
+end

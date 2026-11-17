@@ -1,0 +1,110 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+-- Extras host, loaded by the title through the extras collection proxy. It
+-- opens the shared list menu on the Extras book and returns to the title when
+-- that book closes, including when it refuses to open (no enabled tab).
+-- A Credits row replays that ending's pages over the list, and a Gallery row
+-- shows its image full screen; closing either returns to the list.
+local InputCtl = require "mvtk.rooms.input_controller"
+local Audio = require "mvtk.audio.audio"
+local Completion = require "mvtk.game.completion"
+local Screen = require "mvtk.ui.completion_screen"
+local ExtrasCredits = require "mvtk.ui.screens.extras_credits"
+
+local LIST_MENU = "/list_menu_gui#list_menu"
+local HOST = "boot:/host#script"
+
+local function close_replay(self)
+    if not self.screen then return end
+    self.screen = nil
+    msg.post(".", "release_input_focus")
+end
+
+-- The open replay or gallery, with the module that draws it.
+local function view(self)
+    if not self.screen then return nil end
+    return self.gallery and require "mvtk.ui.extras_gallery_view" or Screen
+end
+
+local function leave(self)
+    if self.left then return end
+    self.left = true
+    close_replay(self)
+    -- Room music skips a track equal to the last request, so a track left
+    -- playing here could keep the next room silent: always clear it.
+    Audio.music("none", { silence = true })
+    msg.post(HOST, "back_to_menu")
+end
+
+-- The replay uses the fonts and the artwork texture this scene declares, which
+-- mirror developer/ui/game/completion.gui.
+local function replay(self, ending_id)
+    if self.screen or self.left then return end
+    local cfg = Completion.presentation_for(ending_id)
+    if not cfg then return end
+    if type(cfg.music) == "string" and cfg.music ~= "" then Audio.music(cfg.music, { t = 0 }) end
+    -- Above the list menu's focus, so the replay takes every input until it closes.
+    msg.post(".", "acquire_input_focus")
+    self.gallery = false
+    self.screen = Screen.open(cfg, { replay = true }, { artwork = true, scene = "/developer/ui/menus/extras_viewer.gui",
+        close = function() close_replay(self) end })
+end
+
+-- Unlocked images whose PNG Prepare & Check found, starting at the chosen one.
+-- The images live in this scene's "gallery" texture.
+local function show_image(self, entry_id)
+    if self.screen or self.left then return end
+    local images = require("mvtk.ui.screens.extras_gallery").viewable()
+    local index
+    for i, entry in ipairs(images) do if entry.id == entry_id then index = i; break end end
+    if not index then return end
+    local View = require "mvtk.ui.extras_gallery_view"
+    msg.post(".", "acquire_input_focus")
+    self.gallery = true
+    self.screen = View.open(images, index, { close = function() close_replay(self) end })
+    if not self.screen then msg.post(".", "release_input_focus") end
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.completion)
+    self.left = false
+    self.screen = nil
+    -- Gameplay blocks are module state; the title never holds one for Extras.
+    InputCtl.set_blocked(false)
+    Audio.block_music_requests(false)
+    msg.post(LIST_MENU, "open_list_menu", { book = "extras", owner = msg.url() })
+end
+
+function update(self, dt)
+    local drawer = view(self)
+    if drawer then drawer.update(self.screen) end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("list_menu_closed") then
+        leave(self)
+    elseif message_id == hash("list_menu_choice") then
+        local ending_id = ExtrasCredits.ending_id(message.row_id)
+        local row_id = message.row_id
+        if ending_id then replay(self, ending_id)
+        -- mvtk/ui/screens/extras_gallery.lua's PREFIX; its module loads only for a gallery row.
+        elseif type(row_id) == "string" and row_id:sub(1, 8) == "gallery:" and #row_id > 8 then
+            show_image(self, row_id:sub(9))
+        end
+    end
+end
+
+-- Releases and resting stick values still reach the list menu underneath, so
+-- a stick held when the replay opened does not keep repeating there.
+local function release_only(action)
+    return action.released == true
+        or (not action.pressed and action.value ~= nil and math.abs(action.value) <= 0.5)
+end
+
+function on_input(self, action_id, action)
+    action = action or {}
+    if InputCtl.note_device then InputCtl.note_device(action_id, action) end
+    local drawer = view(self)
+    if not drawer then return false end
+    if release_only(action) then return false end
+    return drawer.input(self.screen, action_id, action)
+end

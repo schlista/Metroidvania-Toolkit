@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Arena Boundary" type="arena_boundary" width="64" height="64">
+  <properties>
+   <property name="boundary_id" type="string" value=""/>
+   <property name="arena_ref" type="object" value="0"/>
+   <property name="links" type="class" propertytype="arena_boundary_links">
+    <properties>
+     <property name="arena_id" type="string" value=""/>
+    </properties>
+   </property>
+   <property name="activation" type="class" propertytype="arena_boundary_activation">
+    <properties>
+     <property name="active_phases" type="string" value=""/>
+     <property name="enabled_when_locked" type="bool" value="true"/>
+     <property name="start_enabled" type="bool" value="true"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

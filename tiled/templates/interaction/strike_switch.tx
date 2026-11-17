@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Strike Switch" type="strike_switch" width="32" height="32">
+  <properties>
+   <property name="target_ref" type="object" value="0" />
+   <property name="switch_id" type="string" value="" />
+   <property name="target_id" type="string" value="" />
+   <property name="starts_on" type="bool" value="false" />
+   <property name="behavior" type="class" propertytype="strike_switch_behavior">
+    <properties>
+     <property name="mode" type="string" value="toggle" propertytype="strike_switch_modes" />
+     <property name="timer_seconds" type="float" value="5" />
+     <property name="accepts" type="string" value="any" propertytype="strike_switch_accepts" />
+     <property name="accept_enemy_hits" type="bool" value="false" />
+     <property name="solid" type="bool" value="false" />
+     <property name="cooldown" type="float" value="-1" />
+    </properties>
+   </property>
+   <property name="messages" type="class" propertytype="strike_switch_messages">
+    <properties>
+     <property name="message_on" type="string" value="activate" />
+     <property name="call_landing" type="string" value="" />
+     <property name="message_off" type="string" value="deactivate" />
+    </properties>
+   </property>
+   <property name="conditions" type="class" propertytype="strike_switch_conditions">
+    <properties>
+     <property name="set_flag_on" type="string" value="" />
+     <property name="set_flag_off" type="string" value="" />
+     <property name="requires_flag" type="string" value="" />
+     <property name="persist_state" type="bool" value="false" />
+    </properties>
+   </property>
+   <property name="feedback" type="class" propertytype="strike_switch_feedback">
+    <properties>
+     <property name="sound_on" type="string" value="none" propertytype="sound_effects" />
+     <property name="sound_off" type="string" value="none" propertytype="sound_effects" />
+     <property name="sound_reject" type="string" value="none" propertytype="sound_effects" />
+     <property name="tick_sound" type="string" value="none" propertytype="sound_effects" />
+    </properties>
+   </property>
+   <property name="art_item" type="string" value="" />
+   <property name="art_feedback" type="class" propertytype="strike_switch_art_feedback">
+    <properties>
+     <property name="consume_effect" type="string" value="none" propertytype="particle_effects" />
+     <property name="interact_effect" type="string" value="none" propertytype="particle_effects" />
+     <property name="effect_offset_x" type="float" value="0" />
+     <property name="effect_offset_y" type="float" value="0" />
+     <property name="effect_scale" type="float" value="1" />
+     <property name="effect_cooldown" type="float" value="0" />
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0" />
+  </properties>
+ </object>
+</template>

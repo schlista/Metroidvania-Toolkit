@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Countdown Zone" type="countdown_zone" width="128" height="128">
+  <properties>
+   <property name="countdown_id" type="string" propertytype="countdowns" value="sample_course"/>
+   <property name="role" type="string" propertytype="countdown_zone_roles" value="start"/>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

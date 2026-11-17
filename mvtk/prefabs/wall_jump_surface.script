@@ -1,0 +1,86 @@
+-- mvtk/prefabs/wall_jump_surface.script
+-- ============================================================================
+-- WALL JUMP SURFACE (Climbable Wall)
+-- ============================================================================
+-- A surface that tunes or restricts unlocked wall movement.
+-- Unmarked walls retain the player settings.
+--
+-- TILED PROPERTIES:
+--   allow_slide     - Player can slide down this wall (reduces fall speed)
+--   allow_jump      - Player can wall jump off this surface
+--   allow_climb     - Player can climb up/down (requires wall_climb ability)
+--   slide_speed     - Fall speed multiplier when sliding (-1 inherits the material; 0 holds still)
+--   jump_force_x    - Horizontal force when wall jumping
+--   jump_force_y    - Vertical force when wall jumping
+--   facing          - Which direction this wall faces (0 = either side, 1 = right, -1 = left)
+--   require_ability - Ability text ID required to use (empty = always usable)
+--   surface_type    - Movement preset (stone, ice, wood, metal)
+--
+-- CONFIGURATION:
+--   All values come from Tiled properties.
+--   DO NOT hardcode values here.
+-- ============================================================================
+
+local Util = require "mvtk.core.util"
+local Surfaces = require "mvtk.world.wall_surfaces"
+
+go.property("surface_id", "")
+go.property("room_id", "")
+go.property("width", 32)
+go.property("height", 128)
+go.property("allow_slide", true)
+go.property("allow_jump", true)
+go.property("allow_climb", true)
+go.property("slide_speed", -1)
+go.property("jump_force_x", -1)
+go.property("jump_force_y", -1)
+go.property("facing", 0)
+go.property("require_ability", "")
+go.property("surface_type", "stone")
+go.property("show_sprite", true)
+
+local PLAYER_GROUP = hash("player")
+local FIELDS = {"width", "height", "allow_slide", "allow_jump", "allow_climb",
+    "slide_speed", "jump_force_x", "jump_force_y", "facing", "require_ability", "surface_type"}
+
+local function register(self)
+    go.update_world_transform()
+    local pos = go.get_world_position()
+    local rule = { x = pos.x, y = pos.y,
+        half_width = self.width * 0.5, half_height = self.height * 0.5 }
+    for _, key in ipairs(FIELDS) do rule[key] = self[key] end
+    Surfaces.register(go.get_id(), rule)
+end
+
+function init(self)
+    if not self.show_sprite then Util.set_component_enabled("#sprite", false) end
+    self.player_touching = false
+    self.player_id = nil
+    register(self)
+end
+
+function final(self)
+    Surfaces.unregister(go.get_id())
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if (message.other_group or message.group) == PLAYER_GROUP then
+            self.player_touching = message.enter == true
+            self.player_id = message.enter and message.other_id or nil
+        end
+    elseif message_id == hash("apply_tiled_props") then
+        local props = message.properties or {}
+        for _, key in ipairs(FIELDS) do
+            if props[key] ~= nil then self[key] = props[key] end
+        end
+        if props.direction and type(props.direction) == "string" then
+            local dir = props.direction:lower()
+            if dir == "left" then self.facing = -1
+            elseif dir == "right" then self.facing = 1
+            elseif dir == "both" then self.facing = 0 end
+        end
+        if props.requires_ability ~= nil then self.require_ability = props.requires_ability end
+        register(self)
+    end
+end

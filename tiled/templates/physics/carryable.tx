@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Carryable" type="carryable" width="64" height="64">
+  <properties>
+   <property name="carry_id" type="string" value=""/>
+   <property name="kind" propertytype="carry_kinds" value="crate"/>
+   <property name="label" type="string" value="Pick up"/>
+   <property name="handling" type="class" propertytype="carry_handling">
+    <properties>
+     <property name="move_speed_mult" type="float" value="0.8"/>
+     <property name="blocks_jump" type="bool" value="false"/>
+     <property name="throw_speed" type="float" value="900"/>
+    </properties>
+   </property>
+   <property name="fragility" type="class" propertytype="carry_fragility">
+    <properties>
+     <property name="breaks_on_impact" type="bool" value="false"/>
+     <property name="break_speed" type="float" value="1600"/>
+     <property name="fuse_time" type="float" value="3"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>

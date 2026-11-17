@@ -1,0 +1,103 @@
+-- World-state presence companion (G8-09). Create Rooms bakes one instance,
+-- <instance id>__presence, beside every placed object with appear_when or
+-- remove_when text. It removes its target when the object should be absent as
+-- the room is created, and asks the room manager for a rebuild when the
+-- answer changes later. presence_timing "live" removes a target at once.
+--
+-- self.removed is set only when this companion deleted the target. A target
+-- that deleted itself (a collected pickup) is not a difference: rebuilding on
+-- it would mark the room stale on every later flag change, forever.
+--
+-- Self mode (G8-10): a world-state tile layer's own game object carries this
+-- script with self_mode set. It switches its own tilemap and tilecol_<n>
+-- components at once, both ways and whatever the timing, and never marks the
+-- room stale.
+local Presence = require "mvtk.world.presence"
+local Art = require "developer.config.object_art_generated"
+local Util = require "mvtk.core.util"
+
+go.property("target", "")
+go.property("appear_when", "")
+go.property("remove_when", "")
+go.property("timing", "enter")
+go.property("room_id", "")
+-- Set by Create Rooms on a world-state tile layer's own game object (G8-10),
+-- which has no separate target; collision_count is its tilecol_<n> total.
+go.property("self_mode", false)
+go.property("collision_count", 0)
+
+-- Util records each state, so the room's hide-and-show cycle re-applies it
+-- (RoomManager posts a game-object "enable", then re-disables what Util
+-- recorded). While the room is hidden only the record changes: a component
+-- "enable" would switch that component on inside a hidden room.
+local function apply_self(self, wanted)
+    self.present = wanted
+    local set = self.hidden and Util.record_component_enabled or Util.post_component_enabled
+    set("#tilemap", wanted)
+    for i = 1, math.floor(tonumber(self.collision_count) or 0) do set("#tilecol_" .. i, wanted) end
+end
+
+local function update_self(self)
+    local revision = Presence.revision()
+    if revision == self.revision then return end
+    self.revision = revision
+    local wanted = Presence.present(self.appear_when, self.remove_when)
+    if wanted ~= self.present then apply_self(self, wanted) end
+end
+
+local function remove(self)
+    self.removed = true
+    if not go.exists(self.url) then return end
+    -- Authored art lives in a separate holder that notices a missing owner one
+    -- update later; mark the entry removed now so no frame shows orphan art.
+    if Art[self.target] ~= nil then
+        require("mvtk.tiled.object_presentation").restore(nil, true, self.url)
+    end
+    go.delete(self.url, true)
+end
+
+function init(self)
+    self.removed = false
+    if self.self_mode then
+        -- Applied at init, so a layer created in a hidden room starts right.
+        self.present, self.revision = true, Presence.revision()
+        if not Presence.present(self.appear_when, self.remove_when) then apply_self(self, false) end
+        return
+    end
+    if self.target == "" then
+        print("WARNING:[PRESENCE] A presence companion has no target; run Project > Prepare & Check, then Build.")
+        return
+    end
+    -- A relative string resolves in this room collection's naming context.
+    self.url = msg.url(self.target)
+    self.revision = Presence.revision()
+    if not Presence.present(self.appear_when, self.remove_when) then remove(self) end
+end
+
+function update(self, dt)
+    if self.self_mode then return update_self(self) end
+    if not self.url then return end
+    local revision = Presence.revision()
+    if revision == self.revision then return end
+    self.revision = revision
+    local wanted = Presence.present(self.appear_when, self.remove_when)
+    if wanted == not self.removed then return end
+    if not wanted then
+        if not go.exists(self.url) then
+            self.removed = true
+            return
+        end
+        if self.timing == "live" then
+            remove(self)
+            return
+        end
+    end
+    require("mvtk.map.streaming.room_manager").mark_room_stale(self.room_id)
+end
+
+-- The room's game-object "disable" and "enable" reach every component,
+-- this script included (RoomManager hides and shows streamed rooms).
+function on_message(self, message_id)
+    if message_id == hash("disable") then self.hidden = true
+    elseif message_id == hash("enable") then self.hidden = false end
+end

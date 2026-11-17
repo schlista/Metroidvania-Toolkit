@@ -1,0 +1,303 @@
+local Viewport = require "mvtk.ui.viewport"
+local InputCtl = require "mvtk.rooms.input_controller"
+local Pause = require "mvtk.core.pause"
+local Nav = require "mvtk.ui.menu_nav"
+local ListMenu = require "mvtk.ui.list_menu"
+local Registry = require "mvtk.ui.menu_registry"
+local ReaderBuffer = require "mvtk.ui.reader_buffer"
+local RenderLayers = require "mvtk.ui.render_layers"
+local InputPrompts = require "mvtk.ui.input_prompts"
+local DisplayText = require "mvtk.ui.display_text"
+local AnimIndex = require "mvtk.core.anim_index"
+local Audio = require "mvtk.audio.audio"
+local Theme = require "developer.config.ui_theme"
+
+local fields = { "row_bg", "row_label", "row_value", "row_cost", "row_icon" }
+local node_ids = { "backdrop", "root", "panel", "title", "subtitle", "header_right", "tab_template",
+  "tab_highlight", "list_area", "row_bg", "row_label", "row_value", "row_cost", "row_icon",
+  "detail_title", "detail_body", "status", "confirm_panel", "confirm_text", "confirm_yes", "confirm_no",
+  "prompt_confirm_icon", "prompt_confirm_label", "prompt_back_icon", "prompt_back_label",
+  "prompt_tabs_icon", "prompt_tabs_label", "page_text" }
+local atlases = { enemy = "/developer/assets/atlas/enemy.atlas", input_icons = "/developer/assets/atlas/input_icons.atlas",
+  gameplay_visuals = "/developer/assets/atlas/gameplay_visuals.atlas" }
+local state_colors = { owned = "row_text_owned", sold_out = "text_disabled", unaffordable = "row_text_locked",
+  locked = "row_text_locked", unknown = "text_disabled", equipped = "status_good", applied = "status_good",
+  learned = "status_good", active = "status_good", completed = "row_text_owned", section = "text_secondary" }
+
+local function color(node, key)
+  local c = assert(Theme.colors[key], key)
+  gui.set_color(node, vmath.vector4(c[1], c[2], c[3], c[4] or 1))
+end
+local MenuText = require "mvtk.ui.menu_text"
+local function text(node, value) gui.set_text(node, MenuText.render(value, DisplayText)) end
+local function owner_id(value)
+  if type(value) == "string" then return tostring(msg.url(value)) end
+  return tostring(value)
+end
+local function visible(self, on)
+  gui.set_enabled(self.nodes.backdrop, on)
+  gui.set_enabled(self.nodes.root, on)
+end
+local function clear_clones(self)
+  for _, row in ipairs(self.row_nodes) do for _, node in pairs(row) do gui.delete_node(node) end end
+  for _, node in ipairs(self.tab_nodes) do gui.delete_node(node) end
+  self.row_nodes, self.tab_nodes = {}, {}
+end
+local function sound(self, name)
+  local id = self.settings.list.sfx[name] or name
+  if id and id ~= "" then Audio.sfx(id) end
+end
+local function icon(node, texture, animation)
+  local exists = atlases[texture] and animation and AnimIndex.has(atlases[texture], animation) == true
+  gui.set_enabled(node, exists == true)
+  if exists then gui.set_texture(node, texture); gui.play_flipbook(node, animation) end
+  return exists == true
+end
+local function prompt(self, name, command, label)
+  local pair = Nav.primary(command, self.settings)
+  local device = InputCtl.get_last_device()
+  local id = device == "gamepad" and pair.pad or pair.key
+  gui.set_text(self.nodes["prompt_" .. name .. "_label"], DisplayText.ui("list.prompt", { button = id and InputPrompts.label(id) or "", label = DisplayText.ui(label) }))
+  icon(self.nodes["prompt_" .. name .. "_icon"], "input_icons", device == "gamepad" and InputPrompts.pad_icon(id) or nil)
+end
+local function value_layout(self, nodes, wide)
+  local pos, origin = gui.get_position(nodes.row_value), gui.get_position(self.nodes.row_value)
+  local size = gui.get_size(self.nodes.row_value)
+  if wide then
+    local right = gui.get_position(nodes.row_cost).x
+    size.x = size.x + (right - origin.x) / gui.get_scale(nodes.row_value).x
+    pos.x = right
+  else pos.x = origin.x end
+  gui.set_position(nodes.row_value, pos)
+  gui.set_size(nodes.row_value, size)
+end
+local function paint(self)
+  if not self.model or self.reader then return end
+  local view = self.model.view()
+  for _, key in ipairs({ "title", "subtitle", "header_right", "status", "page_text" }) do text(self.nodes[key], view[key]) end
+  text(self.nodes.detail_title, view.detail.title)
+  text(self.nodes.detail_body, view.detail.body)
+  if self.nodes.detail_portrait then
+    local portrait = view.detail.portrait
+    icon(self.nodes.detail_portrait, portrait and portrait.texture, portrait and portrait.animation)
+  end
+  for i, nodes in ipairs(self.row_nodes) do
+    local row = view.rows[i]
+    for _, node in pairs(nodes) do gui.set_enabled(node, row ~= nil) end
+    if row then
+      value_layout(self, nodes, row.wide_value == true and row.cost == nil)
+      text(nodes.row_label, row.label); text(nodes.row_value, row.value); text(nodes.row_cost, row.cost)
+      color(nodes.row_bg, i == view.selected and "row_selected_bg" or "row_normal_bg")
+      local key = row.enabled == false and "row_text_locked" or state_colors[row.kind == "section" and "section" or row.state] or "text_primary"
+      for _, field in ipairs({ "row_label", "row_value", "row_cost" }) do color(nodes[field], key) end
+      icon(nodes.row_icon, row.icon and row.icon.texture, row.icon and row.icon.anim)
+    end
+  end
+  for i, node in ipairs(self.tab_nodes) do
+    gui.set_enabled(node, view.layout == "tabbed")
+    text(node, view.tabs[i].title)
+    color(node, i == view.tab_index and "tab_active_text" or "tab_inactive_text")
+  end
+  gui.set_enabled(self.nodes.tab_highlight, view.layout == "tabbed")
+  if view.layout == "tabbed" then
+    gui.set_position(self.nodes.tab_highlight, gui.get_position(self.tab_nodes[view.tab_index]))
+  end
+  gui.set_enabled(self.nodes.confirm_panel, view.confirm ~= nil)
+  if view.confirm then
+    text(self.nodes.confirm_text, view.confirm.question)
+    gui.set_text(self.nodes.confirm_yes, view.confirm.yes and DisplayText.ui("list.selected", { text = DisplayText.ui("list.yes") }) or DisplayText.ui("list.yes"))
+    gui.set_text(self.nodes.confirm_no, view.confirm.yes and DisplayText.ui("list.no") or DisplayText.ui("list.selected", { text = DisplayText.ui("list.no") }))
+  end
+  prompt(self, "confirm", "confirm", "list.select")
+  prompt(self, "back", "back", "list.back")
+  local previous, following = Nav.primary("tab_prev", self.settings), Nav.primary("tab_next", self.settings)
+  local device = InputCtl.get_last_device() == "gamepad" and "pad" or "key"
+  gui.set_text(self.nodes.prompt_tabs_label, DisplayText.legend({
+    { key = previous.key, pad = previous.pad, text_key = "list.previous_tab" },
+    { key = following.key, pad = following.pad, text_key = "list.next_tab" },
+  }))
+  local tab_icon = icon(self.nodes.prompt_tabs_icon, "input_icons", device == "pad" and InputPrompts.pad_icon(previous.pad) or nil)
+  gui.set_enabled(self.nodes.prompt_tabs_icon, view.layout == "tabbed" and tab_icon)
+  gui.set_enabled(self.nodes.prompt_tabs_label, view.layout == "tabbed")
+  self.prompt_revision = DisplayText.revision()
+end
+local function close(self, reason)
+  if not self.model then return end
+  if self.reader then
+    ReaderBuffer.take(self.reader)
+    -- This scene restores or retains ownership below. A queued reader close
+    -- must not later clear the block of the next UI to open.
+    msg.post("main:/lore_popup_gui#lore_popup", "close_lore_popup", { preserve_blocked = true })
+  end
+  local request = self.request
+  self.model, self.reader, self.request = nil, nil, nil
+  self.nav.reset()
+  msg.post(".", "release_input_focus")
+  if reason ~= "death" then Pause.set(self.previous_pause); InputCtl.set_blocked(self.previous_blocked) end
+  clear_clones(self); visible(self, false)
+  if request.owner then
+    msg.post(request.owner, "list_menu_closed", { screen = request.screen, book = request.book, result = reason })
+  end
+  if reason == "back" and request.opener == "pause_menu" then
+    msg.post("main:/pause_gui#pause", "menu_open", { select = request.book })
+  end
+end
+local function apply(self, result)
+  if not result then return end
+  if result.sfx then sound(self, result.sfx) end
+  if result.read then
+    self.model.cancel_hold(); self.nav.reset()
+    self.reader = ReaderBuffer.stage(result.read)
+    visible(self, false)
+    msg.post("main:/lore_popup_gui#lore_popup", "open_lore_popup", { reader = self.reader, opener = msg.url() })
+  elseif result.delegate and self.request.owner then
+    msg.post(self.request.owner, "list_menu_choice", { screen = self.request.screen,
+      row_id = result.row_id, token = self.token, context = self.request.context })
+  end
+  if result.close then close(self, result.result or "closed") else paint(self) end
+end
+local function clones(self)
+  local area = gui.get_size(self.nodes.list_area)
+  local step = area.y / self.model.page_size
+  for i = 1, self.model.page_size do
+    local row = {}
+    for _, field in ipairs(fields) do
+      local node = gui.clone(self.nodes[field])
+      local pos = gui.get_position(node)
+      pos.y = area.y / 2 - (i - 0.5) * step
+      gui.set_position(node, pos)
+      row[field] = node
+    end
+    local size = gui.get_size(row.row_bg); size.y = math.min(size.y, step - 2); gui.set_size(row.row_bg, size)
+    self.row_nodes[i] = row
+  end
+  local start = gui.get_position(self.nodes.tab_template)
+  local width = gui.get_size(self.nodes.tab_template).x * gui.get_scale(self.nodes.tab_template).x
+  for i = 1, math.min(8, #self.model.tabs) do
+    local node = gui.clone(self.nodes.tab_template)
+    gui.set_position(node, vmath.vector3(start.x + (i - 1) * width, start.y, start.z))
+    self.tab_nodes[i] = node
+  end
+end
+local function open(self, request)
+  if self.model or InputCtl.get_blocked() or Pause.get() then
+    if request.interaction_result then require("mvtk.game.interaction_result").report(request.interaction_result, false) end
+    if request.owner then msg.post(request.owner, "list_menu_closed", { screen = request.screen, book = request.book, result = "refused" }) end
+    return
+  end
+  self.settings = Nav.settings(); self.nav = Nav.new(self.settings)
+  self.token = self.token + 1
+  local model, err = ListMenu.new({ registry = Registry, settings = self.settings, screen = request.screen,
+    book = request.book, tab = request.tab, context = request.context, owner = request.owner, token = self.token })
+  if not model or #model.tabs > 8 then
+    if request.interaction_result then require("mvtk.game.interaction_result").report(request.interaction_result, false) end
+    print("[LIST_MENU] " .. tostring(err or "Too many enabled tabs."))
+    if request.owner then msg.post(request.owner, "list_menu_closed", { screen = request.screen, book = request.book, result = "refused" }) end
+    return
+  end
+  self.previous_pause, self.previous_blocked = Pause.get(), InputCtl.get_blocked()
+  self.model, self.request = model, request
+  clones(self); visible(self, true)
+  msg.post(".", "acquire_input_focus")
+  InputCtl.set_blocked(true, "list_menu")
+  if model.pauses then Pause.set(true) end
+  paint(self)
+  if request.interaction_result then require("mvtk.game.interaction_result").report(request.interaction_result, true) end
+end
+
+function init(self)
+  self.nodes, self.row_nodes, self.tab_nodes, self.token = {}, {}, {}, 0
+  for _, id in ipairs(node_ids) do self.nodes[id] = gui.get_node(id) end
+  -- Older creator-customised scenes may omit this optional node.
+  local ok, portrait = pcall(gui.get_node, "detail_portrait")
+  if ok and portrait then self.nodes.detail_portrait = portrait; gui.set_enabled(portrait, false) end
+  Viewport.cover(self.nodes.backdrop)
+  self._view_revision = Viewport.revision()
+  for _, id in ipairs(fields) do gui.set_enabled(self.nodes[id], false) end
+  gui.set_enabled(self.nodes.tab_template, false)
+  for id, key in pairs({ backdrop = "menu_backdrop", panel = "menu_background", title = "menu_title",
+      subtitle = "text_secondary", header_right = "currency", detail_title = "menu_title", detail_body = "text_primary",
+      status = "status_bad", tab_highlight = "tab_active_bg", confirm_panel = "menu_background" }) do color(self.nodes[id], key) end
+  gui.set_render_order(RenderLayers.menus)
+  visible(self, false)
+end
+
+function final(self) close(self, "closed") end
+
+function on_message(self, id, message)
+  if id == hash("open_list_menu") then open(self, message)
+  elseif id == hash("close_list_menu") and self.model then
+    if not message.owner or (self.request.owner and owner_id(message.owner) == owner_id(self.request.owner)) then close(self, message.reason or "closed") end
+  elseif id == hash("refresh_list_menu") and self.model and message.token == self.token then
+    if message.status then self.model.status = message.status end
+    if not self.reader then self.model.refresh() end
+    apply(self, { sfx = message.sfx, close = message.close })
+  elseif id == hash("lore_popup_closed") and self.model and self.reader then
+    self.reader = nil
+    visible(self, true); InputCtl.set_blocked(true, "list_menu"); paint(self)
+  end
+end
+
+function update(self, dt)
+  self._pointer_this_frame = nil
+  local view_revision = Viewport.revision()
+  if self._view_revision ~= view_revision then
+    Viewport.cover(self.nodes.backdrop)
+    self._view_revision = view_revision
+  end
+  if not self.model or self.reader then return end
+  for _, command in ipairs(self.nav.update(dt)) do
+    if self.model then apply(self, self.model.command(command)) end
+  end
+  if self.model then apply(self, self.model.update(dt)) end
+  if self.model and self.prompt_revision ~= DisplayText.revision() then paint(self) end
+end
+
+function on_input(self, action_id, action)
+  if InputCtl and InputCtl.note_device then InputCtl.note_device(action_id, action) end
+  local command
+  if self.nav and (not InputCtl.accepts_gamepad or InputCtl.accepts_gamepad(action or {})) then
+    command = self.nav.input(action_id, action, not self.model or self.reader ~= nil)
+  end
+  if not self.model then return false end
+  if Nav.lifecycle(action_id) then
+    self.nav.reset(); self.model.cancel_hold()
+    return false -- Let the player/controller process the connection event.
+  end
+  if self.reader then return true end
+  action = action or {}
+  if InputCtl.accepts_gamepad and not InputCtl.accepts_gamepad(action) then return true end
+  if Nav.matches("confirm", action_id, self.settings) and action.released then self.model.cancel_hold() end
+  if Nav.matches("pointer", action_id, self.settings) and action.released then self.model.cancel_hold() end
+  if command == "pointer" then
+    if action_id == hash("mouse_wheel_up") then apply(self, self.model.command("left"))
+    elseif action_id == hash("mouse_wheel_down") then apply(self, self.model.command("right"))
+    elseif action.x and action.y then
+      -- One left click arrives as touch, click and mouse_button_1 in one frame
+      -- (developer/input/game.input_binding): act on the first only.
+      if self._pointer_this_frame then return true end
+      self._pointer_this_frame = true
+      if self.model.confirm_step then
+        for _, choice in ipairs({ "confirm_yes", "confirm_no" }) do
+          if gui.pick_node(self.nodes[choice], action.x, action.y) then
+            self.model.confirm_step.yes = choice == "confirm_yes"
+            apply(self, self.model.confirm({ pressed = true })); return true
+          end
+        end
+      else
+        for i, node in ipairs(self.tab_nodes) do
+          if #self.tab_nodes > 1 and gui.pick_node(node, action.x, action.y) then self.model.tab(i); paint(self); return true end
+        end
+        for i, row in ipairs(self.row_nodes) do
+          if gui.pick_node(row.row_bg, action.x, action.y) then
+            local selected = self.model.view().selected == i
+            if self.model.select(i) and selected then apply(self, self.model.confirm({ pressed = true })) else paint(self) end
+            return true
+          end
+        end
+      end
+    end
+  elseif command then apply(self, self.model.command(command, { pressed = true })) end
+  if self.model and self.prompt_revision ~= DisplayText.revision() then paint(self) end
+  return true
+end

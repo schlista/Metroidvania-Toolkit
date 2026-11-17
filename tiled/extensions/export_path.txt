@@ -1,0 +1,11 @@
+# Tiled export path (a fallback; usually leave it as it is)
+#
+# In Defold, run Project ▸ Set Up This Toolkit to set up this project.
+# Tiled exports to the toolkit whose MVTK.tiled-project is open; that project
+# wins. This file is only the fallback when no toolkit project is open.
+#
+# Optional global setup: tools/set_tiled_export_path.* writes the toolkit's
+# absolute path with forward slashes on the first non-comment line below.
+# Leave this file comment-only unless a fallback is needed. Example:
+#
+#   C:/Users/you/Documents/<toolkit folder>

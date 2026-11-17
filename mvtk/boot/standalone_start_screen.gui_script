@@ -1,0 +1,206 @@
+local RenderLayers = require "mvtk.ui.render_layers"
+-- Runtime title screen selected only by Export Game. The authored GUI stays
+-- editable; standalone players never load the toolkit's authoring panels.
+local Settings = require "mvtk.core.settings"
+local Theme = require "developer.config.ui_theme"
+local Viewport = require "mvtk.ui.viewport"
+local DisplayText = require "mvtk.ui.display_text"
+local Extras = require "mvtk.game.extras"
+
+local function node(id)
+    local ok, value = pcall(gui.get_node, id)
+    return ok and value or nil
+end
+
+local function refresh_text(self)
+    local title = node("title")
+    if title then gui.set_text(title, DisplayText.render(sys.get_config_string("project.title", ""))) end
+    local play = node("btn_play_label")
+    if play then gui.set_text(play, DisplayText.ui("start.play")) end
+    local extras = node("btn_extras_label")
+    if extras then gui.set_text(extras, DisplayText.ui("start.extras")) end
+    local exit = node("btn_exit_label")
+    if exit then
+        if self.exit_source == nil then self.exit_source = gui.get_text(exit) end
+        gui.set_text(exit, DisplayText.render(self.exit_source))
+    end
+    -- The boot host refused Play: say so in the hint line (otherwise hidden here).
+    local hint = self.blocked_key and node("hint")
+    if hint then
+        gui.set_text(hint, DisplayText.ui(self.blocked_key))
+        gui.set_color(hint, vmath.vector4(1.0, 0.45, 0.4, 1))
+        gui.set_enabled(hint, true)
+    end
+    self._text_revision = DisplayText.revision()
+end
+
+local function set_color(target, color)
+    if target and color then
+        gui.set_color(target, vmath.vector4(color[1], color[2], color[3], color[4]))
+    end
+end
+
+local function update_selection(self)
+    for index, button in ipairs(self.buttons) do
+        local selected = self.selected == index
+        set_color(button.node, selected and Theme.colors.btn_selected_bg or Theme.colors.btn_normal_bg)
+        set_color(button.label, selected and Theme.colors.btn_selected_text or Theme.colors.btn_normal_text)
+    end
+end
+
+local function cancel_arm_timer(self)
+    if self.input_arm_timer then
+        timer.cancel(self.input_arm_timer)
+        self.input_arm_timer = nil
+    end
+    self.input_armed = false
+end
+
+local function hide_screen(self)
+    cancel_arm_timer(self)
+    if not self.visible then return end
+    self.visible = false
+    gui.set_enabled(self.root, false)
+    msg.post(".", "release_input_focus")
+end
+
+-- EXTRAS sits after Play only while something is unlocked; a failed profile
+-- read must never take the title screen down with it.
+local function refresh_buttons(self)
+    local ok, shown = pcall(Extras.any_unlocked)
+    shown = ok and shown == true and self.extras ~= nil
+    if self.extras then gui.set_enabled(self.extras.node, shown) end
+    self.buttons = {self.play}
+    if shown then self.buttons[#self.buttons + 1] = self.extras end
+    if self.exit then self.buttons[#self.buttons + 1] = self.exit end
+end
+
+local function show_screen(self)
+    if self.visible then return end
+    self._menu_stick_guard = nil
+    self.visible = true
+    refresh_text(self)
+    refresh_buttons(self)
+    self.selected = 1
+    gui.set_enabled(self.root, true)
+    update_selection(self)
+    msg.post(".", "acquire_input_focus")
+    -- A press which closed save slots must not immediately reopen them.
+    cancel_arm_timer(self)
+    self.input_arm_timer = timer.delay(Theme.animations.menu_fade_in, false, function()
+        self.input_arm_timer = nil
+        self.input_armed = self.visible
+    end)
+end
+
+local function select_button(self, index)
+    local button = self.buttons[index]
+    if not button then return end
+    hide_screen(self)
+    if button.exit then
+        sys.exit(0)
+    elseif button.extras then
+        msg.post("/host#script", "start_extras")
+    else
+        -- The existing boot host owns save-slot selection and game loading.
+        msg.post("/host#script", "start_game")
+    end
+end
+
+function init(self)
+    gui.set_render_order(RenderLayers.menus)
+    self.root = gui.get_node("root")
+    self.play = {node = gui.get_node("btn_play"), label = node("btn_play_label")}
+    self.buttons = {self.play}
+    -- Extras takes the Layout Editor's place, because that node is hidden here.
+    local extras, editor = node("btn_extras"), node("btn_editor")
+    if extras then
+        if editor then gui.set_position(extras, gui.get_position(editor)) end
+        gui.set_enabled(extras, false)
+        self.extras = {node = extras, label = node("btn_extras_label"), extras = true}
+    end
+    -- Custom title GUIs can retain their own Exit button. The shipped GUI has
+    -- Play only; Escape / controller Back provide its exit action.
+    local exit = node("btn_exit")
+    if exit then
+        self.exit = {node = exit, label = node("btn_exit_label"), exit = true}
+        self.buttons[#self.buttons + 1] = self.exit
+    end
+    for _, id in ipairs({"btn_editor", "btn_editor_label", "btn_wizard", "btn_wizard_label",
+        "subtitle", "hint", "hints", "status", "version", "toolkit_version"}) do
+        local target = node(id)
+        if target then gui.set_enabled(target, false) end
+    end
+    local title = node("title")
+    if title then gui.set_text(title, DisplayText.render(sys.get_config_string("project.title", ""))) end
+    self.visible = false
+    self.selected = 1
+    self.input_armed = false
+    self.input_arm_timer = nil
+    gui.set_enabled(self.root, false)
+    Settings.load()
+    Settings.apply_all()
+    refresh_text(self)
+    Viewport.cover(self.root)
+    self._view_revision = Viewport.revision()
+end
+
+function update(self, dt)
+    if self.visible and self._text_revision ~= DisplayText.revision() then refresh_text(self) end
+    local revision = Viewport.revision()
+    if self._view_revision ~= revision then
+        Viewport.cover(self.root)
+        self._view_revision = revision
+    end
+end
+
+function on_input(self, action_id, action)
+    local menu_pressed = require("mvtk.ui.menu_nav").pressed(self, action_id, action)
+    if not self.visible or not action then return false end
+    if not self.input_armed then return action.pressed == true or action.released == true end
+    if not menu_pressed then return false end
+
+    if action_id == hash("key_up") or action_id == hash("key_w")
+        or action_id == hash("gamepad_lpad_up") or action_id == hash("gamepad_lstick_up") then
+        self.selected = self.selected > 1 and self.selected - 1 or #self.buttons
+        update_selection(self)
+        return true
+    elseif action_id == hash("key_down") or action_id == hash("key_s")
+        or action_id == hash("gamepad_lpad_down") or action_id == hash("gamepad_lstick_down") then
+        self.selected = self.selected < #self.buttons and self.selected + 1 or 1
+        update_selection(self)
+        return true
+    elseif action_id == hash("key_enter") or action_id == hash("gamepad_rpad_down") then
+        select_button(self, self.selected)
+        return true
+    elseif action_id == hash("key_escape") or action_id == hash("gamepad_back") then
+        hide_screen(self)
+        sys.exit(0)
+        return true
+    elseif action_id == hash("touch") or action_id == hash("click") or action_id == hash("mouse_button_1") then
+        if type(action.x) ~= "number" or type(action.y) ~= "number" then return false end
+        for index, button in ipairs(self.buttons) do
+            if gui.pick_node(button.node, action.x, action.y) then
+                select_button(self, index)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("show_start_screen") then
+        show_screen(self)
+    elseif message_id == hash("hide_start_screen") then
+        hide_screen(self)
+    elseif message_id == hash("config_blocked") then
+        self.blocked_key = message.key
+        show_screen(self)
+        refresh_text(self)
+    end
+end
+
+function final(self)
+    hide_screen(self)
+end

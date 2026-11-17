@@ -1,0 +1,5 @@
+mesh: "/builtins/assets/gltf/quad_2x2.gltf"
+materials {
+  name: "default"
+  material: "/mvtk/render/materials/fullscreen_quad.material"
+}

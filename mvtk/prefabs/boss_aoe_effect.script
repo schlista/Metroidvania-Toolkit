@@ -1,0 +1,83 @@
+-- Boss AOE Effect
+-- Short-lived visual for boss attacks, spawned by the boss's aoe_effect_factory
+-- and beam_effect_factory (both use boss_aoe_effect.go and its existing sprite).
+--   * Ring (default): expands and fades over `duration`.
+--   * Mine: `lifetime` > 0 holds the disc visible for that many seconds, then
+--     fades out; mine.lua deletes it early when the mine triggers.
+--   * Beam: `width` > 0 stretches the sprite from the spawn position to
+--     `end_pos`, `width` pixels thick, and fades over `duration`.
+-- Damage is not done here; the attack modules own hit tests.
+
+local Pause = require "mvtk.core.pause"
+
+go.property("radius", 150.0)
+go.property("duration", 0.35)
+go.property("lifetime", 0.0)
+go.property("end_pos", vmath.vector3())
+go.property("width", 0.0)
+go.property("color_r", 1.0)
+go.property("color_g", 0.35)
+go.property("color_b", 0.2)
+go.property("color_a", 0.45)
+
+-- Sprite size in boss_attack_indicator.sprite (SIZE_MODE_MANUAL 64 x 64).
+local SPRITE_SIZE = 64
+-- Seconds a mine takes to fade out at the end of its lifetime.
+local MINE_FADE = 0.25
+
+local function clamp(v, lo, hi)
+    return math.max(lo, math.min(hi, v))
+end
+
+local function set_tint(self, alpha)
+    pcall(go.set, "#sprite", "tint", vmath.vector4(self.color_r, self.color_g, self.color_b, alpha))
+end
+
+local function set_disc(self, alpha, scale_mult)
+    local base_scale = math.max(16, self.radius * 2) / SPRITE_SIZE
+    pcall(go.set_scale, vmath.vector3(base_scale * scale_mult, base_scale * scale_mult, 1))
+    set_tint(self, alpha)
+end
+
+local function setup_beam(self)
+    local start = go.get_position()
+    local delta = vmath.vector3(self.end_pos.x - start.x, self.end_pos.y - start.y, 0)
+    local length = vmath.length(delta)
+    if length <= 0.0001 then return false end
+    go.set_position(vmath.vector3(start.x + delta.x * 0.5, start.y + delta.y * 0.5, start.z))
+    go.set_rotation(vmath.quat_rotation_z(math.atan2(delta.y, delta.x)))
+    go.set_scale(vmath.vector3(length / SPRITE_SIZE, math.max(1, self.width) / SPRITE_SIZE, 1))
+    return true
+end
+
+function init(self)
+    self.elapsed = 0
+    self.beam = self.width > 0 and setup_beam(self)
+    if self.beam then
+        set_tint(self, self.color_a)
+    elseif self.lifetime > 0 then
+        set_disc(self, self.color_a, 1.0)
+    else
+        set_disc(self, 0.0, 0.7)
+    end
+end
+
+function update(self, dt)
+    -- Menus pause gameplay without stopping engine time.
+    if Pause.get() then return end
+    self.elapsed = self.elapsed + dt
+
+    if self.beam then
+        local t = clamp(self.elapsed / math.max(self.duration, 0.0001), 0, 1)
+        set_tint(self, (1.0 - t) * self.color_a)
+        if self.elapsed >= self.duration then go.delete() end
+    elseif self.lifetime > 0 then
+        local left = self.lifetime - self.elapsed
+        set_tint(self, self.color_a * clamp(left / MINE_FADE, 0, 1))
+        if left <= 0 then go.delete() end
+    else
+        local t = clamp(self.elapsed / math.max(self.duration, 0.0001), 0, 1)
+        set_disc(self, (1.0 - t) * self.color_a, 0.7 + (0.5 * t))
+        if self.elapsed >= self.duration then go.delete() end
+    end
+end

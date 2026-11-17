@@ -1,0 +1,4 @@
+images {
+  image: "/builtins/graphics/particle_blob.png"
+}
+extrude_borders: 2

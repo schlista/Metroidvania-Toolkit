@@ -1,0 +1,71 @@
+-- Baked launcher; the player feature owns holding, aiming time and launch motion.
+local PU = require "mvtk.prefabs.prefab_utils"
+local LaunchMath = require "mvtk.world.launch_math"
+local Pause = require "mvtk.core.pause"
+
+go.property("cannon_id", "")
+go.property("room_id", "")
+go.property("aim_mode", "fixed")
+go.property("angle", 45)
+go.property("sweep_range", 90)
+go.property("sweep_speed", 60)
+go.property("fire_on", "jump")
+go.property("auto_delay", 1)
+go.property("launch_speed", 2400)
+go.property("control_lock_time", 0.35)
+go.property("keep_momentum", true)
+go.property("cooldown", 0.5)
+go.property("breaks_action", "")
+go.property("sound_id", "")
+
+local function rotate(angle)
+    go.set_rotation(vmath.quat_rotation_z(math.rad(angle)))
+end
+
+function init(self)
+    go.update_world_transform()
+    self._position = go.get_world_position()
+    self._loaded, self._cooldown, self._elapsed, self._parts = false, 0, 0, {}
+    rotate(self.aim_mode == "sweep" and LaunchMath.sweep_angle(self.angle, self.sweep_range, self.sweep_speed, 0) or self.angle)
+end
+
+function update(self, dt)
+    if Pause.get() then return end
+    self._cooldown = math.max(0, self._cooldown - dt)
+    if self._loaded then
+        self._elapsed = self._elapsed + dt
+        rotate(self.aim_mode == "sweep" and LaunchMath.sweep_angle(self.angle, self.sweep_range, self.sweep_speed, self._elapsed) or self.angle)
+    end
+end
+
+function on_message(self, message_id, message)
+    if message_id == hash("trigger_response") then
+        if message.other_group ~= hash("player") then return end
+        local part = message.other_id
+        if not message.enter then self._parts[part] = nil; return end
+        if self._parts[part] then return end
+        local occupied = next(self._parts) ~= nil
+        self._parts[part] = true
+        if occupied or self._loaded or self._cooldown > 0 or Pause.get() then return end
+        local player = PU.get_player_url()
+        if not player then return end
+        self._loaded, self._elapsed = true, 0
+        msg.post(player, "mvtk_cannon_load", {cannon=msg.url(), x=self._position.x, y=self._position.y,
+            aim_mode=self.aim_mode, angle=self.angle, sweep_range=self.sweep_range, sweep_speed=self.sweep_speed,
+            fire_on=self.fire_on, auto_delay=self.auto_delay, speed=self.launch_speed,
+            lock_t=self.control_lock_time, keep_momentum=self.keep_momentum, breaks_action=self.breaks_action})
+    elseif message_id == hash("cannon_fired") and self._loaded then
+        self._loaded, self._cooldown = false, math.max(0, self.cooldown)
+        rotate(message.angle)
+        if self.sound_id ~= "" and self.sound_id ~= "none" then require("mvtk.audio.audio").sfx(self.sound_id) end
+    elseif message_id == hash("cannon_cancelled") then
+        self._loaded, self._elapsed = false, 0
+    end
+end
+
+function final(self)
+    if self._loaded then
+        local player = PU.get_player_url()
+        if player then pcall(msg.post, player, "mvtk_cannon_cancel", {cannon=msg.url()}) end
+    end
+end

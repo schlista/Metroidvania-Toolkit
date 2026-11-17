@@ -1,0 +1,62 @@
+-- A baked floor zone leases the existing grounded movement stats.
+local PlayerStats = require "mvtk.player.player_stats"
+local ToggleMessages = require "mvtk.prefabs.toggle_messages"
+
+go.property("ice_id", "")
+go.property("preset", "ice")
+go.property("accel_mult", -1)
+go.property("decel_mult", -1)
+go.property("turn_brake_mult", -1)
+go.property("enabled", true)
+
+local function apply_enabled(self, enabled)
+    self.enabled = enabled
+    if not enabled then
+        self.parts = {}
+        PlayerStats.clear_source("surface:" .. self.zone_key)
+    end
+end
+
+local function resolve(value, key, preset)
+    if value == -1 then value = preset[key] end
+    return tonumber(value) or 1
+end
+
+function init(self)
+    -- Component URLs keep adjacent strips independent even with blank authored ids.
+    self.zone_key = tostring(msg.url())
+    self.parts = {}
+    local settings = require("developer.config.runtime_settings").get_player_settings()
+    local preset = (settings.surfaces or {})[self.preset] or {}
+    self.values = {
+        ground_accel_mult = resolve(self.accel_mult, "accel_mult", preset),
+        ground_decel_mult = resolve(self.decel_mult, "decel_mult", preset),
+        ground_turn_mult = resolve(self.turn_brake_mult, "turn_brake_mult", preset),
+    }
+    apply_enabled(self, self.enabled)
+end
+
+function update(self, dt)
+    if self._room_hidden then return end
+    if require("mvtk.core.pause").get() then return end
+    if not self.enabled then apply_enabled(self, false); return end
+    if next(self.parts) then
+        PlayerStats.set_source("surface:" .. self.zone_key, self.values, {lease = true, group = "surface"})
+    end
+end
+
+function on_message(self, message_id, message, sender)
+    if message_id == hash("trigger_response") then
+        if not self.enabled or (message.other_group or message.group) ~= hash("player") or not message.other_id then return end
+        self.parts[message.other_id] = message.enter and true or nil
+        if not next(self.parts) then PlayerStats.clear_source("surface:" .. self.zone_key) end
+    elseif message_id == hash("activate") then apply_enabled(self, true)
+    elseif message_id == hash("deactivate") then apply_enabled(self, false)
+    elseif message_id == hash("toggle") then apply_enabled(self, not self.enabled)
+    else ToggleMessages.handle(self, message_id, message, apply_enabled) end
+end
+
+function final(self)
+    self.parts = {}
+    PlayerStats.clear_source("surface:" .. self.zone_key)
+end

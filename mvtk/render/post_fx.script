@@ -1,0 +1,11 @@
+local PostFx = require "mvtk.render.post_fx"
+local Settings = require "mvtk.core.settings"
+
+function update(self, dt)
+    local post = PostFx.combine(PostFx.creator(), Settings.get_brightness())
+    if post then PostFx.publish(post) else PostFx.clear() end
+end
+
+function final(self)
+    PostFx.clear()
+end

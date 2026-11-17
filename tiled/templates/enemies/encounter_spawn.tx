@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Encounter Spawn" type="encounter_spawn">
+  <properties>
+   <property name="encounter_ref" type="object" value="0"/>
+   <property name="enemy" type="class" propertytype="encounter_spawn_enemy">
+    <properties>
+     <property name="encounter_wave" type="int" value="1"/>
+     <property name="enemy_type" propertytype="enemies" value="default"/>
+     <property name="archetype" propertytype="enemy_archetypes" value="none"/>
+     <property name="spawn_count" type="int" value="1"/>
+     <property name="elite" type="bool" value="false"/>
+     <property name="size" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="timing" type="class" propertytype="encounter_spawn_timing">
+    <properties>
+     <property name="spawn_delay" type="float" value="0"/>
+     <property name="spawn_interval" type="float" value="0.5"/>
+     <property name="facing" type="int" value="0"/>
+     <property name="telegraph_effect" propertytype="particle_effects" value="none"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" value="2.8.0"/>
+  </properties>
+  <point/>
+ </object>
+</template>

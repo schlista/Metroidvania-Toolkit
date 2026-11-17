@@ -1,0 +1,953 @@
+script: "/developer/ui/menus/boot_save_slot_select.gui_script"
+fonts {
+  name: "main"
+  font: "/developer/assets/fonts/ui_text.font"
+}
+background_color {
+  x: 0.0
+  y: 0.0
+  z: 0.0
+}
+nodes {
+  position {
+    x: 960.0
+    y: 540.0
+  }
+  size {
+    x: 1920.0
+    y: 1080.0
+  }
+  color {
+    x: 0.06
+    y: 0.06
+    z: 0.10
+  }
+  type: TYPE_BOX
+  id: "root"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    y: 350.0
+  }
+  size {
+    x: 466.666666563
+    y: 46.666666656
+  }
+  color {
+    x: 0.50
+    y: 0.75
+    z: 1.0
+  }
+  type: TYPE_TEXT
+  text: "SELECT SAVE SLOT"
+  font: "main"
+  id: "title"
+  pivot: PIVOT_CENTER
+  outline {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  shadow {
+    x: 0.02
+    y: 0.02
+    z: 0.04
+  }
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  outline_alpha: 0.6
+  shadow_alpha: 0.4
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position {
+    y: 150.0
+  }
+  size {
+    x: 1000.000000000
+    y: 110.000000000
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "slot1_bg"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -380.000000000
+    y: 10.0
+  }
+  size {
+    x: 139.999999969
+    y: 31.111111104
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "SLOT 1"
+  font: "main"
+  id: "slot1_label"
+  pivot: PIVOT_W
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot1_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 100.000000000
+    y: 10.0
+  }
+  size {
+    x: 528.888888771
+    y: 31.111111104
+  }
+  color {
+    x: 0.65
+    y: 0.65
+    z: 0.70
+  }
+  type: TYPE_TEXT
+  text: "Empty Slot"
+  font: "main"
+  id: "slot1_info"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot1_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: -30.0
+  }
+  size {
+    x: 787.499999902
+    y: 27.999999996
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot1_meta"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot1_bg"
+  inherit_alpha: true
+  alpha: 0.85
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position { x: -492.000000000 y: 0.0 }
+  size { x: 8.0 y: 94.000000000 }
+  color { x: 1.0 y: 1.0 z: 1.0 }
+  type: TYPE_BOX
+  id: "slot1_swatch"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot1_bg"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: 0.0
+  }
+  size {
+    x: 1000.000000000
+    y: 110.000000000
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "slot2_bg"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -380.000000000
+    y: 10.0
+  }
+  size {
+    x: 139.999999969
+    y: 31.111111104
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "SLOT 2"
+  font: "main"
+  id: "slot2_label"
+  pivot: PIVOT_W
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot2_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 100.000000000
+    y: 10.0
+  }
+  size {
+    x: 528.888888771
+    y: 31.111111104
+  }
+  color {
+    x: 0.65
+    y: 0.65
+    z: 0.70
+  }
+  type: TYPE_TEXT
+  text: "Empty Slot"
+  font: "main"
+  id: "slot2_info"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot2_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: -30.0
+  }
+  size {
+    x: 787.499999902
+    y: 27.999999996
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot2_meta"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot2_bg"
+  inherit_alpha: true
+  alpha: 0.85
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position { x: -492.000000000 y: 0.0 }
+  size { x: 8.0 y: 94.000000000 }
+  color { x: 1.0 y: 1.0 z: 1.0 }
+  type: TYPE_BOX
+  id: "slot2_swatch"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot2_bg"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -150.0
+  }
+  size {
+    x: 1000.000000000
+    y: 110.000000000
+  }
+  color {
+    x: 0.12
+    y: 0.12
+    z: 0.16
+  }
+  type: TYPE_BOX
+  id: "slot3_bg"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: -380.000000000
+    y: 10.0
+  }
+  size {
+    x: 139.999999969
+    y: 31.111111104
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "SLOT 3"
+  font: "main"
+  id: "slot3_label"
+  pivot: PIVOT_W
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot3_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.285714286
+    y: 1.285714286
+  }
+  position {
+    x: 100.000000000
+    y: 10.0
+  }
+  size {
+    x: 528.888888771
+    y: 31.111111104
+  }
+  color {
+    x: 0.65
+    y: 0.65
+    z: 0.70
+  }
+  type: TYPE_TEXT
+  text: "Empty Slot"
+  font: "main"
+  id: "slot3_info"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot3_bg"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: -30.0
+  }
+  size {
+    x: 787.499999902
+    y: 27.999999996
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot3_meta"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot3_bg"
+  inherit_alpha: true
+  alpha: 0.85
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position { x: -492.000000000 y: 0.0 }
+  size { x: 8.0 y: 94.000000000 }
+  color { x: 1.0 y: 1.0 z: 1.0 }
+  type: TYPE_BOX
+  id: "slot3_swatch"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot3_bg"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  position {
+    y: -300.0
+  }
+  size {
+    x: 250.0
+    y: 50.0
+  }
+  color {
+    x: 0.22
+    y: 0.22
+    z: 0.28
+  }
+  type: TYPE_BOX
+  id: "btn_back"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  size {
+    x: 178.888888849
+    y: 31.111111104
+  }
+  color {
+    x: 0.88
+    y: 0.88
+    z: 0.90
+  }
+  type: TYPE_TEXT
+  text: "BACK"
+  font: "main"
+  id: "btn_back_label"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "btn_back"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { y: -240.0 }
+  size { x: 1224.999999847 y: 27.999999996 }
+  color { x: 0.95 y: 0.55 z: 0.45 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot_status"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+
+  font_size: 14
+}
+nodes {
+  scale {
+    x: 1.142857143
+    y: 1.142857143
+  }
+  position {
+    y: -380.0
+  }
+  size {
+    x: 1312.499999836
+    y: 55.999999993
+  }
+  color {
+    x: 0.55
+    y: 0.55
+    z: 0.62
+  }
+  type: TYPE_TEXT
+  text: "Up/Down: Navigate | Enter: Select | X: Delete Save | Esc: Back"
+  font: "main"
+  id: "hints"
+  pivot: PIVOT_CENTER
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  alpha: 0.85
+  size_mode: SIZE_MODE_AUTO
+
+  font_size: 14
+}
+nodes {
+  position { y: 0.0 }
+  size { x: 1100.0 y: 920.0 }
+  color { x: 0.06 y: 0.06 z: 0.1 }
+  type: TYPE_BOX
+  id: "difficulty_panel"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+  enabled: false
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { y: 380.0 }
+  size { x: 831.249999896 y: 48.124999994 }
+  color { x: 0.5 y: 0.75 z: 1.0 }
+  type: TYPE_TEXT
+  text: "Choose difficulty"
+  font: "main"
+  id: "difficulty_title"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 300.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row1_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 300.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row1_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 258.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row2_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 258.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row2_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 216.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row3_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 216.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row3_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 174.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row4_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 174.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row4_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 132.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row5_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 132.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row5_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 90.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row6_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 90.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row6_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 48.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row7_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 48.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row7_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: 6.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row8_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: 6.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row8_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: -36.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row9_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: -36.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row9_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: -78.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row10_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: -78.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row10_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: -120.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row11_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: -120.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row11_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  position { y: -162.0 }
+  size { x: 850.0 y: 38.0 }
+  color { x: 0.12 y: 0.12 z: 0.16 }
+  type: TYPE_BOX
+  id: "difficulty_row12_bg"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { y: -162.0 }
+  size { x: 637.777777636 y: 27.999999994 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_row12_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { y: -260.0 }
+  size { x: 831.249999896 y: 87.499999989 }
+  color { x: 0.88 y: 0.88 z: 0.9 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_detail"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { y: -380.0 }
+  size { x: 874.999999891 y: 87.499999989 }
+  color { x: 0.65 y: 0.65 z: 0.7 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "difficulty_hints"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "difficulty_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  size { x: 1100.0 y: 320.0 }
+  color { x: 0.08 y: 0.08 z: 0.12 }
+  type: TYPE_BOX
+  id: "slot_confirm_panel"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "root"
+  inherit_alpha: true
+}
+nodes {
+  scale { x: 1.142857143 y: 1.142857143 }
+  position { x: 0.0 y: 65.0 }
+  size { x: 874.999999891 y: 139.999999982 }
+  color { x: 0.95 y: 0.95 z: 1.0 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot_confirm_text"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot_confirm_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: -200.0 y: -85.0 }
+  size { x: 272.222222162 y: 46.666666656 }
+  color { x: 0.95 y: 0.95 z: 1.0 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot_confirm_no"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot_confirm_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+nodes {
+  scale { x: 1.285714286 y: 1.285714286 }
+  position { x: 200.0 y: -85.0 }
+  size { x: 272.222222162 y: 46.666666656 }
+  color { x: 0.95 y: 0.95 z: 1.0 }
+  type: TYPE_TEXT
+  text: ""
+  font: "main"
+  id: "slot_confirm_yes"
+  adjust_mode: ADJUST_MODE_FIT
+  parent: "slot_confirm_panel"
+  inherit_alpha: true
+  line_break: true
+
+  font_size: 14
+}
+material: "/builtins/materials/gui.material"

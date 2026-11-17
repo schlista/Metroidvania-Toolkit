@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Air Pocket" type="air_pocket" width="128" height="128">
+  <properties>
+   <property name="air_pocket_id" type="string" value=""/>
+   <property name="air" type="class" propertytype="air_pocket_air">
+    <properties>
+     <property name="refill_rate" type="float" value="-1"/>
+    </properties>
+   </property>
+   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+  </properties>
+ </object>
+</template>
