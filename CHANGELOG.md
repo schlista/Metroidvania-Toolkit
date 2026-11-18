@@ -2,12 +2,16 @@
 
 This file contains the creator release notes shipped with this toolkit.
 
-## 0.1.0-alpha.1 — 2026-11-16
+## 0.1.0 — 2026-11-18
 
-This is the toolkit's first alpha. Its features are built and pass automated
+This is the toolkit's first release. Its features are built and pass automated
 tests, but not every feature has been checked by hand yet. The list below names
 the checks that remain open so you can decide what to try in your own game.
 Report problems using [Report a problem](README.md#report-a-problem).
+
+Compared with the 0.1.0-alpha.1 preview, this release adds `COMMERCIAL_LICENSE.txt`,
+the one-person Commercial License terms in `LICENSE`, and the itch.io purchase link
+in the README and START_HERE. The toolkit code is unchanged.
 
 ### Before you start
 
@@ -129,7 +133,7 @@ building and playing.
 
 ### Not yet verified by hand
 
-The 496 checks below have not been fully checked by hand for this alpha.
+The 496 checks below have not been fully checked by hand for this release.
 "Partly checked" means some parts were tried, but the whole check is still open.
 The separate Showcase download includes signs labeled with a check ID and its
 check text, so you can find a check by ID. Some checks require changed settings,
