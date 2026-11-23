@@ -12,6 +12,15 @@ local function load_table(content, path)
     return value
 end
 
+local function config_loader(read, base)
+    return function(name)
+        local path = base .. "/config/" .. name:match("[^.]+$") .. ".lua"
+        local text = read(path)
+        if text then return load_table(text, path) end
+        return require(name)
+    end
+end
+
 local function project_root(base, opts)
     if opts and opts.project_root then return opts.project_root end
     if base == "developer" then return "." end
@@ -26,6 +35,25 @@ function M.recover(base, opts)
     return recovered
 end
 
+local function validate_player(baseline, effective, saved_overrides)
+    local checked = Model.copy(effective)
+    if saved_overrides then
+        for _, field in pairs(Model.fields) do
+            local path = field.allow_saved_out_of_range and field.path:match("^player%.(.+)$")
+            local saved = path and Model.get(saved_overrides, path)
+            if type(saved) == "number" and saved == Model.get(effective, path)
+                and (saved < field.min or saved > field.max) then
+                -- Check the authored value here. Keep the saved override in
+                -- the effective settings used by the player and the writer.
+                Model.put(checked, path, Model.get(baseline, path))
+            end
+        end
+    end
+    local errors = require("mvtk.core.config_validator").validate_config(checked,
+        require("mvtk.core.config_schemas").player_settings)
+    assert(#errors == 0, table.concat(errors, "; "))
+end
+
 -- Rebuild geometry from the saved effective settings without publishing drafts
 -- or rewriting the wizard document. Called by Prepare & Check.
 function M.prepare(opts)
@@ -34,13 +62,12 @@ function M.prepare(opts)
     local ok,result=pcall(function()
         M.recover(base,opts)
         local read=opts.fs and opts.fs.read or Transaction.read
-        local player=load_table(read(base.."/config/player_settings.lua"),"player_settings.lua")
+        local baseline=load_table(read(base.."/config/player_settings.lua"),"player_settings.lua")
         local text=read(base.."/config/creator_settings.lua")
-        local doc=text and Model.load_document(load_table(text,"creator_settings.lua"),player)
-        if doc and doc.published==true then Model.merge(player,doc.overrides.player or {}) end
-        local errors=require("mvtk.core.config_validator").validate_config(player,
-            require("mvtk.core.config_schemas").player_settings)
-        assert(#errors==0,table.concat(errors,"; "))
+        local doc=text and Model.load_document(load_table(text,"creator_settings.lua"),baseline,config_loader(read,base))
+        local saved_overrides=doc and doc.published==true and doc.overrides.player
+        local player=Model.merge(Model.copy(baseline),saved_overrides or {})
+        validate_player(baseline,player,saved_overrides)
         local files=PlayerScaleWriter.stage({base=base,read=read,player=player,
             previous=Model.copy(player),force_geometry=true})
         return Transaction.commit(base,files,opts)
@@ -60,23 +87,29 @@ function M.save(data, opts)
             if not valid then error(message or "Configuration validation failed", 0) end
         end
         local read = opts.fs and opts.fs.read or Transaction.read
+        local load_config = config_loader(read, base)
         local player_path = base .. "/config/player_settings.lua"
         local baseline = load_table(read(player_path) or data.player_settings, player_path)
         local creator_path = base .. "/config/creator_settings.lua"
         local previous_text = read(creator_path)
         local previous = previous_text and load_table(previous_text, creator_path)
             or { version = Model.VERSION, player_units = Model.baseline_units(baseline), overrides = {} }
-        previous = Model.load_document(previous, baseline)
+        previous = Model.load_document(previous, baseline, load_config)
         if data.expected_document then
-            assert(Model.encode(previous) == Model.encode(Model.load_document(data.expected_document, baseline)),
+            local expected = Model.copy(Model.load_document(data.expected_document, baseline, load_config))
+            -- Loading has normalized the timings. The disk marker can differ
+            -- even when no settings value changed.
+            expected.attack_recovery_version = previous.attack_recovery_version
+            assert(Model.encode(previous) == Model.encode(expected),
                 "Project settings changed since the wizard opened. Rebuild and reopen before saving.")
         end
         local values = Model.copy(data.player_preset or data.controls or {})
         if data.player_scale ~= nil then values.player_scale = data.player_scale end
         if data.scale_movement ~= nil then values.scale_movement = data.scale_movement end
-        local doc = data.requested_document and Model.copy(Model.load_document(data.requested_document, baseline))
-            or Model.from_controls(values, previous, baseline)
+        local doc = data.requested_document and Model.copy(Model.load_document(data.requested_document, baseline, load_config))
+            or Model.from_controls(values, previous, baseline, load_config)
         doc.player_units = Model.baseline_units(baseline)
+        doc.attack_recovery_version = Model.ATTACK_RECOVERY_VERSION
         -- A Save with no edits still retires runtime switches from older drafts.
         Model.prune_legacy(doc)
         doc.published = true
@@ -95,10 +128,9 @@ function M.save(data, opts)
         end
         local old_player = Model.merge(Model.copy(baseline), previous.overrides.player or {})
         local effective = Model.merge(Model.copy(baseline), doc.overrides.player or {})
+        validate_player(baseline, effective, previous.overrides.player)
         local Validator = require "mvtk.core.config_validator"
         local Schemas = require "mvtk.core.config_schemas"
-        local errors = Validator.validate_config(effective, Schemas.player_settings)
-        assert(#errors == 0, table.concat(errors, "; "))
         -- Controls authoring uses this same pure contract in Stage 3. Validate
         -- the current defaults before publishing any Game Settings transaction.
         local bindings_text = read(base .. "/config/default_bindings.lua")
@@ -138,7 +170,7 @@ function M.save(data, opts)
             files=combined
             doc.overrides.player=doc.overrides.player or {}; doc.overrides.player.player_type="sprite"
         end
-        files[#files + 1] = { path = "config/creator_settings.lua", content = Model.serialize(doc, baseline) }
+        files[#files + 1] = { path = "config/creator_settings.lua", content = Model.serialize(doc, baseline, load_config) }
         local root = project_root(base, opts)
         local identity
         if root and read(root .. "/game.project") and data.project_name then

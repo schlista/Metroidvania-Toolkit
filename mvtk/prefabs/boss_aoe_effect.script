@@ -1,42 +1,32 @@
--- Boss AOE Effect
--- Short-lived visual for boss attacks, spawned by the boss's aoe_effect_factory
--- and beam_effect_factory (both use boss_aoe_effect.go and its existing sprite).
---   * Ring (default): expands and fades over `duration`.
---   * Mine: `lifetime` > 0 holds the disc visible for that many seconds, then
---     fades out; mine.lua deletes it early when the mine triggers.
---   * Beam: `width` > 0 stretches the sprite from the spawn position to
---     `end_pos`, `width` pixels thick, and fades over `duration`.
--- Damage is not done here; the attack modules own hit tests.
-
+-- An attack-owned visual. The executor owns damage and posts look changes
+-- on the same clock as its hit window. The script owns only its visual fade.
 local Pause = require "mvtk.core.pause"
+local Indicator = require "mvtk.bosses.boss_indicator"
 
 go.property("radius", 150.0)
 go.property("duration", 0.35)
 go.property("lifetime", 0.0)
 go.property("end_pos", vmath.vector3())
 go.property("width", 0.0)
-go.property("color_r", 1.0)
-go.property("color_g", 0.35)
-go.property("color_b", 0.2)
-go.property("color_a", 0.45)
+go.property("box_height", 0.0)
+go.property("managed", false)
+go.property("color_r", -1.0)
+go.property("color_g", -1.0)
+go.property("color_b", -1.0)
+go.property("color_a", -1.0)
+go.property("ring", false)
+go.property("indicator_look", "active")
+go.property("single_hit", false)
+go.property("minimum_duration", 0)
+go.property("warning_color", vmath.vector4(-1, -1, -1, -1))
 
--- Sprite size in boss_attack_indicator.sprite (SIZE_MODE_MANUAL 64 x 64).
-local SPRITE_SIZE = 64
--- Seconds a mine takes to fade out at the end of its lifetime.
-local MINE_FADE = 0.25
+local LOOK = hash("boss_indicator_look")
 
-local function clamp(v, lo, hi)
-    return math.max(lo, math.min(hi, v))
-end
-
-local function set_tint(self, alpha)
-    pcall(go.set, "#sprite", "tint", vmath.vector4(self.color_r, self.color_g, self.color_b, alpha))
-end
-
-local function set_disc(self, alpha, scale_mult)
-    local base_scale = math.max(16, self.radius * 2) / SPRITE_SIZE
-    pcall(go.set_scale, vmath.vector3(base_scale * scale_mult, base_scale * scale_mult, 1))
-    set_tint(self, alpha)
+local function start_grace(self)
+    if self.single_hit then
+        self.grace_until = self.elapsed + self.indicator.minimum_active_time
+        self.expires_at = math.max(self.expires_at, self.grace_until)
+    end
 end
 
 local function setup_beam(self)
@@ -46,38 +36,67 @@ local function setup_beam(self)
     if length <= 0.0001 then return false end
     go.set_position(vmath.vector3(start.x + delta.x * 0.5, start.y + delta.y * 0.5, start.z))
     go.set_rotation(vmath.quat_rotation_z(math.atan2(delta.y, delta.x)))
-    go.set_scale(vmath.vector3(length / SPRITE_SIZE, math.max(1, self.width) / SPRITE_SIZE, 1))
+    Indicator.setup("beam", length, self.width)
     return true
 end
 
 function init(self)
     self.elapsed = 0
-    self.beam = self.width > 0 and setup_beam(self)
-    if self.beam then
-        set_tint(self, self.color_a)
-    elseif self.lifetime > 0 then
-        set_disc(self, self.color_a, 1.0)
-    else
-        set_disc(self, 0.0, 0.7)
+    self.indicator = Indicator.config()
+    self.effect_warning = true
+    self.look = self.indicator_look
+    if self.box_height > 0 then
+        Indicator.setup("box", self.width, self.box_height)
+    elseif self.width <= 0 or not setup_beam(self) then
+        Indicator.setup(self.ring and "ring" or "circle", self.radius * 2)
+    end
+    self.expires_at = math.max(self.minimum_duration, self.lifetime > 0 and self.lifetime or self.duration)
+    if self.look == "active" then start_grace(self) end
+    Indicator.set_look(self, self.look, self.look == "spent" and 0 or 1)
+end
+
+local function spend(self, remaining)
+    self.look = "spent"
+    self.spent_at = self.elapsed
+    self.spent_duration = remaining or math.max(0, self.expires_at - self.elapsed)
+    Indicator.set_look(self, "spent", self.spent_duration > 0 and 1 or 0)
+end
+
+function on_message(self, message_id, message)
+    if message_id ~= LOOK then return end
+    if message.look == "expire" then
+        if self.grace_until and self.grace_until > self.elapsed then
+            self.managed = false
+            self.expires_at = self.grace_until
+        else
+            go.delete()
+        end
+    elseif message.look == "spent" then
+        if self.grace_until and message.remaining then
+            self.spent_remaining = math.max(0, message.remaining - (self.grace_until - self.elapsed))
+        elseif not self.grace_until and self.look ~= "spent" then
+            spend(self, message.remaining)
+        end
+    elseif self.look ~= message.look then
+        self.look = message.look
+        if self.look == "active" then start_grace(self) end
+        self.warning_at = self.elapsed
+        Indicator.set_look(self, self.look)
     end
 end
 
 function update(self, dt)
-    -- Menus pause gameplay without stopping engine time.
     if Pause.get() then return end
     self.elapsed = self.elapsed + dt
-
-    if self.beam then
-        local t = clamp(self.elapsed / math.max(self.duration, 0.0001), 0, 1)
-        set_tint(self, (1.0 - t) * self.color_a)
-        if self.elapsed >= self.duration then go.delete() end
-    elseif self.lifetime > 0 then
-        local left = self.lifetime - self.elapsed
-        set_tint(self, self.color_a * clamp(left / MINE_FADE, 0, 1))
-        if left <= 0 then go.delete() end
-    else
-        local t = clamp(self.elapsed / math.max(self.duration, 0.0001), 0, 1)
-        set_disc(self, (1.0 - t) * self.color_a, 0.7 + (0.5 * t))
-        if self.elapsed >= self.duration then go.delete() end
+    if self.grace_until and self.elapsed >= self.grace_until then
+        self.grace_until = nil
+        spend(self, self.spent_remaining)
     end
+    if self.look == "warning" then
+        Indicator.tint(self, "warning", self.elapsed - (self.warning_at or 0))
+    elseif self.spent_duration and self.spent_duration > 0 then
+        local fade = math.max(0, 1 - (self.elapsed - self.spent_at) / self.spent_duration)
+        Indicator.tint(self, "spent", 0, fade)
+    end
+    if not self.managed and self.elapsed >= self.expires_at then go.delete() end
 end

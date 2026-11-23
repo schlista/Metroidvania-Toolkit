@@ -2623,7 +2623,7 @@ function M.on_build_started(_)
     local map_files
     if world then
         map_files={};for _,map in ipairs(world.maps) do map_files[#map_files+1]=map.id..".lua" end
-        require("developer.tools.preparation").require_published(world_opts)
+        require("developer.tools.preparation").require_published(world_opts, true)
     end
     require("developer.tools.relationship_project").require_valid({
         root=ROOT, list_dir_filesystem=list_dir_filesystem, log=info, files=map_files,

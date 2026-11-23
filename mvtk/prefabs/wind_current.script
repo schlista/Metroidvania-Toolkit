@@ -5,6 +5,8 @@ local ToggleMessages = require "mvtk.prefabs.toggle_messages"
 local TriggerBus = require "mvtk.world.trigger_bus"
 local SwitchState = require "mvtk.world.switch_state"
 local Presentation = require "mvtk.tiled.object_presentation"
+local Clock = require "mvtk.player.environment_clock"
+local Surface = require "mvtk.player.surface_effects"
 
 go.property("current_id", "")
 go.property("direction", "right")
@@ -20,13 +22,33 @@ go.property("enabled", true)
 go.property("room_id", "")
 
 local function refresh(self)
-    local blowing = self.enabled and self.clock >= 0
-    if blowing and self.on_seconds > 0 and self.off_seconds > 0 then
-        blowing = self.clock % (self.on_seconds + self.off_seconds) < self.on_seconds
-    end
+    local blowing = Clock.wind_blowing(self)
     if self.blowing ~= blowing then
         self.blowing = blowing
         Presentation.visible(blowing)
+    end
+end
+
+local function report_overlap(self)
+    local present = not self._room_hidden and next(self.parts) ~= nil
+    local phase = {
+        present = present, enabled = self.enabled, clock = self.clock,
+        on_seconds = self.on_seconds, off_seconds = self.off_seconds, step_left = self.step_left,
+    }
+    if self.wind_mode == "lift" then
+        msg.post(PU.get_player_url(), "mvtk_env_lift", {
+            wind = phase,
+            gravity_multiple = self.lift_gravity_multiple,
+            max_rise_speed = self.max_rise_speed,
+            dir = self.direction == "down" and -1 or 1,
+        })
+    else
+        local vx, vy = Surface.conveyor_vector(self.direction, self.push_speed)
+        if self.angle ~= 0 then
+            local radians = math.rad(self.angle)
+            vx, vy = math.cos(radians) * self.push_speed, math.sin(radians) * self.push_speed
+        end
+        msg.post(PU.get_player_url(), "mvtk_env_push", {wind = phase, vx = vx, vy = vy})
     end
 end
 
@@ -61,34 +83,32 @@ end
 function update(self, dt)
     if self._room_hidden then return end
     if require("mvtk.core.pause").get() then return end
-    if self.enabled then self.clock = self.clock + dt end
+    local elapsed, step_dt = Clock.frame(dt)
+    Clock.advance(self, elapsed, function()
+        if self.enabled then self.clock = self.clock + step_dt end
+    end)
     refresh(self)
-    if not self.blowing or not next(self.parts) then return end
-    if self.wind_mode == "lift" then
-        msg.post(PU.get_player_url(), "mvtk_env_lift", {
-            gravity_multiple = self.lift_gravity_multiple,
-            max_rise_speed = self.max_rise_speed,
-            dir = self.direction == "down" and -1 or 1,
-        })
-    else
-        local vx, vy = require("mvtk.player.surface_effects").conveyor_vector(self.direction, self.push_speed)
-        if self.angle ~= 0 then
-            local radians = math.rad(self.angle)
-            vx, vy = math.cos(radians) * self.push_speed, math.sin(radians) * self.push_speed
-        end
-        msg.post(PU.get_player_url(), "mvtk_env_push", {vx = vx, vy = vy})
-    end
 end
 
 function on_message(self, message_id, message, sender)
     if message_id == hash("trigger_response") then
         if (message.other_group or message.group) ~= hash("player") or not message.other_id then return end
+        local occupied = next(self.parts) ~= nil
         self.parts[message.other_id] = message.enter and true or nil
+        if occupied ~= (next(self.parts) ~= nil) then report_overlap(self) end
     else
+        local enabled, hidden = self.enabled, self._room_hidden
         apply_signal(self, message_id, message)
+        if next(self.parts) and (enabled ~= self.enabled or hidden ~= self._room_hidden) then
+            report_overlap(self)
+        end
     end
 end
 
 function final(self)
+    if next(self.parts) then
+        self.parts = {}
+        report_overlap(self)
+    end
     TriggerBus.unregister(self.current_key, msg.url())
 end

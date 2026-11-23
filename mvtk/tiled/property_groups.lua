@@ -272,11 +272,20 @@ return {
                 ["charge_telegraph_time"] = {
                     default = -1,
                 },
+                ["cooldown_scale"] = {
+                    default = 1,
+                },
                 ["damage_multiplier"] = {
                     default = 1,
                 },
+                ["moveset"] = {
+                    default = "none",
+                },
                 ["stagger_immune"] = {
                     default = false,
+                },
+                ["telegraph_scale"] = {
+                    default = 1,
                 },
             },
         },
@@ -1615,6 +1624,12 @@ return {
                 ["facing_lock"] = {
                     default = false,
                 },
+                ["feet_offset"] = {
+                    default = 0,
+                },
+                ["ground_motion"] = {
+                    default = "type_default",
+                },
                 ["hang_speed"] = {
                     default = 260,
                 },
@@ -1647,6 +1662,12 @@ return {
                 },
                 ["speed_multiplier"] = {
                     default = 1,
+                },
+                ["teleport_anchors"] = {
+                    default = "",
+                },
+                ["teleport_interval"] = {
+                    default = 0,
                 },
             },
         },

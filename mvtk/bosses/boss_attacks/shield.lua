@@ -8,7 +8,9 @@ local C = require "mvtk.bosses.boss_attacks.common"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    -- The shield outlives the attack that raised it.
+    instance = C.instance(boss, pattern, instance):lasting()
     local shield = pattern.shield or {}
     local shield_hp = shield.hp or C.Defaults.default_shield_hp
     local duration = shield.duration or C.Defaults.default_shield_duration
@@ -20,17 +22,24 @@ function M.execute(boss, pattern)
     local generation = (data._shield_generation or 0) + 1
     data._shield_generation = generation
     data.shield_hp, data.shield_max = shield_hp, shield_hp
-    -- Informational timestamp; pause-aware C.delay is the expiry authority.
+    -- Informational timestamp; attack instance is the expiry authority.
     data.shield_expires_at = require("mvtk.core.time").gettime() + duration
     C.play_resolved_animation(boss, "shield_up", true)
 
-    C.delay(duration, function()
+    instance:on_cancel(function()
+        if boss.boss_data == data and data._shield_generation == generation then
+            data.shield_hp, data.shield_expires_at = 0, nil
+        end
+    end)
+
+    instance:after(duration, function()
         if boss.boss_data == data and not data.defeated and data._shield_generation == generation
             and (data.shield_hp or 0) > 0 then
             data.shield_hp, data.shield_expires_at = 0, nil
             C.play_resolved_animation(boss, "shield_down", true)
             C.print("[BOSS_ATTACKS] Shield expired")
         end
+        instance:on_cancel(nil)
     end)
 end
 

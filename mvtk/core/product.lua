@@ -23,6 +23,8 @@ return {
     license_header = "METROIDVANIA TOOLKIT LICENSE",
     -- Public repository address used by generated guides and release links.
     repository_url = "https://github.com/schlista/Metroidvania-Toolkit",
+    -- Page that sells the Commercial License; generated guides link to it.
+    commercial_license_url = "https://schlista.itch.io/metroidvania-toolkit-commercial-license",
     -- Run the release scope gate when true; false skips it for this product.
     v1_cut_gate = false,
     -- Minimum ID allocated to newly introduced Tiled property types.

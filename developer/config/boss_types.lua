@@ -33,12 +33,36 @@
 -- (unitless, safe >0..16). Omit it to use the project's tile width / 64.
 -- It scales pixel speeds, sizes and knockback; times, angles and damage stay
 -- unchanged. Authored charge_* overrides remain absolute world pixels.
+-- A phase can name a moveset from boss_movesets.lua. Every shipped phase
+-- keeps its individual attacks as a fallback if its named moveset is missing
+-- or invalid. To choose the attacks for a placed Boss Phase, leave Moveset
+-- at none and edit its Attacks field. If both fields are empty, the phase
+-- inherits its boss type's moveset and fallback attacks.
+-- Optional phase telegraph_scale and cooldown_scale multiply wind-up times and
+-- cooldowns after attack overrides. Omit either to keep the normal timing.
 -- Optional stagger = {threshold = 30, stun_time = 2, damage_mult = 1.5}
 -- enables a pressure knockdown for a preset. Omitted values inherit the
 -- commented stagger block in boss_defaults.lua; threshold = 0 keeps it off.
 -- absorb_shield adds an HP pool, counter_stance punishes a hit with its
 -- configured counter pattern. DoT bypasses both and adds no stagger.
--- Scheduled attack callbacks finish during knockdown; frame-driven motion stops.
+-- Knockdown and phase changes interrupt the boss's pending hits. Planted mines,
+-- raised shields, buffs and shots already in flight stay through both; set
+-- persist = false on a mine, shield or buff pattern to end it there too.
+-- persist = true keeps any other attack going. Defeat ends every attack.
+--
+-- GROUND MOVEMENT
+-- ============================================================================
+-- Shipped walking types opt in below. Set ground_motion = true to use terrain on
+-- Ground Chase, Jump Attack, Burrow, Teleport and Stationary phases.
+-- Missing or false uses the legacy movement. Hover, Flying Patrol and
+-- Wall Crawl continue to use their authored heights.
+-- feet_offset is how many pixels below the boss's centre its feet are.
+-- Leave it out to keep the height you placed. Set a positive value if the
+-- boss floats or sinks with ground motion on.
+-- A Teleport phase can inherit teleport_interval (seconds) and
+-- teleport_anchors (an ordered list of anchor names) from its boss type.
+-- For example, teleport_anchors = {"left", "right"}. The fallback is
+-- {"near_player", "far_from_player"} and the interval in boss_defaults.lua.
 --
 -- VISUAL AUTHORING
 -- ============================================================================
@@ -86,6 +110,7 @@ local BossTypes = {
     ========================================================================]]
 
     default_boss = {
+        ground_motion = true, -- Walk on terrain and stop at walls and ledges.
         name = "Default Boss",
         description = "Asset-free starter boss for trying out a new encounter (no art needed)",
 
@@ -98,6 +123,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.0, max = 1.0},
+                moveset = "close_and_ranged",
                 attacks = {"test_melee", "test_projectile"},
                 attack_interval = {min = 2.0, max = 4.0},
                 behavior = "aggressive",
@@ -126,6 +152,7 @@ local BossTypes = {
         STARTER BOSS: GATE WARDEN (uses starter atlas)
     ========================================================================]]
     graveyard_boss = {
+        ground_motion = true, -- Keep the Warden's walk and charge on terrain.
         name = "Gate Warden",
         description = "A bulky sentinel that guards early-game routes",
         max_health = 80,
@@ -135,6 +162,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = { min = 0.5, max = 1.0 },
+                moveset = "warden_patrol",
                 attacks = { "sword_combo", "dash_slash" },
                 attack_interval = { min = 2.4, max = 3.6 },
                 behavior = "cautious",
@@ -143,6 +171,7 @@ local BossTypes = {
             },
             {
                 health_range = { min = 0.0, max = 0.5 },
+                moveset = "warden_last_stand",
                 attacks = { "ground_slam", "dash_slash", "sword_combo" },
                 attack_interval = { min = 1.8, max = 3.0 },
                 behavior = "aggressive",
@@ -173,6 +202,7 @@ local BossTypes = {
         DESERT BOSS: CACTUS COLOSSUS
     ========================================================================]]
     desert_boss = {
+        ground_motion = true, -- Walk on terrain between charges and hops.
         name = "Cactus Colossus",
         description = "A relentless desert bruiser with slams, needle volleys, and charges",
         max_health = 110,
@@ -185,6 +215,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = { min = 0.5, max = 1.0 },
+                moveset = "needles_and_slams",
                 attacks = { "cactus_ground_slam", "cactus_needle_volley" },
                 attack_interval = { min = 1.4, max = 2.0 },
                 attack_range = 320,
@@ -195,6 +226,7 @@ local BossTypes = {
             },
             {
                 health_range = { min = 0.0, max = 0.5 },
+                moveset = "colossus_rage",
                 attacks = { "cactus_charge", "cactus_needle_volley", "cactus_ground_slam" },
                 attack_interval = { min = 0.8, max = 1.4 },
                 attack_range = 320,
@@ -229,6 +261,7 @@ local BossTypes = {
         STARTER BOSS: ARENA SENTINEL (uses the starter boss art)
     ========================================================================]]
     foundry_boss = {
+        ground_motion = true, -- Walk on terrain between swipes and beam attacks.
         name = "Arena Sentinel",
         description = "A sentinel construct that swipes, fires bursts and summons help",
         max_health = 120,
@@ -238,6 +271,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = { min = 0.5, max = 1.0 },
+                moveset = "sentinel_watch",
                 attacks = { "sentinel_swipe", "sentinel_burst" },
                 attack_interval = { min = 2.2, max = 3.2 },
                 behavior = "cautious",
@@ -246,6 +280,7 @@ local BossTypes = {
             },
             {
                 health_range = { min = 0.0, max = 0.5 },
+                moveset = "sentinel_reinforcements",
                 attacks = { "sentinel_slam", "sentinel_summon", "sentinel_burst" },
                 attack_interval = { min = 1.6, max = 2.6 },
                 behavior = "aggressive",
@@ -277,6 +312,7 @@ local BossTypes = {
     ========================================================================]]
 
     forest_boss = {
+        ground_motion = true, -- Walk on terrain between slams and swings.
         name = "Forest Guardian",
         description = "Ancient protector of the sacred grove",
 
@@ -289,6 +325,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.60, max = 1.0},
+                moveset = "whip_and_roots",
                 attacks = {"vine_whip", "root_spike"},
                 attack_interval = {min = 2.5, max = 4.0},
                 behavior = "cautious",
@@ -297,6 +334,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.25, max = 0.60},
+                moveset = "forest_guardian_grove",
                 attacks = {"vine_whip", "root_spike", "summon_thorns"},
                 attack_interval = {min = 2.0, max = 3.0},
                 behavior = "aggressive",
@@ -312,6 +350,8 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.0, max = 0.25},
+                moveset = "forest_guardian_poison",
+                cooldown_scale = 0.92, -- The final phase brings back its attacks a little sooner.
                 attacks = {"berserk_whip", "root_spike", "summon_thorns", "poison_cloud"},
                 attack_interval = {min = 1.5, max = 2.5},
                 behavior = "berserk",
@@ -349,6 +389,7 @@ local BossTypes = {
     ========================================================================]]
 
     catacombs_boss = {
+        ground_motion = true, -- Walk on terrain between throws and slams.
         name = "Crystal Golem",
         description = "Guardian of the underground crystal mines",
 
@@ -359,6 +400,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.70, max = 1.0},
+                moveset = "crystal_guard",
                 attacks = {"crystal_slam", "crystal_throw"},
                 attack_interval = {min = 3.0, max = 5.0},
                 behavior = "defensive",
@@ -367,6 +409,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.35, max = 0.70},
+                moveset = "crystal_refraction",
                 attacks = {"crystal_slam", "crystal_throw", "laser_sweep"},
                 attack_interval = {min = 2.5, max = 4.0},
                 behavior = "aggressive",
@@ -378,11 +421,12 @@ local BossTypes = {
                     duration = 3.0,
                     invulnerable = true,
                     camera_shake = {intensity = 7, duration = 2.0},
-                    spawn_hazards = {"crystal_spikes"},
+                    spawn_hazards = {"spikes"}, -- Wake linked pulse-only Spikes during the shield transition.
                 },
             },
             {
                 health_range = {min = 0.0, max = 0.35},
+                moveset = "crystal_shatter",
                 attacks = {"ground_slam", "crystal_barrage", "laser_sweep", "summon_crystals"},
                 attack_interval = {min = 1.5, max = 3.0},
                 behavior = "berserk",
@@ -416,6 +460,7 @@ local BossTypes = {
     ========================================================================]]
 
     sanctum_boss = {
+        ground_motion = true, -- Walk on terrain between attacks and phase transitions.
         name = "Shadow Knight",
         description = "Corrupted champion of the dark castle",
 
@@ -426,6 +471,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.75, max = 1.0},
+                moveset = "dark_swordsman",
                 attacks = {"sword_combo", "dash_slash", "dark_wave"},
                 attack_interval = {min = 2.0, max = 3.5},
                 behavior = "skilled",
@@ -434,6 +480,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.40, max = 0.75},
+                moveset = "sanctum_call",
                 attacks = {"sword_combo", "dash_slash", "dark_wave", "summon_shadows"},
                 attack_interval = {min = 1.5, max = 3.0},
                 behavior = "aggressive",
@@ -449,6 +496,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.20, max = 0.40},
+                moveset = "sanctum_clones",
                 attacks = {"berserk_combo", "shadow_clones", "dark_wave", "summon_shadows"},
                 attack_interval = {min = 1.0, max = 2.5},
                 behavior = "relentless",
@@ -465,6 +513,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.0, max = 0.20},
+                moveset = "sanctum_blades",
                 attacks = {"berserk_combo", "shadow_clones", "dark_wave", "blade_storm"},
                 attack_interval = {min = 0.8, max = 2.0},
                 behavior = "desperate",
@@ -498,6 +547,7 @@ local BossTypes = {
     ========================================================================]]
 
     factory_boss = {
+        ground_motion = true, -- Follow terrain while patrolling and chasing.
         name = "Corrupted Sentinel",
         description = "Malfunctioning guardian construct",
 
@@ -508,6 +558,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.50, max = 1.0},
+                moveset = "factory_patrol_fire",
                 attacks = {"laser_shot", "dash_slash"},
                 attack_interval = {min = 2.0, max = 3.5},
                 behavior = "patrol",
@@ -516,6 +567,8 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.0, max = 0.50},
+                moveset = "factory_unstable",
+                telegraph_scale = 0.9, -- The unstable machine winds up a little faster.
                 attacks = {"laser_sweep", "dash_slash", "overload"},
                 attack_interval = {min = 1.5, max = 2.5},
                 behavior = "erratic",
@@ -548,6 +601,7 @@ local BossTypes = {
     ========================================================================]]
 
     ruins_boss = {
+        ground_motion = true, -- Walk on terrain between attacks, including teleport strikes.
         name = "The Dark Lord",
         description = "Ancient evil awakened",
 
@@ -558,6 +612,7 @@ local BossTypes = {
         phases = {
             {
                 health_range = {min = 0.75, max = 1.0},
+                moveset = "shadow_ambush",
                 attacks = {"sword_combo", "shadow_bolt", "teleport_strike"},
                 attack_interval = {min = 2.5, max = 4.0},
                 behavior = "testing",
@@ -566,6 +621,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.50, max = 0.75},
+                moveset = "ruins_shadow_host",
                 attacks = {"sword_combo", "shadow_bolt", "teleport_strike", "summon_shadows"},
                 attack_interval = {min = 2.0, max = 3.5},
                 behavior = "aggressive",
@@ -581,6 +637,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.25, max = 0.50},
+                moveset = "ruins_dark_beam",
                 attacks = {"berserk_combo", "shadow_barrage", "teleport_strike", "summon_shadows", "dark_beam"},
                 attack_interval = {min = 1.5, max = 3.0},
                 behavior = "relentless",
@@ -597,6 +654,7 @@ local BossTypes = {
             },
             {
                 health_range = {min = 0.0, max = 0.25},
+                moveset = "ruins_last_ritual",
                 attacks = {"ultimate_combo", "shadow_barrage", "dark_beam", "summon_shadows"},
                 attack_interval = {min = 1.0, max = 2.5},
                 behavior = "desperate",

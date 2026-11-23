@@ -4,13 +4,14 @@
 
 local Util = require "mvtk.core.util"
 local CombatConfig = require "mvtk.combat.config"
+local AttackSettings = require "mvtk.core.attack_settings"
 local DamagePayload = require "mvtk.combat.damage_payload"
 local CombatFeedback = require "mvtk.combat.combat_feedback"
 local C = require "mvtk.core.constants"
-local SwingRegistry = require "mvtk.combat.swing_registry"
 local SpineVisual = require "mvtk.player.spine_visual"
 local PlayerStats = require "mvtk.player.player_stats"
 local EnergyState = require "mvtk.player.energy_state"
+local Timers = require "mvtk.player.timers"
 
 local PlayerElements = require "mvtk.combat.player_elements"
 
@@ -37,35 +38,31 @@ end
 
 local function total_duration(attack)
     local timeline = attack.timeline or {}
-    local finish = number_or(timeline.startup, 0) + number_or(timeline.recovery, 0)
-    for _, window in ipairs(timeline.active_windows or {}) do
-        local start_t = number_or(window.start, 0)
-        finish = math.max(finish, start_t + resolve_duration(window))
-    end
-    return finish
+    return AttackSettings.recovery_start(timeline) + number_or(timeline.recovery, 0)
 end
 
 local function cooldown_key(attack)
     return attack.cooldown_group or attack.attack_id or attack.input
 end
 
-local function clear_hitboxes(self)
+local function clear_hitboxes(self, window, keep_native_pass)
     local combat = self._combat
     if not combat then
         return
     end
-    for id, _ in pairs(combat.active_hitboxes or {}) do
-        require("mvtk.combat.active_hitboxes").remove(id)
-        pcall(go.delete, id)
-        combat.active_hitboxes[id] = nil
+    for id, owner in pairs(combat.active_hitboxes or {}) do
+        if not window or owner == window then
+            if keep_native_pass and type(owner) == "table" and owner.frame == combat.frame then
+                owner.retiring = true
+            else
+                require("mvtk.combat.active_hitboxes").remove(id)
+                pcall(go.delete, id)
+                combat.active_hitboxes[id] = nil
+                if self._attack_hitbox_id == id then self._attack_hitbox_id = nil end
+            end
+        end
     end
-    self._attack_hitbox_id = nil
-    -- Drop the active swing's dedup entry so the registry doesn't accumulate.
-    -- Subsequent windows in the same attack will allocate a fresh id.
-    if combat.current_swing_id then
-        SwingRegistry.clear_swing(combat.current_swing_id)
-        combat.current_swing_id = nil
-    end
+    if not window then combat.current_swing_id = nil end
 end
 
 local function begin_follow(id, follow)
@@ -158,7 +155,7 @@ local function make_payload(self, attack, event_def, extras, kind)
     return DamagePayload.build(payload)
 end
 
-local function spawn_melee_hitbox(self, attack, hitbox, duration)
+local function spawn_melee_hitbox(self, attack, hitbox, duration, window)
     local follow = follow_spec(self, hitbox)
     local p = attack_position(self, follow)
     local swing_id_str = self._combat and self._combat.current_swing_id or nil
@@ -208,7 +205,7 @@ local function spawn_melee_hitbox(self, attack, hitbox, duration)
     if ok and id then
         begin_follow(id, follow)
         pcall(msg.post, id, hash("set_owner"), { owner = go.get_id() })
-        self._combat.active_hitboxes[id] = true
+        self._combat.active_hitboxes[id] = window
         self._attack_hitbox_id = id
     end
 end
@@ -272,7 +269,7 @@ function M.reflect_projectile(self, reflection)
     })
 end
 
-local function spawn_window(self, attack, window)
+local function spawn_window(self, attack, window, state)
     local duration = math.max(0.04, resolve_duration(window))
     -- Allocate a per-active-window swing_id used by all hitboxes in this
     -- window. mvtk.combat.swing_registry uses it to dedup hits across
@@ -289,7 +286,7 @@ local function spawn_window(self, attack, window)
         )
     end
     for _, hitbox in ipairs(window.hitboxes or {}) do
-        spawn_melee_hitbox(self, attack, hitbox, duration)
+        spawn_melee_hitbox(self, attack, hitbox, duration, state)
     end
     if window.projectile then
         spawn_projectile(self, attack, window.projectile)
@@ -300,7 +297,9 @@ local function apply_start_movement(self, attack)
     local movement = attack.movement or {}
     if movement.impulse_x or movement.impulse_y then
         self.vx = (self.vx or 0) + number_or(movement.impulse_x, 0) * ((self.facing or 1) >= 0 and 1 or -1)
-        self.vy = (self.vy or 0) + number_or(movement.impulse_y, 0)
+        local impulse_y = number_or(movement.impulse_y, 0)
+        self.vy = (self.vy or 0) + impulse_y
+        if impulse_y ~= 0 then self._jump_cut_pending = nil end
     end
 end
 
@@ -308,14 +307,72 @@ local function update_attack_motion(self, attack)
     local movement = attack.movement or {}
     if movement.hold_vy_min ~= nil and (self.vy or 0) < movement.hold_vy_min then
         self.vy = movement.hold_vy_min
+        self._jump_cut_pending = nil
     end
     if movement.hold_vy_max ~= nil and (self.vy or 0) > movement.hold_vy_max then
         self.vy = movement.hold_vy_max
+        self._jump_cut_pending = nil
+    end
+end
+
+function M.sample_attack_motion(self, offset)
+    local sample = self._attack_vertical_sample
+    if sample and sample.opening + offset < sample.finish - 1e-10 then
+        update_attack_motion(self, sample.attack)
     end
 end
 
 local function current_attack(self)
     return self._combat and self._combat.current or nil
+end
+
+local function attack_deadline(current, seconds)
+    return current.phase_start + Timers.reference_duration(seconds - current.phase_start, current.scale)
+end
+
+local function within_window(current, start, finish, opening_dt, opening_offset)
+    if current.reference_trace or not current.grid_time then
+        local t = opening_offset and current.t + opening_offset or current.t
+        return t >= start and t <= finish
+    end
+    local earliest = attack_deadline(current, start)
+    local steps = math.max(0, math.floor((finish - current.phase_start) / Timers.combat_engine_step(current.scale)) + 1)
+    local latest = current.phase_start + steps * Timers.REFERENCE_STEP * current.scale
+    local sample
+    if opening_offset then
+        -- A motion owner already has the reference opening, possibly inside
+        -- this display draw. Allow for binary32 display-delta accumulation.
+        sample = current.grid_time + opening_offset + 1e-7
+    else
+        local frame = opening_dt or current.frame_dt or 0
+        local phase = opening_dt and (Timers.REFERENCE_STEP * current.scale - frame) or 0
+        sample = current.grid_time + frame / 2 - phase + 1e-10
+    end
+    return sample >= earliest and sample < latest
+end
+
+local function reached(current, seconds, opening)
+    if current.reference_trace then return current.t >= seconds end
+    local deadline = attack_deadline(current, seconds)
+    if opening then deadline = math.max(Timers.REFERENCE_STEP * current.scale, deadline) end
+    return current.grid_time + 1e-10 >= deadline
+end
+
+local function dispatch_windows(self, current, frame)
+    for index, window in ipairs(current.attack.timeline.active_windows or {}) do
+        local start_t = number_or(window.start, 0)
+        local finish_t = start_t + resolve_duration(window)
+        local state = current.spawned_windows[index]
+        if not state and reached(current, start_t, true) then
+            state = { frame = frame }
+            current.spawned_windows[index] = state
+            spawn_window(self, current.attack, window, state)
+        end
+        if type(state) == "table" and reached(current, finish_t) then
+            current.spawned_windows[index] = "done"
+            clear_hitboxes(self, state, true)
+        end
+    end
 end
 
 function M.init(self, hooks)
@@ -325,6 +382,7 @@ function M.init(self, hooks)
         queued_attack_id = nil,
         cooldowns = {},
         active_hitboxes = {},
+        frame = 0,
         counter_window_t = 0,
         counter_target = nil,
     }
@@ -334,7 +392,7 @@ function M.is_active(self)
     return current_attack(self) ~= nil
 end
 
-function M.can_cancel_to(self, action_name)
+function M.can_cancel_to(self, action_name, opening_dt, opening_offset)
     local current = current_attack(self)
     if not current then
         return true
@@ -348,7 +406,7 @@ function M.can_cancel_to(self, action_name)
     for _, window in ipairs(current.attack.cancel_windows or {}) do
         local start_t = number_or(window.start, 0)
         local finish_t = number_or(window.finish, current.total_duration)
-        if current.t >= start_t and current.t <= finish_t then
+        if within_window(current, start_t, finish_t, opening_dt, opening_offset) then
             local actions = window.actions or {}
             if actions[action_name] then
                 return true
@@ -375,24 +433,29 @@ function M.can_queue_combo(self, intent)
         return false
     end
     local combo_window = current.attack.combo_window or {}
-    local start_t = number_or(combo_window.start, current.total_duration - math.max(0.08, number_or(current.attack.timeline and current.attack.timeline.recovery, 0)))
+    local start_t = AttackSettings.combo_start(combo_window, current.total_duration,
+        current.attack.timeline and current.attack.timeline.recovery)
     local finish_t = start_t + number_or(combo_window.duration, 0.35)
-    return current.t >= start_t and current.t <= finish_t
+    return within_window(current, start_t, finish_t)
 end
 
-local function start_attack(self, attack, ctx)
+local function start_attack(self, attack, ctx, elapsed)
     local cost = tonumber(attack.energy_cost) or 0
     if cost > 0 and EnergyState.enabled() then
         EnergyState.consume(cost, { reason = "attack" })
     end
-    clear_hitboxes(self)
+    clear_hitboxes(self, nil, true)
     if attack.state == "counter" then
-        self._combat.counter_window_t = 0
+        Timers.clear_window(self._combat, "counter_window_t")
     end
     local total = total_duration(attack)
     self._combat.current = {
         attack = attack,
         t = 0,
+        grid_time = elapsed or 0,
+        phase_start = 0,
+        scale = 1,
+        reference_trace = not elapsed or elapsed == 0,
         total_duration = total,
         spawned_windows = {},
         aim = ctx and ctx.aim, -- Animation hook reads this immediately below.
@@ -431,6 +494,8 @@ end
 local request_filter
 function M.set_request_filter(callback) request_filter = callback end
 
+-- The second result identifies an ability variant that started on this call.
+-- A queued combo only accepts the press; it does not start that variant.
 function M.request(self, intent, ctx)
     local combat = self._combat
     if not combat then
@@ -453,7 +518,7 @@ function M.request(self, intent, ctx)
         return false
     end
 
-    local attack_id = CombatConfig.resolve_attack_for_input(intent, ctx or {})
+    local attack_id, started_ability = CombatConfig.resolve_attack_for_input(intent, ctx or {})
     if not attack_id then
         return false
     end
@@ -468,7 +533,7 @@ function M.request(self, intent, ctx)
         return false
     end
     start_attack(self, attack, ctx or {})
-    return true
+    return true, started_ability
 end
 
 function M.update(self, dt, ctx)
@@ -477,11 +542,17 @@ function M.update(self, dt, ctx)
         return
     end
 
-    for key, value in pairs(combat.cooldowns) do
-        combat.cooldowns[key] = math.max(0, number_or(value, 0) - dt)
+    self._attack_vertical_sample = nil
+    if dt > 0 then
+        combat.frame = combat.frame + 1
+        for _, window in pairs(combat.active_hitboxes) do
+            if type(window) == "table" and window.retiring then clear_hitboxes(self, window) end
+        end
     end
-    combat.counter_window_t = math.max(0, number_or(combat.counter_window_t, 0) - dt)
-    if combat.counter_window_t <= 0 then
+    for key, value in pairs(combat.cooldowns) do
+        if type(value) == "number" then Timers.tick_combat_window(combat.cooldowns, key, dt) end
+    end
+    if Timers.tick_combat_window(combat, "counter_window_t", dt) then
         combat.counter_target = nil
     end
 
@@ -490,32 +561,42 @@ function M.update(self, dt, ctx)
         return
     end
 
+    local opening = current.grid_time
+    local scale = Timers.combat_scale(dt)
+    if dt > 0 and current.scale ~= scale then current.phase_start, current.scale = opening, scale end
     current.t = current.t + dt
+    current.frame_dt = Timers.combat_delta(dt, scale)
+    current.grid_time = current.grid_time + current.frame_dt
+    if dt > 0 and not Timers.combat_reference_frame(dt, scale) then current.reference_trace = false end
     if self._attack then
         self._attack.elapsed = current.t
     end
 
-    update_attack_motion(self, current.attack)
-
-    for index, window in ipairs(current.attack.timeline.active_windows or {}) do
-        local start_t = number_or(window.start, 0)
-        local finish_t = start_t + resolve_duration(window)
-        local active = current.t >= start_t and current.t < finish_t
-        if active and not current.spawned_windows[index] then
-            current.spawned_windows[index] = true
-            spawn_window(self, current.attack, window)
-        elseif (not active) and current.spawned_windows[index] == true and current.t >= finish_t then
-            current.spawned_windows[index] = "done"
-            clear_hitboxes(self)
+    local movement = current.attack.movement
+    if current.reference_trace or not self._cfg then
+        update_attack_motion(self, current.attack)
+    elseif movement and (movement.hold_vy_min or movement.hold_vy_max) then
+        local sample = current.vertical_sample
+        if not sample then
+            sample = { attack = current.attack }
+            current.vertical_sample = sample
         end
+        sample.opening = opening
+        sample.finish = attack_deadline(current, current.total_duration)
+        self._attack_vertical_sample = sample
+        if opening == 0 then self._vertical_grid = nil end
     end
 
-    if current.t < current.total_duration then
+    dispatch_windows(self, current, combat.frame)
+
+    if not reached(current, current.total_duration) then
         return
     end
 
-    clear_hitboxes(self)
-    combat.cooldowns[cooldown_key(current.attack)] = number_or(current.attack.cooldown, 0)
+    clear_hitboxes(self, nil, true)
+    local elapsed = current.reference_trace and 0
+        or math.max(0, current.grid_time - attack_deadline(current, current.total_duration))
+    Timers.start_combat_window(combat.cooldowns, cooldown_key(current.attack), number_or(current.attack.cooldown, 0), elapsed)
     local queued_attack_id = combat.queued_attack_id
     combat.current = nil
     self._attack = nil
@@ -524,7 +605,11 @@ function M.update(self, dt, ctx)
         local next_attack = resolve_attack(self, queued_attack_id, ctx or {})
         combat.queued_attack_id = nil
         if next_attack and (not request_filter or request_filter(next_attack.action_tag)) and attack_ready(self, next_attack) then
-            start_attack(self, next_attack, ctx or {})
+            start_attack(self, next_attack, ctx or {}, elapsed)
+            if elapsed > 0 then
+                combat.current.scale = current.scale
+                dispatch_windows(self, combat.current, combat.frame)
+            end
         end
     end
 end
@@ -533,11 +618,11 @@ function M.on_animation_done(self)
     local current = current_attack(self)
     if not current then
         self._attack = nil
-        clear_hitboxes(self)
+        clear_hitboxes(self, nil, true)
         return
     end
-    if current.t >= current.total_duration then
-        clear_hitboxes(self)
+    if reached(current, current.total_duration) then
+        clear_hitboxes(self, nil, true)
         self._combat.current = nil
         self._attack = nil
     end
@@ -560,7 +645,10 @@ function M.open_counter_window(self, duration, attacker_url)
     if not CombatConfig.feature_enabled("parry_counter", true) then
         return
     end
-    self._combat.counter_window_t = math.max(number_or(self._combat.counter_window_t, 0), number_or(duration, 0))
+    duration = number_or(duration, 0)
+    if duration > self._combat.counter_window_t then
+        Timers.start_combat_window(self._combat, "counter_window_t", duration)
+    end
     self._combat.counter_target = attacker_url or self._combat.counter_target
 end
 

@@ -5,9 +5,13 @@ local Config = require "developer.config.status_effects"
 local Pause = require "mvtk.core.pause"
 local PlayerStats = require "mvtk.player.player_stats"
 local Events = require "mvtk.core.game_events"
+local EnemyClock = require "mvtk.enemies.decision_clock"
+local reference_step = require("mvtk.player.timers").REFERENCE_STEP
 local M = {}
 local active = {}
+local enemy_motion_frames = {}
 local refresh = 0
+local refresh_age = 0
 local hud_present = false
 
 local cached_config, cached_revision
@@ -101,6 +105,7 @@ function M.apply(target, effect_id, opts)
         stacks=math.min((previous and previous.stacks or 0)+1, def.max_stacks or 1),
     }
     active[id] = bucket
+    enemy_motion_frames[id] = nil
     if kind == "player" then sync_player(); sync_hud() end
     -- Refreshes and additional stacks are not new starts.
     if not previous then
@@ -135,59 +140,152 @@ function M.clear(target)
     if id == nil then return end
     local bucket = active[id]
     active[id] = nil
+    enemy_motion_frames[id] = nil
     if bucket and bucket.kind == "player" then sync_player(); sync_hud() end
 end
 
 function M.reset()
-    active, refresh = {}, 0
+    active, enemy_motion_frames, refresh, refresh_age = {}, {}, 0, 0
     PlayerStats.clear_source("status")
     sync_hud()
 end
 
 function M.on_session_start() M.reset() end
 
+local function tick_effect(id, effect_id, inst, dt, Config)
+    local elapsed = math.min(dt, inst.remaining)
+    inst.remaining = inst.remaining - elapsed
+    inst.tick = inst.tick - elapsed
+    local def = inst.def
+    while inst.tick <= 0 do
+        inst.tick = inst.tick + (def.tick_interval or Config.defaults.tick_interval)
+        if (def.damage_per_tick or 0) > 0 then
+            msg.post(id, "mvtk_apply_damage", {
+                amount=def.damage_per_tick * inst.stacks, damage_type=def.damage_type,
+                damage_over_time=true, ignore_iframes=true, stun_t=0, parryable=false,
+                source_attack="status_"..effect_id,
+            })
+            if Config.feedback.tint then
+                local color = def.color
+                pcall(msg.post, msg.url(nil, id, "anim"), "anim.flash", {
+                    color=vmath.vector4(color[1],color[2],color[3],1),
+                    duration=Config.feedback.flash_duration,
+                })
+            end
+        end
+    end
+    return inst.remaining <= 0
+end
+
+local function tick_bucket(id, bucket, dt, Config)
+    for effect_id, inst in pairs(bucket.effects) do
+        if tick_effect(id, effect_id, inst, dt, Config) then bucket.effects[effect_id] = nil end
+    end
+    if not next(bucket.effects) then
+        if bucket.kind == "enemy" then active[id] = nil else M.clear(id) end
+    end
+end
+
+local function step_player_effects(players, slice, step_dt, Config)
+    local changed = false
+    for id, bucket in pairs(players) do
+        for effect_id, inst in pairs(bucket.effects) do
+            inst.step_age = (inst.step_age or 0) + slice
+            if inst.step_age + 1e-12 >= reference_step then
+                inst.step_age = inst.step_age - reference_step
+                if tick_effect(id, effect_id, inst, step_dt, Config) then
+                    bucket.effects[effect_id] = nil
+                    changed = true
+                end
+            end
+        end
+        if not next(bucket.effects) then M.clear(id); players[id] = nil end
+    end
+    return changed
+end
+
+local function tick_player(players, raw_dt, step_dt, Config)
+    if step_dt <= 0 then
+        if refresh <= 0 then refresh = Config.defaults.refresh_interval; sync_player() end
+        return false
+    end
+    local changed, remaining = false, raw_dt
+    while remaining > 1e-12 do
+        local slice = math.min(remaining, reference_step - refresh_age)
+        if players then
+            for _, bucket in pairs(players) do
+                for _, inst in pairs(bucket.effects) do
+                    slice = math.min(slice, reference_step - (inst.step_age or 0))
+                end
+            end
+            changed = step_player_effects(players, slice, step_dt, Config) or changed
+        end
+        refresh_age = refresh_age + slice
+        if refresh_age + 1e-12 >= reference_step then
+            refresh_age = refresh_age - reference_step
+            refresh = refresh - step_dt
+            if refresh <= 0 then refresh = Config.defaults.refresh_interval; sync_player() end
+        end
+        remaining = remaining - slice
+    end
+    return changed
+end
+
+local function motion_flags(bucket, advance)
+    local frozen, move = false, 1
+    for _, inst in pairs(bucket.effects) do
+        if inst.remaining > advance then
+            frozen = frozen or inst.def.stops_enemies == true
+            move = move * (inst.def.move or 1)
+        end
+    end
+    return frozen, move
+end
+
+-- In the saved update the manager ticks statuses before enemy movement.
+-- Read the flags from the status tick belonging to this movement step,
+-- even when that tick closes later than the current display slice. Public
+-- expiry and damage delivery still wait for their actual deadline.
+function M.enemy_motion(target, step_end, step_dt)
+    local id = target_id(target)
+    local frame = enemy_motion_frames[id]
+    if not frame then return M.stops(target), M.move_multiplier(target) end
+    local tick = EnemyClock.ticks(frame.left, step_end)
+    local flags = frame[tick]
+    if flags then return flags[1], flags[2] end
+    return motion_flags(frame.bucket, (tick - #frame) * step_dt)
+end
+
+local function identity(dt) return dt end
+
 function M.update(dt)
     if Pause.get() then return end
     local Config = frame_config()
     if not Config.enabled then M.reset(); return end
-    local changed = false
-    dt = math.max(0, dt) * Pause.dt_scale()
+    local players
+    local raw_dt, scaled_dt, step_dt = EnemyClock.frame(dt, Pause, identity)
+    dt = math.max(0, scaled_dt)
+    for id in pairs(enemy_motion_frames) do enemy_motion_frames[id] = nil end
     for id, bucket in pairs(active) do
         if not go.exists(id) then M.clear(id)
-        else
-            for effect_id, inst in pairs(bucket.effects) do
-                local elapsed = math.min(dt, inst.remaining)
-                inst.remaining = inst.remaining - elapsed
-                inst.tick = inst.tick - elapsed
-                local def = inst.def
-                while inst.tick <= 0 do
-                    inst.tick = inst.tick + (def.tick_interval or Config.defaults.tick_interval)
-                    if (def.damage_per_tick or 0) > 0 then
-                        msg.post(id, "mvtk_apply_damage", {
-                            amount=def.damage_per_tick * inst.stacks, damage_type=def.damage_type,
-                            damage_over_time=true, ignore_iframes=true, stun_t=0, parryable=false,
-                            source_attack="status_"..effect_id,
-                        })
-                        if Config.feedback.tint then
-                            local color = def.color
-                            pcall(msg.post, msg.url(nil, id, "anim"), "anim.flash", {
-                                color=vmath.vector4(color[1],color[2],color[3],1),
-                                duration=Config.feedback.flash_duration,
-                            })
-                        end
-                    end
-                end
-                if inst.remaining <= 0 then
-                    bucket.effects[effect_id] = nil
-                    changed = changed or bucket.kind == "player"
-                end
+        elseif bucket.kind == "enemy" then
+            local frame = {left = bucket.step_left, bucket = bucket, [0] = {motion_flags(bucket, 0)}}
+            enemy_motion_frames[id] = frame
+            local ticks
+            ticks, bucket.step_left = EnemyClock.ticks(bucket.step_left, raw_dt)
+            for i = 1, ticks do
+                tick_bucket(id, bucket, step_dt, Config)
+                frame[i] = {motion_flags(bucket, 0)}
+                if not active[id] then break end
             end
-            if not next(bucket.effects) then M.clear(id) end
+        elseif bucket.kind == "player" then
+            players = players or {}
+            players[id] = bucket
+        else
+            tick_bucket(id, bucket, dt, Config)
         end
     end
-    if changed then sync_hud() end
-    refresh = refresh - dt
-    if refresh <= 0 then refresh = Config.defaults.refresh_interval; sync_player() end
+    if tick_player(players, raw_dt, step_dt, Config) then sync_hud() end
 end
 
 return M

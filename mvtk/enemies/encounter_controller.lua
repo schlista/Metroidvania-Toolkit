@@ -1,6 +1,8 @@
 -- Script-context adapter for baked encounters. No world work in event listeners.
 local Runtime = require "mvtk.enemies.encounter_runtime"
 local Registry = require "mvtk.enemies.encounter_registry"
+local Clock = require "mvtk.enemies.decision_clock"
+local FrameClock = require "mvtk.core.frame_clock"
 local M = {}
 
 local function persisted(self)
@@ -124,6 +126,7 @@ function M.init(self)
     -- Capture a normal callback, never a lifecycle global (the engine clears those).
     self.reset = function(reason)
         self.inside = false
+        self._wave_step_left = nil
         Runtime.reset(self.runtime, reason, persisted(self))
     end
     require("mvtk.world.trigger_bus").register(self.encounter_id, self.url)
@@ -138,7 +141,9 @@ local function start(self)
     local settings = {start_delay=self.start_delay, spawn_telegraph_time=self.settings.spawn_telegraph_time,
         wave_delay=self.wave_delay >= 0 and self.wave_delay or self.settings.wave_delay,
         max_alive=self.max_alive > 0 and self.max_alive or self.settings.max_alive}
-    Runtime.start(self.runtime, Registry.points(self.room_id, self.encounter_id), settings, self.repeatable)
+    if Runtime.start(self.runtime, Registry.points(self.room_id, self.encounter_id), settings, self.repeatable) then
+        self._wave_step_left = nil
+    end
 end
 
 function M.update(self, dt)
@@ -165,7 +170,11 @@ function M.update(self, dt)
             start(self)
         end
     end
-    Runtime.update(self.runtime, dt * Pause.dt_scale())
+    if self.runtime.state == "idle" or self.runtime.state == "cleared" then return end
+    local raw_dt, _, step_dt = Clock.frame(dt, Pause, FrameClock.snap)
+    local ticks
+    ticks, self._wave_step_left = Clock.ticks(self._wave_step_left, raw_dt)
+    for _ = 1, ticks do Runtime.update(self.runtime, step_dt) end
 end
 
 function M.on_message(self, id, message)

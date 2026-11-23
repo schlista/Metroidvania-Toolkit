@@ -539,6 +539,20 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                             }
                         }
                     },
+                    "movement": {
+                        "className": "boss_movement",
+                        "members": {
+                            "feet_offset": {
+                                "default": 0,
+                                "type": "float"
+                            },
+                            "ground_motion": {
+                                "default": "type_default",
+                                "propertyType": "boss_ground_motion",
+                                "type": "string"
+                            }
+                        }
+                    },
                     "player_hit_feedback": {
                         "className": "boss_player_hit_feedback",
                         "members": {
@@ -695,6 +709,8 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                     "defeat_cutscene": "presentation",
                     "defeat_flag": "rewards_and_persistence",
                     "defense": "combat",
+                    "feet_offset": "movement",
+                    "ground_motion": "movement",
                     "health_bar_position": "arena_and_ui",
                     "immune_to": "damage_affinities",
                     "intro_animation": "visuals",
@@ -980,13 +996,26 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                                 "default": -1,
                                 "type": "float"
                             },
+                            "cooldown_scale": {
+                                "default": 1,
+                                "type": "float"
+                            },
                             "damage_multiplier": {
                                 "default": 1,
                                 "type": "float"
                             },
+                            "moveset": {
+                                "default": "none",
+                                "propertyType": "boss_movesets",
+                                "type": "string"
+                            },
                             "stagger_immune": {
                                 "default": false,
                                 "type": "bool"
+                            },
+                            "telegraph_scale": {
+                                "default": 1,
+                                "type": "float"
                             }
                         }
                     },
@@ -1059,6 +1088,15 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                             },
                             "speed_multiplier": {
                                 "default": 1,
+                                "type": "float"
+                            },
+                            "teleport_anchors": {
+                                "default": "",
+                                "propertyType": "boss_teleport_anchors",
+                                "type": "string"
+                            },
+                            "teleport_interval": {
+                                "default": 0,
                                 "type": "float"
                             }
                         }
@@ -1137,6 +1175,7 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                     "charge_speed": "attack_sequence",
                     "charge_telegraph_time": "attack_sequence",
                     "chase_speed": "movement",
+                    "cooldown_scale": "attack_sequence",
                     "damage_multiplier": "attack_sequence",
                     "facing_lock": "movement",
                     "health_max": "health_thresholds",
@@ -1146,9 +1185,13 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
                     "jump_speed": "movement",
                     "leash_radius": "movement",
                     "movement_profile": "movement",
+                    "moveset": "attack_sequence",
                     "partner_defeated": "health_thresholds",
                     "speed_multiplier": "movement",
                     "stagger_immune": "attack_sequence",
+                    "telegraph_scale": "attack_sequence",
+                    "teleport_anchors": "movement",
+                    "teleport_interval": "movement",
                     "transition_animation": "transition",
                     "transition_arena_darkness": "transition_effects",
                     "transition_camera_duration": "transition_effects",
@@ -8168,7 +8211,7 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
         "bosses/boss": {
             "name": "Boss",
             "type": "boss",
-            "version": "2.8.0"
+            "version": "2.10.0"
         },
         "bosses/boss_add_spawner": {
             "name": "Boss Add Spawner",
@@ -8183,7 +8226,7 @@ var MVTK_GROUPED_PROPERTY_SCHEMA_V2 = (function (previous) {
         "bosses/boss_phase": {
             "name": "Boss Phase",
             "type": "boss_phase",
-            "version": "2.8.0"
+            "version": "2.10.0"
         },
         "bosses/boss_phase_trigger": {
             "name": "Boss Phase Trigger",

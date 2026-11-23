@@ -1,9 +1,4 @@
--- mvtk/player/player_jump_math.lua
--- Pure jump-speed math extracted from player_state.lua as part of Phase 5
--- step 31. These helpers compute initial vertical velocity from the
--- authored jump_height + gravity values using the standard kinematics
--- equation v = sqrt(2 * |g| * h). They take all inputs as arguments and
--- have no side effects, so they are safe to call from any context.
+-- Pure jump calculations shared by the player and the movement reach read-out.
 
 local M = {}
 
@@ -30,6 +25,15 @@ function M.compute_extended_jump_speed(cfg)
     local g = math.abs(cfg.gravity or 1200)
     local extended_h = cfg.extended_jump_height or 64
     return math.sqrt(2 * g * extended_h)
+end
+
+-- The release can act from the opening of the reference frame that spends
+-- the rest of the hold. Treat values near a whole frame as that frame count.
+function M.shortest_jump_release_time(hold, reference_step)
+    local frames = hold / reference_step
+    local nearest = math.floor(frames + 0.5)
+    if math.abs(frames - nearest) <= 1e-6 then frames = nearest end
+    return math.max(0, math.ceil(frames) - 1) * reference_step
 end
 
 return M

@@ -37,6 +37,7 @@ function M.note(self, message_id)
     if message_id == hash("disable") then
         self._room_asleep = M.enabled() or nil
     else
+        if self._room_asleep then require("mvtk.enemies.decision_clock").reset(self) end
         self._room_asleep = nil
     end
 end

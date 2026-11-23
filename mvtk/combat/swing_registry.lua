@@ -55,6 +55,19 @@ function M.clear_swing(swing_id)
     swings[swing_id] = nil
 end
 
+-- Keep dedup alive through the retiring hitbox's final physics update.
+function M.retain(swing_id)
+    local entry = ensure(swing_id)
+    entry.actors = (entry.actors or 0) + 1
+end
+
+function M.release(swing_id)
+    local entry = swings[swing_id]
+    if not entry or not entry.actors then return end
+    entry.actors = entry.actors - 1
+    if entry.actors == 0 then M.clear_swing(swing_id) end
+end
+
 -- Best-effort eviction of stale swings. Call sparingly (e.g. once per second
 -- from a debug script) to bound memory if clear_swing is missed.
 function M.gc(current_time)

@@ -3,6 +3,7 @@
 
 local SpineVisual = require "mvtk.player.spine_visual"
 local PlayerStats = require "mvtk.player.player_stats"
+local Timers = require "mvtk.player.timers"
 
 local PlayerElements = require "mvtk.combat.player_elements"
 
@@ -69,18 +70,43 @@ end
 -- A buffered charged attack consumes this hold too, so release cannot pay twice.
 function M.update_charge(self, dt, input)
   self._light_charge_release_t = nil
+  self._light_charge_release_ready = nil
   if require("mvtk.player.hold_toggles").sync(self, "charged_slash")
     or self._is_dead or (self._stun_t or 0) > 0 then
     self._light_hold_t = 0
     self._light_charge_t = nil
     return
   end
-  if input.light_down then self._light_charge_t = 0 end
+  local threshold = (ACTIONS.charge_attack or {}).threshold or 0.45
+  if input.light_down then
+    self._light_charge_t = 0
+    self._physical_charge_reference = true
+    Timers.start_combat_window(self, "_physical_charge_remaining", threshold)
+  end
   if input.light_held then
+    local opening = (self._light_hold_t or 0) == 0
+    if opening then
+      self._buffered_charge_reference = true
+      Timers.start_combat_window(self, "_buffered_charge_remaining", threshold)
+    end
+    local scale = Timers.combat_scale(dt)
+    local buffered_dt = dt
+    if dt > 0 and not Timers.combat_reference_frame(dt, scale) then
+      self._buffered_charge_reference = false
+      self._physical_charge_reference = false
+      if opening then buffered_dt = math.max(dt, Timers.REFERENCE_STEP * scale) end
+    end
     self._light_hold_t = (self._light_hold_t or 0) + dt
-    if self._light_charge_t ~= nil then self._light_charge_t = self._light_charge_t + dt end
+    Timers.tick_combat_window(self, "_buffered_charge_remaining", buffered_dt, scale)
+    if self._light_charge_t ~= nil then
+      self._light_charge_t = self._light_charge_t + dt
+      Timers.tick_combat_window(self, "_physical_charge_remaining", dt, scale)
+    end
   elseif input.light_up then
     self._light_charge_release_t = self._light_charge_t
+    if self._physical_charge_reference == false then
+      self._light_charge_release_ready = self._physical_charge_remaining == 0
+    end
     self._light_charge_t = nil
     self._light_hold_t = 0
   else
@@ -91,6 +117,7 @@ end
 
 function M.process_charge_release(self, input, cancelled)
   local charge_t = self._light_charge_release_t
+  local ready = self._light_charge_release_ready
   self._light_charge_release_t = nil -- A release is one attempt, never a buffered press.
   if cancelled then self._light_charge_t = nil; self._light_hold_t = 0; return end
   if charge_t == nil then return end
@@ -101,12 +128,13 @@ function M.process_charge_release(self, input, cancelled)
   -- only start its actual variant, never queue/pay for that normal follow-up.
   if executor.is_active(self) then return end
   local config = CombatConfig or require "mvtk.combat.config"
-  local ctx = require("mvtk.player.combat_input").attack_intent(self, input, config.get(), charge_t)
+  local ctx = require("mvtk.player.combat_input").attack_intent(self, input, config.get(), charge_t, ready)
   if not ctx.want_charged then return end
   local attack_set = config.resolve_attack_set()
   local bucket = attack_set.grounded or attack_set.default or {}
   if not bucket.charged then return end
-  if executor.request(self, "light", ctx) then
+  local _, started_ability = executor.request(self, "light", ctx)
+  if started_ability == "charge_attack" then
     consume_ability("charge_attack")
     pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "charged" })
   end
@@ -127,14 +155,14 @@ function M.process_melee_intents(self, input, interacted_this_frame, stunned)
     local wants_down_strike = ctx.want_down_strike and ds_enabled
     local wants_charged = ctx.want_charged and ca_enabled
     ctx.want_down_strike, ctx.want_charged = wants_down_strike, wants_charged
-    local requested = AttackExecutor.request(self, "light", ctx)
+    local requested, started_ability = AttackExecutor.request(self, "light", ctx)
     if requested then
       self._light_buffer_count = (self._light_buffer_count or 1) - 1  -- Consume one queued press
       self._light_hold_t = 0
-      if wants_down_strike then
+      if started_ability == "down_strike" then
         consume_ability("down_strike")
         pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "down" })
-      elseif wants_charged then
+      elseif started_ability == "charge_attack" then
         self._light_charge_t = nil
         consume_ability("charge_attack")
         pcall(msg.post, msg.url("main:/mode_hud#mode_hud"), hash("hud_cooldown"), { action = "charged" })

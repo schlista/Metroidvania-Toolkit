@@ -66,6 +66,7 @@ end
 -----------------------------------------------------------
 
 function init(self)
+    require("mvtk.enemies.patrol_obstacles").track(msg.url(".").path, hash("solid"), self)
     self.path = {}
     self.current_index = 1
     self.direction = 1  -- 1 = forward, -1 = backward

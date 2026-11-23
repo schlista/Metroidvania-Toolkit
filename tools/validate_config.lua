@@ -110,6 +110,25 @@ if not ok or type(Validator) ~= "table" then
     os.exit(2)
 end
 
+-- These files ship as literal build dependencies. The standalone validator can
+-- also run on headless fixtures that omit them. Check any file that is present.
+local Schemas = require "mvtk.core.config_schemas"
+local boss_config_ok = true
+for _, name in ipairs({"boss_types", "boss_behaviors", "boss_movesets"}) do
+    local path = "developer.config." .. name
+    local loaded, config = pcall(require, path)
+    if loaded and type(Validator.validate_config) == "function" then
+        local errors, warnings = Validator.validate_config(config, Schemas[name])
+        for _, warning in ipairs(warnings) do print("[CONFIG WARNING] " .. warning) end
+        for _, message in ipairs(errors) do print("[CONFIG] " .. name .. ": " .. message) end
+        boss_config_ok = #errors == 0 and boss_config_ok
+    elseif not loaded and not tostring(config):find("module '" .. path .. "' not found:", 1, true) then
+        print("[CONFIG] Cannot load " .. path .. ": " .. tostring(config))
+        boss_config_ok = false
+    end
+end
+if not boss_config_ok then os.exit(1) end
+
 if mode == "quick" then
     if Validator.validate_quick and Validator.validate_quick() then
         print("Config validation complete: OK (quick)")

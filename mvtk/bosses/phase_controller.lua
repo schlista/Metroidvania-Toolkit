@@ -12,13 +12,15 @@ local BossAnimations = Util.require_module("mvtk.bosses.boss_animations")
 local Audio = Util.require_module("mvtk.audio.audio")
 local SafeSound = require "mvtk.audio.safe_sound"
 local BossUI = require "mvtk.bosses.boss_ui"
-local Defaults = Util.require_config("developer.config.boss_defaults", {
-    iframes_on_phase_transition = 1.5,
-})
+-- A project may carry a boss_defaults.lua older than a key read here.
+local Fallbacks = { iframes_on_phase_transition = 1.5 }
+local Defaults = Util.require_config("developer.config.boss_defaults", Fallbacks)
+local Cues = require("mvtk.bosses.transition_cues").resolve(Defaults)
 
 local Motion = require "mvtk.bosses.boss_motion"
 local M = {}
 local Pause = require "mvtk.core.pause"
+local Clock = require "mvtk.bosses.boss_clock"
 
 -- Debug-gate all print() calls in this module so they only fire when enabled.
 local _orig_print = print
@@ -47,6 +49,44 @@ local TRANSITION_TYPE_ALIASES = {
 local function normalize_transition_type(value)
     local transition_type = tostring(value or ""):lower()
     return TRANSITION_TYPE_ALIASES[transition_type] or transition_type
+end
+
+local function positive(value)
+    return value and value > 0 and value or nil
+end
+
+local function play_shake(transition, cue, opening)
+    local authored = transition.camera_shake
+    if not authored and (not opening or Cues.shake_enabled == false) then return end
+    if Feedback and Feedback.screen_shake then
+        local duration = (authored and positive(authored.duration)) or (authored and not opening and transition.duration)
+            or cue.shake_duration
+        local intensity = (authored and positive(authored.intensity)) or cue.shake_intensity
+        if duration > 0 and intensity > 0 then pcall(Feedback.screen_shake, duration, intensity) end
+    end
+end
+
+local function flash_color(cue)
+    local rgba = cue.flash_color
+    return vmath.vector4(rgba[1], rgba[2], rgba[3], rgba[4])
+end
+
+local function play_flash(transition, cue)
+    if (Cues.flash_enabled ~= false or transition.flash == true) and cue.flash_duration > 0
+        and Feedback and Feedback.flash then
+        pcall(Feedback.flash, { duration = cue.flash_duration, color = flash_color(cue) })
+    end
+end
+
+local function play_arena_flash(boss, transition, cue)
+    if transition.flash == false then return end
+    if Cues.flash_enabled == false and transition.flash ~= true then return end
+    local arena_id = resolve_arena_id(boss)
+    if arena_id and BossArena and BossArena.trigger_arena_effect and cue.arena_flash_duration > 0 then
+        pcall(BossArena.trigger_arena_effect, arena_id, "flash", {
+            color = flash_color(cue), duration = cue.arena_flash_duration,
+        })
+    end
 end
 
 local function resolve_transition_animation(boss, animation_name)
@@ -116,23 +156,50 @@ end
 --- Update phase controller
 -- @param dt Delta time
 function M:update(dt)
+    if Pause.get() then return end
+    local pending = self.pending_phases
+    self.pending_phases = nil
+    for _, index in ipairs(pending or {}) do self:transition_to_phase(index) end
     -- Check if should change phase based on health
     self:check_phase_change()
 end
 
+function M:advance_transition(now)
+    local active = self.active_transition
+    if not active or Pause.get() or not Clock.reached(now, active.deadline) then return false end
+    local record = self.boss.boss_data or self.boss
+    local previous = record._boss_clock_at
+    record._boss_clock_at = active.deadline
+    self:on_phase_complete(active.phase)
+    record._boss_clock_at = previous
+    return true
+end
+
 --- Check if boss should change phase
 function M:check_phase_change()
-    if self.transitioning then
+    if self.transitioning or self.retired then
         return  -- Already transitioning
     end
     if not (self.boss and self.boss.get_health_percent) then
         return
     end
 
-    local health_percent = self.boss:get_health_percent() or 1.0
-
-    -- Find appropriate phase for current health
-    local target_phase_index = self:get_phase_for_health(health_percent)
+    local record = self.boss.boss_data
+    local pool = record and record.shared_pool
+    local health = pool and pool.pool or record and record.health
+    local max_health = pool and pool.pool_max or record and record.max_health
+    if not (health and max_health and max_health > 0) then
+        health, max_health = self.boss:get_health_percent() or 1, 1
+    end
+    local gated = record and record.config and record.config.phase_damage_gate
+    local target_phase_index
+    if gated then
+        local edge, next_index = self:get_damage_boundary(health, max_health)
+        -- An explicit gap below a band's lower edge must not make the
+        -- ordinary out-of-band fallback jump all the way to the last phase.
+        if health == edge then target_phase_index = next_index end
+    end
+    target_phase_index = target_phase_index or self:get_phase_for_health(health, max_health, gated)
 
     if target_phase_index ~= self.current_phase_index then
         -- Phase change needed
@@ -144,11 +211,15 @@ end
 -- Tolerant of phases authored without a health_range: a missing range is
 -- treated as "this phase covers all hp" (only useful if there is a single
 -- phase) so misconfigured data doesn't crash the update loop.
--- @param health_percent Health as percentage (0.0 to 1.0)
+-- @param health Health as a fraction, or absolute health with max_health
+-- @param max_health Compare absolute edges without re-dividing clamped health
+-- @param gated Keep an uncovered gap in the band just below it when gating
 -- @return Phase index
-function M:get_phase_for_health(health_percent)
+function M:get_phase_for_health(health, max_health, gated)
     if #self.phases == 0 then return 0 end
-    local floor, last = self.min_phase_index or 1, 1
+    max_health = max_health or 1
+    local floor = math.max(self.current_phase_index or 1, self.min_phase_index or 1)
+    local last, below_gap = 1, nil
     for i, phase in ipairs(self.phases) do
         if not phase.partner_defeated then
             last = i
@@ -156,14 +227,56 @@ function M:get_phase_for_health(health_percent)
             local min = (hr and hr.min) or 0
             local max = (hr and hr.max) or 1
 
-            if health_percent > min and health_percent <= max then
-                return math.max(i, floor)
+            if health > min * max_health then
+                if health <= max * max_health then return math.max(i, floor) end
+                below_gap = below_gap or i
             end
         end
     end
 
     -- Default to last phase if health is 0 or below
-    return math.max(last, floor)
+    return math.max(gated and below_gap or last, floor)
+end
+
+-- A partner-defeated phase has no band of its own. Look only at edges that
+-- would enter a later health phase, accounting for any forced/partner floor.
+function M:get_damage_boundary(health, max_health)
+    local floor = math.max(self.current_phase_index, self.min_phase_index)
+    local previous, boundary, next_index
+    for i, phase in ipairs(self.phases) do
+        if not phase.partner_defeated then
+            if previous and i > floor then
+                local range = previous.health_range
+                local edge = (range and range.min or 0) * max_health
+                -- At equality the transition is still pending. Hold this edge
+                -- until the controller can enter that phase, even for status ticks.
+                if edge > 0 and edge <= health and (not boundary or edge > boundary) then
+                    boundary, next_index = edge, i
+                end
+            end
+            previous = phase
+        end
+    end
+    return boundary, next_index
+end
+
+function M:blocks_direct_damage()
+    return self.active_transition ~= nil and self.active_transition.protects
+end
+
+local function release_iframes(self)
+    if self.release_iframes then
+        self.release_iframes()
+        self.release_iframes = nil
+    end
+end
+
+function M:retire()
+    release_iframes(self)
+    self.retired = true
+    self.active_transition = nil
+    self.pending_phases = nil
+    self.transitioning = false
 end
 
 -- A partner's defeat establishes a boss-phase floor. If a previous transition
@@ -177,9 +290,11 @@ end
 
 --- Transition to a new phase
 -- @param phase_index Index of phase to transition to
-function M:transition_to_phase(phase_index)
+function M:transition_to_phase(phase_index, elapsed)
+    if self.retired then return end
     if Pause.get() then
-        Pause.delay(0, function() self:transition_to_phase(phase_index) end)
+        self.pending_phases = self.pending_phases or {}
+        self.pending_phases[#self.pending_phases + 1] = phase_index
         return
     end
     if phase_index < 1 or phase_index > #self.phases then
@@ -187,10 +302,19 @@ function M:transition_to_phase(phase_index)
         return
     end
 
-    if phase_index == self.current_phase_index then
-        return  -- Already in this phase
+    if phase_index <= self.current_phase_index then
+        return
     end
 
+    release_iframes(self)
+    require("mvtk.bosses.attack_runtime").cancel(self.boss, "phase")
+    -- A warning can still be winding up before its executor has an instance.
+    -- Exit it even for an instantaneous phase change.
+    local sm = self.boss.state_machine
+    if sm and self.boss._locomotion then sm:interrupt_locomotion(true) end
+    if sm and (sm:get_state() == "attacking" or self.transitioning and sm:get_state() == "transitioning") then
+        sm:change_state("idle")
+    end
     local new_phase = self.phases[phase_index]
 
     print(string.format("[PHASE_CTRL] %s transitioning: Phase %d -> Phase %d",
@@ -202,6 +326,12 @@ function M:transition_to_phase(phase_index)
 
     -- Refresh the existing boss phase label through its registered HUD.
     local record = self.boss.boss_data or self.boss
+    local previous = record._boss_clock_at
+    if elapsed then record._boss_clock_at = math.max(0, Clock.time(record) - elapsed) end
+    self.boss._phase_started_at = Clock.time(record)
+    self.boss._attack_schedule = nil
+    self.boss._selected_attack_entry = nil
+    self.boss.last_attack_name = nil
     local pool = record.shared_pool
     if not pool or pool.lead == record.id then
         BossUI.send("update_boss_phase", {
@@ -226,23 +356,39 @@ function M:transition_to_phase(phase_index)
     if not new_phase.transition then
         -- No transition defined, instant change
         self:on_phase_complete(phase_index)
+    elseif elapsed and elapsed > 0 and record.fight_time then
+        self:advance_transition(record.fight_time)
     end
+    record._boss_clock_at = previous
 end
 
 --- Execute phase transition
 -- @param transition Transition configuration
 -- @param phase_index Target phase index
 function M:execute_transition(transition, phase_index)
+    local duration = transition.duration or Cues.phase_duration
+    local iframes = transition.iframes
+    if iframes == nil and (not duration or duration <= 0) then
+        iframes = Defaults.iframes_on_phase_transition or Fallbacks.iframes_on_phase_transition
+    end
+    local active = {
+        protects = iframes == nil and duration and duration > 0,
+        deadline = Clock.time(self.boss.boss_data or self.boss) + math.max(0, duration or 0),
+        phase = phase_index,
+    }
+    self.active_transition = active
     self.transitioning = true
 
     print(string.format("[PHASE_CTRL] Executing %s transition", transition.type or "default"))
 
-    -- Make the boss invulnerable during the transition so the player can't
-    -- burst past a phase while animations play. Duration is configurable per
-    -- transition (transition.iframes) with a global default fallback.
-    local iframes = transition.iframes or Defaults.iframes_on_phase_transition
+    -- Authored i-frames use the normal hit timer. The default instead follows
+    -- this transition's lifetime, including time spent paused or slowed.
+    local record = self.boss.boss_data
+    if iframes and record and record.fight_time then
+        iframes = iframes - math.max(0, record.fight_time - Clock.time(record))
+    end
     if iframes and iframes > 0 and self.boss.boss_data then
-        Invulnerability.start(self.boss.boss_data, iframes, "phase_transition")
+        self.release_iframes = Invulnerability.start(self.boss.boss_data, iframes, "phase_transition", true)
     end
 
     -- Use registered encounter listeners, as defeat notifications do. The
@@ -254,32 +400,25 @@ function M:execute_transition(transition, phase_index)
         transition_type = transition.type,
     })
 
-    -- Pre-phase telegraph: brief flash + shake so the transition reads.
-    if Feedback then
-        if Feedback.screen_shake then
-            pcall(Feedback.screen_shake, 0.4, 1.4)
-        end
-        if Feedback.flash then
-            pcall(Feedback.flash, { duration = 0.2, color = vmath.vector4(1, 0.8, 0.2, 0.5) })
-        end
-    end
+    local transition_type = normalize_transition_type(transition.type)
+    local uses_extra_shake = transition_type == "cutscene" or transition_type == "transform"
+        or transition_type == "rage" or transition_type == "desperation" or transition_type == "shield"
+    -- Types with their own shake keep the separate opening cue. All other
+    -- types apply any authored camera values to the opening cue itself.
+    play_shake(uses_extra_shake and {} or transition, Cues.telegraph, true)
+    play_flash(transition, Cues.telegraph)
 
     -- Put boss in transitioning state
     if self.boss.state_machine then
         self.boss.state_machine:change_state("transitioning", {
-            transition = transition,
+            -- The completion callback releases the state. Disable the state
+            -- machine's standalone timeout for controller-owned transitions.
+            transition = { duration = math.huge, animation = transition.animation },
             target_phase = phase_index,
         })
     end
 
-    -- Schedule transition completion
-    local duration = transition.duration or 2.0
-    Pause.delay(duration, function()
-        self:on_phase_complete(phase_index)
-    end)
-
     -- Execute transition type-specific logic
-    local transition_type = normalize_transition_type(transition.type)
     if transition_type == "cutscene" then
         self:execute_cutscene_transition(transition)
     elseif transition_type == "teleport" then
@@ -298,30 +437,18 @@ end
 -- @param transition Transition config
 function M:execute_cutscene_transition(transition)
     print("[PHASE_CTRL] Cutscene transition")
+    local cue = Cues.cutscene
 
     -- Play animation
     if transition.animation then
         self.boss:play_animation(resolve_transition_animation(self.boss, transition.animation))
     end
 
-    -- Camera shake
-    if transition.camera_shake then
-        if Feedback and Feedback.screen_shake then
-            pcall(Feedback.screen_shake,
-                transition.camera_shake.duration or transition.duration or 0.5,
-                transition.camera_shake.intensity or 1.2)
-        end
-    end
-
-    if transition.flash and Feedback and Feedback.flash then
-        pcall(Feedback.flash, {
-            duration = 0.25,
-            color = vmath.vector4(1, 1, 1, 0.45),
-        })
-    end
+    play_shake(transition, cue)
+    if transition.flash then play_flash(transition, cue) end
 
     if transition.new_music and Audio and Audio.music then
-        pcall(Audio.music, transition.new_music, { t = 0.3 })
+        pcall(Audio.music, transition.new_music, { t = cue.music_fade })
     end
 
     -- Could pause player input, zoom camera, etc.
@@ -341,9 +468,10 @@ function M:execute_teleport_transition(transition)
     print("[PHASE_CTRL] Teleport transition")
     -- Forced phase changes may originate in a marker's script context.
     local boss_url = self.boss.self_url or go.get_id()
+    local base_scale = self.boss._base_scale or go.get_scale(boss_url)
 
     -- Fade out boss
-    Motion.scale(boss_url, vmath.vector3(0, 0, 1), 0.3, "in_cubic", false, function()
+    Motion.scale(boss_url, Motion.disappear_scale(base_scale), Cues.teleport.shrink_duration, "in_cubic", false, function()
         -- Move to new position
         if transition.teleport_to == "arena_center" then
             local arena_center = self.boss:get_arena_center()
@@ -355,7 +483,7 @@ function M:execute_teleport_transition(transition)
         end
 
         -- Fade in boss
-        Motion.scale(boss_url, vmath.vector3(1, 1, 1), 0.3, "out_cubic")
+        Motion.scale(boss_url, base_scale, Cues.teleport.grow_duration, "out_cubic")
     end)
 
     -- Play teleport sound
@@ -368,35 +496,36 @@ end
 -- @param transition Transition config
 function M:execute_transform_transition(transition)
     print("[PHASE_CTRL] Transform transition")
+    local cue = Cues.transform
 
     -- Play transform animation
     if transition.animation then
         self.boss:play_animation(resolve_transition_animation(self.boss, transition.animation))
     end
 
-    if transition.flash and Feedback and Feedback.flash then
-        pcall(Feedback.flash, {
-            duration = 0.35,
-            color = vmath.vector4(0.8, 0.4, 1.0, 0.7),
-        })
-    end
-
-    if transition.camera_shake and Feedback and Feedback.screen_shake then
-        pcall(Feedback.screen_shake,
-            transition.camera_shake.duration or transition.duration or 0.6,
-            transition.camera_shake.intensity or 1.5)
-    end
-
-    local arena_id = resolve_arena_id(self.boss)
-    if arena_id and BossArena and BossArena.trigger_arena_effect then
-        pcall(BossArena.trigger_arena_effect, arena_id, "flash", {
-            color = vmath.vector4(0.8, 0.4, 1.0, 0.7),
-            duration = 0.2,
-        })
-    end
+    if transition.flash then play_flash(transition, cue) end
+    play_shake(transition, cue)
+    play_arena_flash(self.boss, transition, cue)
 
     if transition.new_music and Audio and Audio.music then
-        pcall(Audio.music, transition.new_music, { t = 0.4 })
+        pcall(Audio.music, transition.new_music, { t = cue.music_fade })
+    end
+end
+
+-- Only linked, pulse-only hazards of the requested types wake.
+local function pulse_transition_hazards(boss, types)
+    if not types or #types == 0 or not BossArena then return end
+    if BossArena.spawn_hazard then
+        for _, hazard_type in ipairs(types) do
+            pcall(BossArena.spawn_hazard, hazard_type)
+        end
+    end
+    local arena_id = resolve_arena_id(boss)
+    if arena_id and BossArena.trigger_arena_effect then
+        pcall(BossArena.trigger_arena_effect, arena_id, "hazard_pulse", {
+            hazard_types = types,
+            pulse_only = true,
+        })
     end
 end
 
@@ -404,6 +533,7 @@ end
 -- @param transition Transition config
 function M:execute_rage_transition(transition)
     print("[PHASE_CTRL] Rage/desperation transition")
+    local cue = Cues.rage
 
     -- Play enrage animation
     if transition.animation then
@@ -417,37 +547,13 @@ function M:execute_rage_transition(transition)
         end
     end
 
-    -- Spawn additional hazards
-    if transition.spawn_hazards then
-        for _, hazard_type in ipairs(transition.spawn_hazards) do
-            if BossArena and BossArena.spawn_hazard then
-                pcall(BossArena.spawn_hazard, hazard_type)
-            end
-        end
-        local arena_id = resolve_arena_id(self.boss)
-        if arena_id and BossArena and BossArena.trigger_arena_effect then
-            pcall(BossArena.trigger_arena_effect, arena_id, "hazard_pulse")
-        end
-    end
+    pulse_transition_hazards(self.boss, transition.spawn_hazards)
 
-    -- Heavy camera shake
-    if transition.camera_shake then
-        if Feedback and Feedback.screen_shake then
-            pcall(Feedback.screen_shake,
-                transition.camera_shake.duration or transition.duration or 0.8,
-                transition.camera_shake.intensity or 1.8)
-        end
-    end
-
-    if transition.flash ~= false and Feedback and Feedback.flash then
-        pcall(Feedback.flash, {
-            duration = 0.3,
-            color = vmath.vector4(1.0, 0.2, 0.2, 0.7),
-        })
-    end
+    play_shake(transition, cue)
+    if transition.flash ~= false then play_flash(transition, cue) end
 
     if transition.new_music and Audio and Audio.music then
-        pcall(Audio.music, transition.new_music, { t = 0.3 })
+        pcall(Audio.music, transition.new_music, { t = cue.music_fade })
     end
 end
 
@@ -455,44 +561,21 @@ end
 -- @param transition Transition config
 function M:execute_shield_transition(transition)
     print("[PHASE_CTRL] Shield transition")
+    local cue = Cues.shield
 
     -- Activate shield visual
     if transition.animation then
         self.boss:play_animation(resolve_transition_animation(self.boss, transition.animation))
     end
 
-    -- Make invulnerable during charge. Route through Invulnerability so the
-    -- flash timer, damage gating, and expiry all run normally — setting the
-    -- flag directly bypasses the system and can leave the boss permanently
-    -- invulnerable if nothing clears it.
-    local shield_time = transition.duration or 2.0
-    if self.boss.boss_data then
-        Invulnerability.start(self.boss.boss_data, shield_time, "phase_shield")
-    end
+    pulse_transition_hazards(self.boss, transition.spawn_hazards)
 
-    if Feedback and Feedback.flash then
-        pcall(Feedback.flash, {
-            duration = 0.25,
-            color = vmath.vector4(0.4, 0.8, 1.0, 0.55),
-        })
-    end
-
-    if transition.camera_shake and Feedback and Feedback.screen_shake then
-        pcall(Feedback.screen_shake,
-            transition.camera_shake.duration or transition.duration or 0.4,
-            transition.camera_shake.intensity or 1.0)
-    end
-
-    local arena_id = resolve_arena_id(self.boss)
-    if arena_id and BossArena and BossArena.trigger_arena_effect then
-        pcall(BossArena.trigger_arena_effect, arena_id, "flash", {
-            color = vmath.vector4(0.4, 0.8, 1.0, 0.55),
-            duration = 0.15,
-        })
-    end
+    play_flash(transition, cue)
+    play_shake(transition, cue)
+    play_arena_flash(self.boss, transition, cue)
 
     if transition.new_music and Audio and Audio.music then
-        pcall(Audio.music, transition.new_music, { t = 0.3 })
+        pcall(Audio.music, transition.new_music, { t = cue.music_fade })
     end
 end
 
@@ -501,6 +584,7 @@ end
 function M:on_phase_complete(phase_index)
     print(string.format("[PHASE_CTRL] Phase %d transition complete", phase_index))
 
+    self.active_transition = nil
     self.transitioning = false
 
     -- Apply phase modifiers
@@ -518,10 +602,7 @@ function M:on_phase_complete(phase_index)
         phase = phase_index,
     })
 
-    -- Invulnerability is now driven entirely by mvtk.combat.invulnerability:
-    -- Invulnerability.start(boss_data, duration, reason) in the transition
-    -- and Invulnerability.update(boss_data, dt) in boss.script decay the
-    -- timer and clear the flag. No manual reset needed here.
+    -- Explicit i-frames expire on their own timer even if they outlast this transition.
 
     -- Return boss to combat
     if self.boss.state_machine and self.boss.state_machine:get_state() == "transitioning" then
@@ -546,23 +627,7 @@ function M:apply_phase_modifiers(phase_index)
         self.boss.boss_data.stagger_immune = phase.stagger_immune == true
     end
 
-    -- Speed multiplier
-    if phase.speed_multiplier then
-        self.boss.speed_multiplier = phase.speed_multiplier
-        if self.boss.boss_data then
-            self.boss.boss_data.speed_multiplier = phase.speed_multiplier
-        end
-        print(string.format("[PHASE_CTRL] Speed multiplier: %.1fx", phase.speed_multiplier))
-    end
-
-    -- Damage multiplier
-    if phase.damage_multiplier then
-        self.boss.damage_multiplier = phase.damage_multiplier
-        if self.boss.boss_data then
-            self.boss.boss_data.damage_multiplier = phase.damage_multiplier
-        end
-        print(string.format("[PHASE_CTRL] Damage multiplier: %.1fx", phase.damage_multiplier))
-    end
+    require("mvtk.bosses.attack_runtime").apply_multipliers(self.boss, phase)
 
     -- chase_speed is an absolute movement value rather than a multiplier.
     -- The phase wins while active; an inherited (-1/missing) value restores
@@ -607,12 +672,12 @@ end
 -- that phase's range straight back to an earlier phase. Lower health still
 -- advances to later phases.
 -- @param phase_index Phase to change to
-function M:force_phase(phase_index)
+function M:force_phase(phase_index, elapsed)
     print(string.format("[PHASE_CTRL] Forcing phase change to %d", phase_index))
     if self.phases[phase_index] then
         self.min_phase_index = math.max(self.min_phase_index or 1, phase_index)
     end
-    self:transition_to_phase(phase_index)
+    self:transition_to_phase(phase_index, elapsed)
 end
 
 --- Check if currently transitioning

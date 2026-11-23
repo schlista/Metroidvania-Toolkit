@@ -1,30 +1,28 @@
 --- Boss heal attack executor.
--- Restores boss HP by posting `mvtk_apply_heal` to the boss. Supports a
--- one-shot heal or over-duration ticks via heal.ticks / heal.interval.
+-- Restores health in one or more ticks owned by the attack.
 -- @module boss_attacks.heal
 
 local C = require "mvtk.bosses.boss_attacks.common"
+local BossManager = require "mvtk.bosses.boss_manager"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    instance = C.instance(boss, pattern, instance)
+    instance.interruptible = true
     local heal = pattern.heal or {}
     local amount = heal.amount
         or (boss.boss_data and boss.boss_data.heal_per_tick)
-        or C.Defaults.default_heal_amount
+        or C.Defaults.default_heal_amount or 10
     local ticks = heal.ticks or 1
     local interval = heal.interval or 0.3
 
     C.print(string.format("[BOSS_ATTACKS] Heal %d x %d (interval %.2f)",
         amount, ticks, interval))
 
-    local boss_url = boss.self_url or msg.url()
     for i = 1, ticks do
-        C.delay(interval * (i - 1), function()
-            pcall(msg.post, boss_url, hash("mvtk_apply_heal"), {
-                amount = amount,
-                source = boss.boss_id,
-            })
+        instance:after(interval * (i - 1), function()
+            BossManager.heal_boss(boss.boss_id, amount)
         end)
     end
 end

@@ -1,8 +1,9 @@
 # Designer tools
 
-Stop the game and open **Project ▸ Game Settings…** in Defold. Player art,
-Camera, Enemies and elements, HUD and prompts, Map, Saves and checkpoints, Languages, and Movement test are tabs
-in the same window. Edits stay in its draft until **Save**. **Save and Prepare &
+Stop the game and open **Project ▸ Game Settings…** in Defold. The window
+includes **Player**, **Movement feel**, **Player art**, **Camera**, **Enemies and elements**,
+**HUD and prompts**, **Map**, **Saves and checkpoints**, **Languages** and
+**Movement test**. Edits stay in its draft until **Save**. **Save and Prepare &
 Check** also prepares the project; finish its prompts, then Build.
 
 Hover over a name or field for help. Names that differ from toolkit defaults
@@ -17,6 +18,118 @@ Game defaults for focus loss live in **Game ▸ When the game loses focus**:
 Settings: Display ▸ Pause when unfocused, Controls ▸ Pause on controller
 disconnect, and Audio ▸ Mute when unfocused. Returning to the window never
 resumes play automatically. The title screen and Layout Editor are excluded.
+
+## Movement feel
+
+Open **Movement feel** just after **Player**. Use it to tune how quickly the
+player starts, stops and turns, how high they jump, and how they move in the air
+or on walls. A wall slide is the slow descent the player can make down a wall.
+
+### Feel template
+
+Pick a **Feel template** at the top of the tab. Each template starts from your
+project's movement defaults and sets up a different feel.
+
+- **Toolkit default** puts every field on the tab back to its project default, including all dash controls.
+- **Swift acrobat** starts quickly, jumps sharply, falls fast, dashes sideways in the air and kicks hard off walls.
+- **Instant control** starts and stops almost at once, has one ground speed, and uses a tall jump with a sharp release, a fall limit and a sideways air dash.
+- **Agile sprinter** starts quickly and sprints much faster than it walks, with a fast fall, a float during descent and easy kicks off walls.
+- **Precision climber** makes short jumps with a brief pause at the top, a slow fall you can speed up with Down, an eight-way dash and a slow wall slide. It sets air jumps to zero.
+- **Retro run-and-gun** has one steady speed, quick stops and a medium, floaty jump with strong steering. It suits aiming while moving.
+- **Nimble explorer** runs fast and has a high, floaty jump you can cut short, with tight wall kicks and little slowing on a wall.
+- **Momentum runner** takes time to gain and lose speed. Turns skid, running jumps go higher, and holding Jump makes a big difference.
+
+**Tuned for:** lists the abilities the template was designed around. Use
+**Abilities** to choose which ones the player starts with. **Apply template**
+changes only the movement fields in the draft. Starting abilities, health,
+combat and art keep their settings. Nothing is published until you click
+**Save** or **Save and Prepare & Check**.
+
+### Check jump reach
+
+The read-out estimates full jump height, shortest hop height, time in the air
+and the distance a jump covers at walking and running speed. It shows heights
+and distances in pixels and tiles. Choose a different template to see its
+estimate on the **This template:** line before applying it. The estimate uses an ordinary jump on flat ground
+at steady speed, with no boost from abilities or the room.
+
+Check the read-out before saving. A template can change which ledges and gaps
+the player can reach, so rooms built for your previous movement may need
+changes. Try the jumps in play and run **Analyze Progression** after saving and
+preparing if your project uses it to check routes.
+
+### Ground
+
+- **Walk speed (px/s)** sets top walking speed. Higher makes walking faster and lower makes it slower.
+- **Run speed (px/s)** sets top running speed. Higher makes running faster and lower makes it slower.
+- **Ground acceleration** sets how quickly the player reaches walking speed. Higher gets there sooner and lower builds speed more gradually.
+- **Run build-up** sets how quickly the player gains speed while running at or above walking speed. Higher reaches top speed sooner, lower takes longer, and 0 uses **Ground acceleration**.
+- **Ground braking** sets how quickly the player stops after you let go. Higher stops sooner and lower lets the player coast farther.
+- **Turn braking** sets how quickly the player reverses direction. Higher turns sooner and lower makes the player skid longer.
+
+### Jump
+
+- **Jump height (px)** sets the height of a held jump. Higher sends the player higher and lower keeps the jump closer to the ground.
+- **Running jump bonus** raises a ground jump as takeoff speed goes from walking to running speed. Higher adds more height, lower adds less, and 0 turns the bonus off.
+- **Gravity** sets the pull toward the ground. A value farther below 0 pulls harder and a value closer to 0 pulls more gently.
+- **Jump release** sets what happens when you let go of Jump during the rise. **Stronger gravity** pulls down harder and **Cut speed** removes some upward speed once. **Shortest jump (seconds)** sets when an early release can take effect.
+- **Short hop gravity (x)** sets that extra pull in **Stronger gravity** mode. Higher gives a lower short hop and lower lets it rise higher.
+- **Speed kept on release** is shown in **Cut speed** mode. Higher keeps more upward speed, 0 ends the rise, and 1 keeps all the speed.
+- **Shortest jump (seconds)** sets how long a jump gets its normal rise even after a tap. Higher gives a taller hop and lower lets the jump end sooner.
+- **Coyote time (seconds)** is the time you can still jump after walking off a ledge. Higher gives you longer to press Jump and lower needs closer timing.
+- **Jump buffer (seconds)** remembers a Jump press just before landing so the next jump can start when you land. Higher lets you press earlier and lower needs closer timing.
+- **Corner correction (px)** lets a rising player slip sideways past a solid ceiling corner when there is room beside it. The shipped default is 24. Facing either way gives the same clear or stop result for a jump from the same spot. Higher can clear a larger overlap. Set it to 0 to turn the correction off, as in **Retro run-and-gun** and **Momentum runner**.
+- **Air jumps** sets how many extra jumps you can make before landing once Double Jump is unlocked. Higher adds jumps, lower gives fewer, and 0 gives none.
+
+### In the air
+
+- **Air control** sets how strongly you can steer in the air. Higher responds more quickly and lower changes speed more slowly.
+- **Air braking** sets how quickly sideways motion slows in the air. Higher slows it sooner and lower carries more speed through a jump.
+- **Apex hang speed (px/s)** sets when the player starts to hang near the apex, the top of a jump. Higher starts the hang farther from the top and lower makes the window narrower.
+- **Apex hang gravity (x)** sets the pull during that hang. Higher gives a shorter hang and lower keeps the player near the top longer when **Apex hang speed (px/s)** is set.
+
+### Falling
+
+- **Fall gravity (x)** sets the pull during descent. Higher builds falling speed faster and lower gives a gentler descent.
+- **Fast fall gravity (x)** sets the pull when you hold Down during a fall. Higher pulls harder and lower pulls more gently.
+- **Fast fall top speed (x)** sets the falling speed limit while you hold Down. Higher raises the limit, 1 keeps the usual limit, and releasing Down restores it.
+- **Top falling speed (px/s)** sets the normal falling speed limit. Higher allows faster falls up to the game's upper limit, lower caps the fall sooner, and 0 uses the game's upper limit alone.
+
+### Walls
+
+- **Wall slide speed (px/s)** sets how fast the player can slide down a wall. Higher allows a faster slide, lower caps it sooner, and 0 removes the cap.
+- **Wall jump grace (seconds)** sets how long the player can still wall jump after letting go of a wall slide. Higher gives you more time and lower needs closer timing.
+- **Wall jump push (px/s)** sets the push away from an ordinary wall. Higher sends the player farther, lower keeps them closer, and changing the player's size leaves this speed alone.
+- **Wall jump steering lock (seconds)** sets how long the player steers and faces away after a wall jump or a kick away from a ledge. Higher holds that direction longer, lower returns control sooner, and 0 gives control back immediately.
+- **Wall climb speed (px/s)** sets climbing speed. Higher climbs faster and lower climbs more slowly.
+- **Cling fall speed (px/s)** sets how fast the player drifts down while clinging to a wall. Higher slips faster, lower slips more slowly, and 0 stays still.
+
+### Dash and slide
+
+- **Air dash speed (px/s)** sets the speed of an air dash. Higher sends the player faster and lower slows the dash.
+- **Air dash time (seconds)** sets how long the dash lasts. Higher makes it last longer and lower ends it sooner.
+- **Air dash cooldown (seconds)** sets the wait after a dash. Higher makes the player wait longer and lower lets them use another available dash sooner.
+- **Air dash count** sets the number of air dashes available before landing. Higher gives more dashes and lower gives fewer.
+- **Air dash directions** can be **Eight** to follow the stick or **Horizontal** for sideways dashes that keep vertical motion.
+- **Pause gravity while dashing** holds vertical speed during an eight-way dash when on, so a sideways dash flies flat. Turn it off to let gravity pull during the dash.
+- **Vertical speed kept after a dash** sets how much upward or downward speed remains after an eight-way dash. Higher keeps more and lower keeps less.
+- **Extra dashes per upgrade** adds air dashes before landing once Extra Air Dash is unlocked. Higher adds more and lower adds fewer.
+- **Slide speed (px/s)** sets how fast a slide travels. Higher gives a faster slide and lower gives a slower one.
+- **Slide time (seconds)** sets how long a slide lasts. Higher keeps it going longer and lower ends it sooner.
+
+### Glide
+
+- **Glide gravity (x)** sets how quickly a glide gains falling speed. Higher makes the player drop sooner and lower makes the glide floatier.
+- **Glide falling speed (px/s)** caps the glide's descent. Higher allows a faster descent, lower caps it sooner, and 0 removes the glide cap.
+
+### Limits to check in play
+
+- **Run build-up** takes effect when the player is running, at or above walking speed, and gaining speed. Hold Dash after a slide to run. A **Slide speed (px/s)** below **Run speed (px/s)** lets the player build speed right after the slide. A faster slide starts above the run's top speed, so the player brakes first. If the player slows down while still holding Dash, the same setting applies when they speed up again.
+- **Cut speed** leaves launches, bounces and super jumps alone. Fast fall starts while falling, so holding Down during the rise leaves the jump height alone.
+- The player can still rise past a corner when less than about a tenth of the body's width is under it, even at 0. Solid pieces only a few pixels thick can escape the checks. **Corner correction (px)** is off when the Spine add-on uses the player's bones for collision.
+- Older settings kept outside a field's range can still work. Correct or reset a flagged value before saving again. A saved 0 for **Apex hang gravity (x)** only warns and you can save other edits. Enter 0.05 or higher to change it.
+- **Shortest jump (seconds)** uses 60 frames a second as its guide. For 0.05 seconds, or three frames, the game aims to apply an early release at the start of the third frame.
+- You can use the reach estimate for the same gaps on fast displays and at 60 frames a second. At the defaults, a held jump is about 432 pixels. Held jumps with an apex hang follow the same curve at both rates. A quick tap can still vary with the frame that sees the release.
 
 ## Shops
 
@@ -35,9 +148,23 @@ as high as sale values to prevent buying and reselling for a profit.
 
 ## Directional combat
 
+In **Attacks**, **Post-hit recovery (seconds)** is the wait after the last hit
+window closes. An attack without a hit window waits through startup and then
+recovery. The recovery value in `developer/config/combat_config.lua` sets the
+same wait. Attack and parry windows follow the 60-frame game on faster displays.
+
 **Combat ▸ Parry** sets the parry window and how far a parried enemy slides straight away from you, slowing to a stop: **Parry push** after an ordinary parry and **Perfect parry push** after a perfect one, in pixels (0 turns that push off). An enemy's knockback resistance shortens the slide and walls stop it; bosses keep only their parry stun, and a parried shot never pushes its shooter. `knockback_time` in the commented `combat_config.lua` **parry** block sets how long the slide lasts.
 
 **Combat ▸ Invincibility**, after **Parry**, sets after-hit, Slide, Dash and after-parry times in seconds; Slide and Dash require their Invincibility unlocks, and 0 covers their whole movement.
+After-hit protection also counts down while swimming or climbing. Enemy and
+boss protection after a hit uses game time. Hit freezes and the pause menu
+hold it, and slow motion slows its countdown.
+
+A normal hit on a boss gives a freeze of about 33 milliseconds with
+**Freeze frames** set to **Full** and the shipped settings. **Off** removes
+the freeze. Boss warning and attack times follow the seconds set in their
+patterns across refresh rates. For movesets, floor attacks, beams and testing
+baked properties in Defold, see [Design a boss](CREATOR_WORKFLOW.html#design-a-boss).
 
 **Combat ▸ Up attack**, after **Heavy attack**, holds **Up attack damage**.
 **Combat features ▸ Directional attacks**, after **Aerial attacks**, holds
@@ -346,6 +473,7 @@ does not publish the draft or alter creator progress.
 
 ## Grapple and ending
 
+With the same swing inputs, the grapple follows the 60-frame path on faster displays.
 Tune the **Grapple** tab and use **Camera ▸ Launch room preview** to try its
 settings in your rooms. See [Grappling](GRAPPLING.md).
 

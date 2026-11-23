@@ -125,6 +125,10 @@ function init(self)
     gui.set_enabled(self.menu_root, false)
     self.enabled = Prefab.is_dev_build() and Config.dev_tools and Config.dev_tools.enabled == true
     if not self.enabled then return end
+    if Config.bosses and Config.bosses.shapes then
+        self.boss_shapes = require "mvtk.debug.boss_shapes"
+        self.flush_boss_shapes = self.boss_shapes.install(Config.bosses)
+    end
     Stats.reset()
     Cheats.register_menu(DevMenu)
     Saves.register_menu(DevMenu)
@@ -169,6 +173,7 @@ end
 
 function final(self)
     if not self.enabled then return end
+    if self.boss_shapes then self.boss_shapes.uninstall() end
     Stats.reset()
     close_menu(self)
     DebugDraw.set_draw_collision_boxes(false)
@@ -386,6 +391,7 @@ end
 
 function update(self, dt)
     if not self.enabled then return end
+    if self.flush_boss_shapes then self.flush_boss_shapes() end
     if Stats.enabled then paint_stats(self) end
     Cheats.update()
     Practice.update(dt)

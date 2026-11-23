@@ -42,12 +42,11 @@ function M.settings(type_cfg, defaults, tile, body_scale)
     }
 end
 
-function M.apply(self, dt, raycast)
-    self._ledge_blocked_dir = nil
+function M.blocks(self, vx, dt, raycast, arc_distance)
     local ledge = self._ledge
     if not ledge or ledge.enabled ~= true
         or self._grounded_movement ~= true or self._ignores_terrain == true
-        or self.vel.x == 0 or dt <= 0 then
+        or vx == 0 or dt <= 0 then
         return
     end
 
@@ -64,8 +63,19 @@ function M.apply(self, dt, raycast)
         return
     end
 
-    local dir = self.vel.x > 0 and 1 or -1
-    local ahead_x = pos.x + self.vel.x * dt + dir * ledge.margin
+    local dir = vx > 0 and 1 or -1
+    if arc_distance then
+        -- Check each reference-length piece of the planned horizontal arc.
+        -- A supported destination alone can hide a gap along the way.
+        local step = math.abs(vx) * dt
+        for distance = step, arc_distance, step do
+            local x = pos.x + dir * distance
+            local hit = raycast(vmath.vector3(x, pos.y, z), vmath.vector3(x, bottom_y, z), groups)
+            if not SurfaceClassifier.is_ground_collision(hit)
+                or hit.position.y < support.position.y - ledge.step_tolerance then return dir end
+        end
+    end
+    local ahead_x = pos.x + (arc_distance and dir * arc_distance or vx * dt) + dir * ledge.margin
     local ahead = raycast(vmath.vector3(ahead_x, pos.y, z),
         vmath.vector3(ahead_x, bottom_y, z), groups)
     if SurfaceClassifier.is_ground_collision(ahead)
@@ -73,8 +83,12 @@ function M.apply(self, dt, raycast)
         return
     end
 
-    self.vel.x = 0
-    self._ledge_blocked_dir = dir
+    return dir
+end
+
+function M.apply(self, dt, raycast)
+    self._ledge_blocked_dir = M.blocks(self, self.vel.x, dt, raycast)
+    if self._ledge_blocked_dir then self.vel.x = 0 end
 end
 
 return M

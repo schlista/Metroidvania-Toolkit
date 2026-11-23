@@ -24,6 +24,8 @@
 
 local BoneCollision = require "mvtk.animation.bone_collision"
 local PlayerHost = require "mvtk.player.player_host"
+local Bounds = require "mvtk.player.collider_bounds"
+local Detection = require "mvtk.enemies.detection"
 
 -- Properties wired in the .collection file --------------------------------
 -- These property defaults work only for the editor preview / top-level
@@ -110,6 +112,21 @@ local FOOT_L_PART_ID = "foot_l"
 local FOOT_R_PART_ID = "foot_r"
 
 local DEFAULT_MAX_RETRIES = 30
+
+local function clear_body(self)
+    if self.part_id == BODY_PART_ID then
+        Detection.set_player_body(nil, nil, nil, nil, nil, self.player_url)
+    end
+end
+
+local function publish_body(self, pos)
+    if self.part_id ~= BODY_PART_ID then return end
+    -- The position-only follower's fixture stays axis-aligned and keeps its
+    -- baked local size throughout this activation.
+    self._body_bounds = self._body_bounds or Bounds.rect("#collisionobject")
+    local box = self._body_bounds
+    if box then Detection.set_player_body(box.half_w, box.half_h, box.x, box.y, pos, self.player_url) end
+end
 
 local function is_foot_part(part_id)
     return part_id == FOOT_L_PART_ID or part_id == FOOT_R_PART_ID
@@ -202,15 +219,25 @@ function update(self, dt)
     local pos = BoneCollision.get_bone_position(self.spine_url, self._bone_name_string)
     if pos then
         go.set_position(pos)
-        if require("mvtk.player.placement").is_waiting(self.player_url) then return end
+        if require("mvtk.player.placement").is_waiting(self.player_url) then
+            clear_body(self)
+            return
+        end
         -- Enable the collider only after the GO is at the correct
         -- bone-driven position. Prevents a stray frame at origin.
         enable_self_collider(self)
+        publish_body(self, pos)
     end
+end
+
+function final(self)
+    if self._activated then clear_body(self) end
 end
 
 function on_message(self, message_id, message, sender)
     if message_id == hash("set_bone_name") then
+        if self._activated then clear_body(self) end
+        self._body_bounds = nil
         -- Activation message from player_visual_mode.script. Carries the
         -- bone name string AND optionally the configured retry cap and the
         -- collection-resolved player_id / spine_url (required when this
@@ -220,6 +247,10 @@ function on_message(self, message_id, message, sender)
             -- Empty name means "deactivate" — go back to dormant.
             self._activated = false
             self._bone_name_string = nil
+            if self.part_id == BODY_PART_ID and self._collider_enabled then
+                pcall(msg.post, "#collisionobject", "disable")
+                self._collider_enabled = false
+            end
             return
         end
         self._bone_name_string = name

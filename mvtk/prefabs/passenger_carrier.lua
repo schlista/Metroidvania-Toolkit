@@ -7,11 +7,33 @@ local Carrier = {}
 Carrier.__index = Carrier
 
 local MSG_PLATFORM_DELTA = hash("platform_delta")
+local carriers = setmetatable({}, {__mode = "v"})
+local moving = setmetatable({}, {__mode = "v"})
+
+local function registered(bodies, id)
+    if id == nil then return false end
+    if bodies[id] then return true end
+    -- Generated platforms can put the collider on a child and the motion
+    -- script on its parent. A ray hit contains the collider owner's id.
+    if not go or not go.get_parent then return false end
+    local ok, parent = pcall(go.get_parent, id)
+    return ok and parent ~= nil and bodies[parent] ~= nil
+end
+
+function M.is_carrier(id)
+    return registered(carriers, id)
+end
+
+function M.is_moving_body(id)
+    return registered(moving, id)
+end
 
 function M.new()
-    return setmetatable({
-        passengers = {},
-    }, Carrier)
+    local carrier = setmetatable({passengers = {}}, Carrier)
+    -- A solid carrier is still a platform while waiting for its first move.
+    local id = go and go.get_id and go.get_id()
+    if id then carriers[id] = carrier end
+    return carrier
 end
 
 function Carrier:add(url, group)
@@ -45,6 +67,10 @@ function Carrier:apply_delta(dx, dy, opts)
     dx = tonumber(dx) or 0
     dy = tonumber(dy) or 0
     opts = opts or {}
+    if (dx ~= 0 or dy ~= 0) and go and go.get_id then
+        local id = go.get_id()
+        if id then moving[id] = self end
+    end
 
     for url, info in pairs(self.passengers) do
         if go.exists(url) then

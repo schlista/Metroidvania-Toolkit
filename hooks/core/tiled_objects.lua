@@ -361,6 +361,11 @@ local function infer_object_type(object)
         or prop("health_max") ~= nil
         or prop("attack_interval_min") ~= nil
         or prop("attack_interval_max") ~= nil
+        or has("moveset")
+        or prop("telegraph_scale") ~= nil
+        or prop("cooldown_scale") ~= nil
+        or prop("teleport_interval") ~= nil
+        or has("teleport_anchors")
         or prop("transition_type") ~= nil
         or prop("transition_duration") ~= nil
     then

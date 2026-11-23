@@ -18,7 +18,8 @@
 --   overrides; this file remains the baseline. label and settings_order name
 --   and order each attack in that window. Optional projectile kx/ky and
 --   dir_x/dir_y get numeric controls when authored; omission keeps dynamic aim.
--- - Durations are in seconds.
+-- - Durations are in seconds. Timeline recovery is the wait after the last
+--   active window, or after startup if there are no windows.
 -- - Hitbox `width`/`height` values are full box sizes in pixels.
 -- - `sprite_offset` is used by sprite characters.
 -- - `spine_bone` + `spine_offset` is used by Spine characters. Bone names
@@ -71,7 +72,8 @@ return {
         },
         -- Confirmed boss damage, including weak points. Preset audio.hurt wins
         -- over this default; enabled Tiled feedback overrides win over both.
-        boss_hurt = { shake = 6, hitstop = 0.05, rumble = 0.20, sfx = "enemy_hurt" },
+        -- Freeze for 33 ms on a boss hit. Seconds round to the nearest 60 Hz step.
+        boss_hurt = { shake = 6, hitstop = 0.033333333, rumble = 0.20, sfx = "enemy_hurt" },
         parry = { shake = 7, hitstop = 0.03, rumble = 0.24 },
         perfect_parry = { shake = 9, hitstop = 0.05, rumble = 0.30 },
         -- Camera shake for boss phase changes, boss telegraphs and the arena
@@ -216,7 +218,7 @@ return {
             animation = "weapon_attack", -- Use "attack_up" only after adding that clip to player_art.lua required.
             cooldown = 0.18, -- Seconds between completed attacks; no combo links.
             timeline = {
-                startup = 0.05, recovery = 0.14, -- Seconds before the hit and after the active window.
+                startup = 0.05, recovery = 0.04, -- Seconds before the hit and after the last hit window.
                 active_windows = { { start = 0.05, duration = 0.10, hitboxes = { {
                     width = 128, height = 108, damage = 1, -- Full box size in base pixels and hit damage.
                     knockback = 60, ky = 120, stun_t = 0.12, -- Horizontal/upward impulse and stun seconds.
@@ -238,7 +240,7 @@ return {
             animation = "weapon_attack", -- Use "attack_up" only after adding that clip to player_art.lua required.
             cooldown = 0.18, -- Seconds between completed attacks; no combo links.
             timeline = {
-                startup = 0.05, recovery = 0.14, -- Seconds before the hit and after the active window.
+                startup = 0.05, recovery = 0.04, -- Seconds before the hit and after the last hit window.
                 active_windows = { { start = 0.05, duration = 0.10, hitboxes = { {
                     width = 128, height = 108, damage = 1, -- Full box size in base pixels and hit damage.
                     knockback = 60, ky = 120, stun_t = 0.12, -- Horizontal/upward impulse and stun seconds.
@@ -260,7 +262,7 @@ return {
         --     damage_type = "slash", attack_id = "up_heavy", input = "heavy",
         --     weapon_class = "melee", state = "ground", action_tag = "heavy_attack",
         --     animation = "weapon_attack", cooldown = 0.3,
-        --     timeline = { startup = 0.08, recovery = 0.2, active_windows = {
+        --     timeline = { startup = 0.08, recovery = 0.05, active_windows = {
         --         { start = 0.08, duration = 0.15, hitboxes = {
         --             { width = 128, height = 108, damage = 2, knockback = 60, ky = 150,
         --               stun_t = 0.15, reaction_type = "heavy", parryable = false,
@@ -307,7 +309,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.14,
+                recovery = 0.04, -- Seconds after the last hit window closes.
             },
             combo_window = { start = 0.12, duration = 0.28 },
             combo_links = {
@@ -356,7 +358,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.15,
+                recovery = 0.05, -- Seconds after the last hit window closes.
             },
             combo_window = { start = 0.14, duration = 0.30 },
             combo_links = {
@@ -405,7 +407,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.18,
+                recovery = 0.06, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.20, actions = { dash = true, slide = true, backdash = true, blink = true, parry = true } },
@@ -449,7 +451,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.24,
+                recovery = 0.10, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.24, actions = { dash = true, slide = true, backdash = true, blink = true, parry = true } },
@@ -493,7 +495,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.22,
+                recovery = 0.08, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.24, actions = { dash = true, slide = true, backdash = true, blink = true, parry = true } },
@@ -541,7 +543,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.12,
+                recovery = 0.00, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.12, actions = { dash = true, backdash = true, blink = true, parry = true, jump = true } },
@@ -589,7 +591,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.16,
+                recovery = 0.04, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.16, actions = { dash = true, backdash = true, blink = true, parry = true } },
@@ -638,7 +640,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.12,
+                recovery = 0.00, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.16, actions = { dash = true, backdash = true, blink = true } },
@@ -679,7 +681,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.12,
+                recovery = 0.08, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.10, actions = { dash = true, slide = true, backdash = true, blink = true, parry = true, jump = true } },
@@ -731,7 +733,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.20,
+                recovery = 0.06, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.22, actions = { dash = true, slide = true, backdash = true, blink = true, parry = true } },
@@ -777,7 +779,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.22,
+                recovery = 0.08, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.24, actions = { dash = true, backdash = true, blink = true, parry = true } },
@@ -822,7 +824,7 @@ return {
                         },
                     },
                 },
-                recovery = 0.16,
+                recovery = 0.04, -- Seconds after the last hit window closes.
             },
             cancel_windows = {
                 { start = 0.16, actions = { dash = true, backdash = true, blink = true } },

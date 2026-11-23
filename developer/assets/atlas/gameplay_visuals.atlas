@@ -44,6 +44,9 @@ animations { id: "wall_damaged_light"   images { image: "/developer/assets/atlas
 animations { id: "wall_damaged_heavy"   images { image: "/developer/assets/atlas/interaction/wall_heavy.png" }       playback: PLAYBACK_NONE fps: 1 }
 animations { id: "wall_resist"          images { image: "/developer/assets/atlas/interaction/wall_resist.png" }      playback: PLAYBACK_NONE fps: 1 }
 animations { id: "light_glow_soft" images { image: "/developer/assets/atlas/effects/light_glow_soft.png" } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "boss_indicator_disc" images { image: "/developer/assets/atlas/effects/boss_indicator_disc.png" sprite_trim_mode: SPRITE_TRIM_MODE_OFF } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "boss_indicator_box" images { image: "/developer/assets/atlas/effects/boss_indicator_box.png" sprite_trim_mode: SPRITE_TRIM_MODE_OFF } playback: PLAYBACK_NONE fps: 1 }
+animations { id: "boss_indicator_ring" images { image: "/developer/assets/atlas/effects/boss_indicator_ring.png" sprite_trim_mode: SPRITE_TRIM_MODE_OFF } playback: PLAYBACK_NONE fps: 1 }
 animations { id: "water_distortion_mask" images { image: "/developer/assets/atlas/effects/water_distortion_mask.png" } playback: PLAYBACK_NONE fps: 1 }
 animations { id: "activate"             images { image: "/developer/assets/atlas/interaction/station_active.png" }    playback: PLAYBACK_ONCE_FORWARD fps: 12 }
 animations { id: "use"                  images { image: "/developer/assets/atlas/interaction/station_active.png" }    playback: PLAYBACK_ONCE_FORWARD fps: 12 }

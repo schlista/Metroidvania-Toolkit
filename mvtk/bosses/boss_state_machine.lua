@@ -8,10 +8,11 @@ local Util = require "mvtk.core.util"
 -- Telegraphs and movement are core encounter behavior. Literal requires are
 -- necessary here so Defold's dependency scanner bundles both Lua modules.
 local Telegraph = require "mvtk.bosses.boss_telegraph"
-local Invulnerability = Util.require_module("mvtk.combat.invulnerability")
 local BossAnimations = Util.require_module("mvtk.bosses.boss_animations")
 local MovementStrategies = require "mvtk.bosses.movement_strategies"
 local SafeSound = require "mvtk.audio.safe_sound"
+local Clock = require "mvtk.bosses.boss_clock"
+local Runtime = require "mvtk.bosses.attack_runtime"
 
 local function anim(boss, key)
     -- Core state-machine animations (idle/death) must play something even if
@@ -49,7 +50,7 @@ end
 -- Defaults are sourced from developer/config/boss_defaults.lua so users can
 -- tune them without editing code. Hard-coded fallbacks only kick in if the
 -- config file is missing entirely.
-local Defaults = Util.require_config("developer.config.boss_defaults", {
+local Fallbacks = {
     chase_speed = 120,
     attack_range = 150,
     min_chase_distance = 80,
@@ -58,20 +59,8 @@ local Defaults = Util.require_config("developer.config.boss_defaults", {
     attack_interval_min = 2.0,
     attack_interval_max = 4.0,
     idle_deadman_seconds = 8.0,
-})
-
--- Ask the Invulnerability system to hold the flag for `duration` seconds.
--- Used during phase transitions and the defeated state so the flag flips back
--- automatically — setting boss_data.invulnerable directly gets overwritten on
--- the next frame by boss.script's Invulnerability.update() sync.
-local function set_invulnerable(boss, duration, reason)
-    if not (boss and boss.boss_data) then return end
-    if Invulnerability and Invulnerability.start then
-        Invulnerability.start(boss.boss_data, duration or 0, reason or "state_machine")
-    else
-        boss.boss_data.invulnerable = true
-    end
-end
+}
+local Defaults = Util.require_config("developer.config.boss_defaults", Fallbacks)
 
 --- Boss states
 M.STATES = {
@@ -85,10 +74,12 @@ M.STATES = {
 
 --- Create a new state machine instance
 -- @param boss Boss instance
+-- @param attack_manager Supplies the live phase schedule to idle movement
 -- @return State machine instance
-function M.create(boss)
+function M.create(boss, attack_manager)
     local sm = {
         boss = boss,
+        attack_manager = attack_manager,
         current_state = M.STATES.IDLE,
         previous_state = nil,
         state_time = 0,
@@ -119,12 +110,107 @@ function M:update(dt)
     end
 end
 
+-- A draw may cross several decision boundaries. The state machine and the
+-- attack queue meet at those boundaries, while frame work still runs once.
+function M:advance_frame(previous, dt, motion_dt)
+    local boss = self.boss
+    local record = boss.boss_data
+    local now = previous + dt
+    self._state_at = self._state_at or previous - self.state_time
+    if self:is_state(M.STATES.ATTACKING) and not self.state_data.attack_started and Telegraph.refresh then
+        Telegraph.refresh(boss, self.state_data.telegraph_handle)
+    end
+    Runtime.begin_update(boss, previous, dt)
+
+    local first, last = Clock.steps(record, now)
+    local movement = false
+    if self:is_state(M.STATES.IDLE) then
+        boss._hold_idle_facing = first > last
+        movement = self:move_idle(boss:get_current_phase(), motion_dt, first <= last) or false
+        boss._hold_idle_facing = nil
+    end
+    for step = first, last do
+        local at = step * Clock.step
+        self:advance_state(at, now)
+        record._boss_clock_at = at
+        if self.attack_manager and self.attack_manager.tick_stagger then
+            self.attack_manager.tick_stagger(boss.boss_id, Clock.step)
+        end
+        if self:is_state(M.STATES.IDLE) and not Clock.reached(self._state_at, at) then
+            self:state_idle(Clock.step, movement)
+        end
+        if boss.phase_controller then boss.phase_controller:update(Clock.step) end
+    end
+    self:advance_state(now)
+    Runtime.finish_update(boss, motion_dt)
+    Runtime.advance(boss, now)
+    local lead = Clock.window_lead(dt)
+    self:finish_attack(now, lead)
+    if self:is_state(M.STATES.STUNNED) then self:finish_stun(now, lead) end
+    Runtime.prune(boss)
+    record._boss_clock_at = nil
+end
+
+function M:advance_state(at, draw_time)
+    local boss = self.boss
+    local record = boss.boss_data
+    local reached_at = math.min(at, draw_time or at)
+    local state, data = self.current_state, self.state_data
+    if state == M.STATES.ATTACKING and not data.pattern then
+        record._boss_clock_at = at
+        self:change_state(M.STATES.IDLE)
+        state, data = self.current_state, self.state_data
+    end
+    if state == M.STATES.ATTACKING and data.pattern and not data.attack_started then
+        local due = self._state_at + (data.pattern.telegraph_time or Defaults.telegraph_time)
+        if reached_at >= due then
+            Runtime.advance(boss, due)
+            record._boss_clock_at, boss._attack_due = due, due
+            self:start_attack()
+            boss._attack_due = nil
+        end
+    end
+    record._boss_clock_at = at
+    Runtime.advance(boss, reached_at)
+    local phase = boss.phase_controller
+    if phase and phase.advance_transition and phase:advance_transition(reached_at) then
+        state, data = self.current_state, self.state_data
+    end
+    self.state_time = math.max(0, at - self._state_at)
+    if state == M.STATES.ATTACKING then
+        data.attack_timer = self.state_time
+        self:finish_attack(at)
+    elseif state == M.STATES.STUNNED then
+        data.stun_timer = self.state_time
+        self:finish_stun(at, 0)
+    elseif state == M.STATES.TRANSITIONING then
+        self:state_transitioning(at - (self._transition_checked_at or self._state_at))
+        self._transition_checked_at = at
+    end
+end
+
+function M:prepare_locomotion(phase, dt)
+    MovementStrategies.prepare_frame(self.boss, phase, dt)
+end
+
+function M:update_locomotion(dt)
+    MovementStrategies.update_locomotion(self.boss, dt)
+end
+
+function M:interrupt_locomotion(reset_profile)
+    self.state_data.burrow_attack = nil
+    MovementStrategies.interrupt(self.boss, reset_profile)
+end
+
 --- Change to a new state
 -- @param new_state State to change to
 -- @param state_data Optional data for the new state
 function M:change_state(new_state, state_data)
     if self.current_state == new_state then
         return
+    end
+    if self.boss._locomotion and new_state ~= M.STATES.IDLE then
+        self:interrupt_locomotion()
     end
 
     -- Exit current state
@@ -138,6 +224,8 @@ function M:change_state(new_state, state_data)
     self.current_state = new_state
     self.state_time = 0
     self.state_data = state_data or {}
+    if self._state_at then self._state_at = Clock.time(self.boss.boss_data) end
+    self._transition_checked_at = nil
 
     print(string.format("[BOSS_SM] %s: %s -> %s", boss_label(self.boss), self.previous_state, self.current_state))
 
@@ -170,8 +258,49 @@ function M:enter_idle()
     self.state_data.idle_timer = 0
 end
 
-function M:state_idle(dt)
-    self.state_data.idle_timer = self.state_data.idle_timer + dt
+local function warn_if_idle(sm, phase, reasons, dt)
+    local limit = Defaults.idle_deadman_seconds or Fallbacks.idle_deadman_seconds
+    if limit <= 0 then return end
+    if sm._idle_phase ~= phase then
+        sm._idle_phase, sm._idle_without_attack, sm._idle_warnings = phase, 0, {}
+    end
+    sm._idle_without_attack = sm._idle_without_attack + dt
+    if not Clock.reached(sm._idle_without_attack, limit) then return end
+
+    if not reasons then return end
+    local cause
+    if reasons.status == "no_entries" then
+        cause = "the phase lists no attacks"
+    elseif reasons.status == "range" then
+        cause = string.format("none of its attacks are in range (nearest usable range: %g pixels)",
+            reasons.nearest_range)
+    elseif reasons.status == "cooldown" then
+        cause = "all otherwise usable attacks are on cooldown"
+    elseif reasons.status == "conditions" then
+        cause = "the attack conditions have never been met"
+    elseif reasons.status == "height" then
+        cause = "none of its floor attacks reach the player's height"
+    elseif reasons.status == "floor" then
+        cause = "its floor attacks could not find a floor to strike"
+    end
+    if not cause or sm._idle_warnings[reasons.status] then return end
+    sm._idle_warnings[reasons.status] = true
+    local config = sm.boss.config or {}
+    local label = boss_label(sm.boss)
+    _orig_print(string.format("[BOSS_SM] WARNING: %s (%s) is idle because %s",
+        config.name or label, label, cause))
+end
+
+function M:move_idle(phase, dt, decision)
+    if not phase or self.boss._active_charge then return end
+    local schedule = self.attack_manager and self.attack_manager.get_attack_schedule
+        and self.attack_manager.get_attack_schedule(self.boss, phase)
+    return MovementStrategies.run(self.boss, phase, Defaults, dt, schedule and schedule.approach_distance, decision)
+end
+
+function M:state_idle(dt, movement)
+    if self.boss._active_charge then return end
+    self.state_data.idle_timer = self._state_at and self.state_time or self.state_data.idle_timer + dt
 
     -- Check if should attack
     local current_phase = self.boss:get_current_phase()
@@ -185,37 +314,42 @@ function M:state_idle(dt)
         return
     end
 
-    -- Use the same profile-aware metric that stops movement. A grounded boss
-    -- can have a different root Y from the player even when both are visibly
-    -- standing on the same floor.
-    local distance_to_player = MovementStrategies.attack_distance(self.boss, current_phase)
-    local config = self.boss.config or {}
-    local attack_range = (current_phase and current_phase.attack_range)
-        or config.attack_range
-        or Defaults.attack_range
-    local in_attack_range = distance_to_player <= attack_range
-
     -- Dispatch per-phase movement. Strategy handles position + animation;
     -- falls back to ground_chase when no profile is set.
-    if MovementStrategies and MovementStrategies.run then
-        MovementStrategies.run(self.boss, current_phase, Defaults, dt)
-    end
+    if movement == nil then movement = self:move_idle(current_phase, dt) end
 
     -- Attack interval bookkeeping.
-    local min_interval = current_phase.attack_interval and current_phase.attack_interval.min or 2.0
-    local max_interval = current_phase.attack_interval and current_phase.attack_interval.max or 4.0
+    local interval = current_phase.attack_interval or {}
+    local min_interval = interval.min or Defaults.attack_interval_min or Fallbacks.attack_interval_min
+    local max_interval = interval.max or Defaults.attack_interval_max or Fallbacks.attack_interval_max
     if not self.state_data.next_attack_time then
         self.state_data.next_attack_time = math.random() * (max_interval - min_interval) + min_interval
     end
 
-    if self.state_data.idle_timer >= self.state_data.next_attack_time and in_attack_range then
-        local attack = self.boss:select_attack()
-        if attack then
-            self:change_state(M.STATES.ATTACKING, {attack = attack})
-        else
-            self.state_data.idle_timer = 0
-            self.state_data.next_attack_time = math.random() * (max_interval - min_interval) + min_interval
+    local reasons
+    local age = self.state_data.idle_timer + (self._state_at and Clock.step / 2 or 0)
+    if Clock.reached(age, self.state_data.next_attack_time)
+        and (not (self.boss._locomotion or self.boss._returning_to_leash)
+            or not MovementStrategies.waiting_to_attack(self.boss)) then
+        local pending = self.state_data.burrow_attack
+        if not pending then
+            local attack
+            attack, reasons = self.boss:select_attack()
+            if attack then pending = {attack = attack, entry = self.boss._selected_attack_entry} end
         end
+        if pending then
+            if not self.boss._locomotion or MovementStrategies.may_attack(self.boss) then
+                self:change_state(M.STATES.ATTACKING, pending)
+            else
+                -- Picking consumes sequence/shuffle entries. Keep that pick
+                -- through the emergence warning and start it only once.
+                self.state_data.burrow_attack = pending
+            end
+        end
+    end
+    if self.current_state == M.STATES.IDLE then
+        if movement == "moving" and reasons and reasons.status == "range" then reasons = nil end
+        warn_if_idle(self, current_phase, reasons, dt)
     end
 
     -- Face player unless the active phase locks facing.
@@ -231,43 +365,6 @@ function M:exit_idle()
 end
 
 --[[============================================================================
-    MOVING STATE
-==============================================================================]]
-
-function M:enter_moving()
-    print(string.format("[BOSS_SM] %s entered MOVING", boss_label(self.boss)))
-end
-
-function M:state_moving(dt)
-    -- Check if reached target position
-    if self.state_data.target_position then
-        local pos = self.boss:get_position()
-        local distance = vmath.length(self.state_data.target_position - pos)
-
-        if distance <= (self.state_data.stop_distance or 10) then
-            -- Reached destination
-            if self.state_data.on_arrival then
-                self.state_data.on_arrival()
-            else
-                self:change_state(M.STATES.IDLE)
-            end
-        else
-            -- Keep moving
-            local move_speed = (self.state_data.speed or 100) * (self.boss.boss_data and self.boss.boss_data.speed_multiplier or 1.0)
-            self.boss:move_toward(self.state_data.target_position, move_speed, dt)
-        end
-    else
-        -- No target, return to idle
-        self:change_state(M.STATES.IDLE)
-    end
-end
-
-function M:exit_moving()
-    self.state_data.target_position = nil
-    self.state_data.on_arrival = nil
-end
-
---[[============================================================================
     ATTACKING STATE
 ==============================================================================]]
 
@@ -278,19 +375,21 @@ function M:enter_attacking()
     self.state_data.attack_timer = 0
     self.state_data.attack_started = false
     self.state_data.attack_finished = false
+    if self._state_at then Runtime.begin_turn(self.boss) end
 
     -- Spawn attack telegraph immediately so the wind-up is visible.
     -- Resolve the pattern once for the whole attack. A phase can change while
     -- an attack is winding up; keeping one snapshot ensures the telegraph,
     -- execution, frame updates, and cancellation all use the same authored
     -- Tiled values.
-    local pattern = self.boss.get_attack_pattern and self.boss:get_attack_pattern(attack)
+    local pattern = self.boss.get_attack_pattern and self.boss:get_attack_pattern(attack, self.state_data.entry)
     self.state_data.pattern = pattern
     if Telegraph and pattern then
         -- Lock the warning to the same horizontal facing the attack will use.
         -- This is especially important for charges, whose telegraph spans the
         -- full committed lane before movement begins.
-        if self.boss.face_player then
+        local phase = self.boss.get_current_phase and self.boss:get_current_phase()
+        if self.boss.face_player and not (phase and phase.facing_lock == true) then
             self.boss:face_player()
         end
         if pattern.type == "charge" then
@@ -321,40 +420,56 @@ function M:state_attacking(dt)
 
     -- Telegraph phase
     local telegraph_time = pattern.telegraph_time or Defaults.telegraph_time
+    if not self.state_data.attack_started and Telegraph and Telegraph.refresh then
+        Telegraph.refresh(self.boss, self.state_data.telegraph_handle)
+    end
     if not self.state_data.attack_started and self.state_data.attack_timer >= telegraph_time then
-        -- Execute attack
-        self.boss:execute_attack(attack, pattern)
-        self.state_data.attack_started = true
+        self:start_attack()
     end
 
-    -- Stateful attacks (such as charges) own their movement and hit checks
-    -- while ATTACKING. Fire-and-forget attacks simply return false here.
-    local runtime_active = false
-    if self.state_data.attack_started and self.boss.update_attack then
-        runtime_active = self.boss:update_attack(attack, pattern, dt) and true or false
-    end
+    self:finish_attack()
+end
 
-    -- Attack duration
-    local attack_duration = pattern.duration or Defaults.attack_duration
-    local total_time = telegraph_time + attack_duration
+function M:start_attack()
+    local data = self.state_data
+    self._idle_phase = nil
+    self.boss:execute_attack(data.attack, data.pattern)
+    data.attack_started = true
+end
 
-    if self.state_data.attack_timer >= total_time and not runtime_active then
-        -- Attack finished
+-- The boss calls this again after advancing instances, so a charge can finish
+-- on the same frame as its last travel/recovery step.
+function M:finish_attack(at, lead)
+    if self.current_state ~= M.STATES.ATTACKING then return end
+    local pattern = self.state_data.pattern
+    if not pattern then return end
+    local total_time = (pattern.telegraph_time or Defaults.telegraph_time)
+        + (pattern.duration or Defaults.attack_duration)
+    local elapsed = at and (at - self._state_at) or self.state_data.attack_timer
+    if self.state_data.attack_started and Clock.reached(elapsed + (lead or 0), total_time)
+        and not Runtime.is_busy(self.boss) then
+        if at then
+            -- A hit or move that holds the turn past the attack's own
+            -- deadline hands control back on its reference decision edge.
+            local turn_end = Clock.reference_deadline(Runtime.turn_end(self.boss))
+            self.boss.boss_data._boss_clock_at = math.max(self._state_at + total_time, turn_end)
+        end
         self:change_state(M.STATES.IDLE)
     end
 end
 
 function M:exit_attacking()
-    local attack = self.state_data.attack
-    local pattern = self.state_data.pattern
-    if pattern and self.boss.cancel_attack then
-        self.boss:cancel_attack(attack, pattern)
+    local charge = self.boss._active_charge
+    if charge and charge.finished then
+        self.boss._active_charge = nil
+        charge.instance:on_cancel(nil)
     end
     self.boss._attack_facing_locked = nil
     if Telegraph and self.state_data.telegraph_handle then
         -- Telegraph self-despawns via its own duration, but cancel defensively
         -- so interrupted attacks don't leave stale visuals behind.
-        Telegraph.cancel(self.state_data.telegraph_handle)
+        local leave = Telegraph.leave_state or Telegraph.cancel
+        leave(self.state_data.telegraph_handle)
         self.state_data.telegraph_handle = nil
     end
     self.state_data.attack = nil
@@ -374,22 +489,9 @@ function M:enter_transitioning()
 
     self.state_data.transition_timer = 0
 
-    -- Make boss invulnerable during transition
-    if transition and transition.invulnerable then
-        self.boss.invulnerable = true
-    end
-
     -- Play transition animation
     if transition and transition.animation then
         self.boss:play_animation(transition.animation)
-    end
-
-    -- Camera shake
-    if transition and transition.camera_shake then
-        local shake = transition.camera_shake
-        -- Integration point for camera shake
-        print(string.format("[BOSS_SM] Camera shake: intensity=%d, duration=%.1f",
-            shake.intensity or 10, shake.duration or 2.0))
     end
 
     -- Play sound
@@ -411,13 +513,11 @@ function M:state_transitioning(dt)
 
     if self.state_data.transition_timer >= duration then
         -- Transition complete
-        self.boss.invulnerable = false
         self:change_state(M.STATES.IDLE)
     end
 end
 
 function M:exit_transitioning()
-    self.boss.invulnerable = false
     self.state_data.transition = nil
     self.state_data.transition_timer = nil
 end
@@ -430,8 +530,22 @@ function M:enter_stunned()
     print(string.format("[BOSS_SM] %s entered STUNNED", boss_label(self.boss)))
     self.state_data.stun_timer = 0
     if self.boss.boss_data then self.boss.boss_data.staggered = true end
-    -- exit_attacking cancels frame-driven motion. Already scheduled C.delay
-    -- callbacks finish; entering this state does not revoke them.
+    -- Knockdown interrupts pending hits. Persistent attacks stay until defeat.
+    require("mvtk.bosses.attack_runtime").cancel(self.boss, "stagger")
+end
+
+function M:restart_stun(duration)
+    self.state_data.stun_duration = duration
+    self.state_data.stun_timer = 0
+    if self._state_at then self._state_at = Clock.time(self.boss.boss_data) end
+end
+
+function M:finish_stun(at, lead)
+    local due = self._state_at + (self.state_data.stun_duration or 2.0)
+    if Clock.reached(at + lead, due) then
+        self.boss.boss_data._boss_clock_at = due
+        self:change_state(M.STATES.IDLE)
+    end
 end
 
 function M:state_stunned(dt)
@@ -442,12 +556,6 @@ function M:state_stunned(dt)
     if self.state_data.stun_timer >= stun_duration then
         -- Stun ended
         self:change_state(M.STATES.IDLE)
-        return
-    end
-
-    -- Visual feedback (flashing, stars, etc.)
-    if math.floor(self.state_data.stun_timer * 10) % 2 == 0 then
-        -- Flash sprite
     end
 end
 
@@ -467,9 +575,6 @@ end
 function M:enter_defeated()
     print(string.format("[BOSS_SM] %s entered DEFEATED", boss_label(self.boss)))
 
-    self.state_data.death_timer = 0
-    self.boss.invulnerable = true
-
     -- Play death animation through the shared boss animation contract.
     self.boss:play_animation(anim(self.boss, "death"))
 
@@ -478,29 +583,10 @@ function M:enter_defeated()
         SafeSound.play(self.boss.config.audio.death)
     end
 
-    -- Camera shake
-    print("[BOSS_SM] Death camera shake")
-
     -- Notify manager
     if self.boss.on_defeat then
         self.boss:on_defeat()
     end
-end
-
-function M:state_defeated(dt)
-    self.state_data.death_timer = self.state_data.death_timer + dt
-
-    -- Wait for death animation/sequence to finish
-    local death_duration = 3.0
-
-    if self.state_data.death_timer >= death_duration then
-        -- Death sequence complete
-        -- Boss game object will be deleted by manager
-    end
-end
-
-function M:exit_defeated()
-    -- No exit from defeated state
 end
 
 --[[============================================================================
@@ -512,16 +598,6 @@ end
 -- @param data Optional state data
 function M:force_state(state, data)
     self:change_state(state, data)
-end
-
---- Check if boss can be damaged in current state
--- @return true if vulnerable
-function M:is_vulnerable()
-    return not (
-        self.current_state == M.STATES.TRANSITIONING or
-        self.current_state == M.STATES.DEFEATED or
-        self.boss.invulnerable
-    )
 end
 
 --- Get time in current state

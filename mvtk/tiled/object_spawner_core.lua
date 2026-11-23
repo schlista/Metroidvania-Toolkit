@@ -367,6 +367,11 @@ local function infer_object_type(object)
         or props.health_max ~= nil
         or props.attack_interval_min ~= nil
         or props.attack_interval_max ~= nil
+        or has("moveset")
+        or props.telegraph_scale ~= nil
+        or props.cooldown_scale ~= nil
+        or props.teleport_interval ~= nil
+        or has("teleport_anchors")
         or props.transition_type ~= nil
         or props.transition_duration ~= nil
     then

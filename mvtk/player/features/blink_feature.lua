@@ -1,3 +1,4 @@
+local Timers = require "mvtk.player.timers"
 local M = { id = "blink", order = 30 }
 
 local function config(self)
@@ -59,10 +60,14 @@ function M.pre_physics(self)
         self._previous_frame_position.x, self._previous_frame_position.y = destination.x, destination.y
     end
     self.vx, self.vy = cfg.keep_horizontal_speed and vx or 0, cfg.exit_vertical_speed or 0
+    self._jump_cut_pending = nil
+    self._wall_jump_steering = nil
     self._teleport_chain_t = 0
     state.dashing, state.sliding, state.chain = false, false, nil
     if (cfg.iframes or 0) > 0 then
-        require("mvtk.player.player_stats").set_source("ability:blink", {invulnerable = true}, {duration = cfg.iframes})
+        require("mvtk.player.player_stats").set_source("ability:blink", {invulnerable = true}, {
+            duration = cfg.iframes, reference_window = true,
+        })
     end
     self._ability_use("blink")
     local FX = require "mvtk.fx.fx"
@@ -72,14 +77,21 @@ function M.pre_physics(self)
 end
 
 function M.post_physics(self, dt)
+    local dash_exit, slide_exit = self._dash_exit_elapsed, self._slide_exit_elapsed
+    self._dash_exit_elapsed, self._slide_exit_elapsed = nil, nil
     if require("mvtk.core.pause").get() then return end
     local state, cfg = self._host.features.blink, config(self)
-    self._teleport_chain_t = math.max(0, (self._teleport_chain_t or 0) - (dt or 0))
+    self._teleport_chain_t = self._teleport_chain_t or 0
+    Timers.tick_window(self, "_teleport_chain_t", dt or 0)
     local dashing, sliding = (self._dash_t or 0) > 0, (self._slide_t or 0) > 0
     if state.dashing and not dashing and cfg.from_air_dash ~= false then
-        self._teleport_chain_t, state.chain = cfg.chain_grace or 0.08, "dash"
+        Timers.start_window(self, "_teleport_chain_t", cfg.chain_grace or 0.08, false,
+            dash_exit and dash_exit - Timers.REFERENCE_STEP)
+        state.chain = "dash"
     elseif state.sliding and not sliding and self.grounded and cfg.from_ground_slide ~= false then
-        self._teleport_chain_t, state.chain = cfg.chain_grace or 0.08, "slide"
+        Timers.start_window(self, "_teleport_chain_t", cfg.chain_grace or 0.08, false,
+            slide_exit and slide_exit - Timers.REFERENCE_STEP)
+        state.chain = "slide"
     end
     state.dashing, state.sliding = dashing, sliding
     if self._teleport_chain_t <= 0 then state.chain = nil end

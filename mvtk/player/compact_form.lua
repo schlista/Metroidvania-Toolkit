@@ -1,6 +1,7 @@
 -- Crawl body and entry burst. All mutable state belongs to the player's host.
 -- Not a literal require: player_state requires this module, and Bob refuses require cycles.
 local PLAYER_STATE_MODULE = "mvtk.player.player_state"
+local Timers = require "mvtk.player.timers"
 local M = {}
 
 local function state(self)
@@ -60,11 +61,12 @@ function M.enter(self)
     self._super_jump_ready = false
     local charge = self._host.features.super_jump
     if charge then charge.charge, charge.grace = 0, 0 end
-    self._jump_buffer_t, self._coyote_t = 0, 0
+    Timers.clear_window(self, "_jump_buffer_t")
+    Timers.clear_window(self, "_coyote_t")
     self._teleport_request, self._teleport_chain_t = nil, 0
     self._compact_active = true
     self._compact_mode_text = "Compact"
-    s.roll = math.max(0, cfg.roll_time or 0.25)
+    Timers.start_window(s, "roll", math.max(0, cfg.roll_time or 0.25), true)
     s.direction = self.facing == -1 and -1 or 1
     apply_body(self, s.body)
     swap(self, true)
@@ -72,7 +74,7 @@ function M.enter(self)
         { speed_mult = math.max(0.25, math.min(3, cfg.move_speed_mult or 0.6)) }, { layer = "temporary" })
     if cfg.roll_iframes and s.roll > 0 then
         require("mvtk.player.player_stats").set_source("ability:compact_form_roll",
-            { invulnerable = true }, { layer = "temporary", duration = s.roll })
+            { invulnerable = true }, { layer = "temporary", duration = s.roll, reference_window = true })
     end
     if self._ability_use then self._ability_use("compact_form") end
     return true
@@ -95,6 +97,14 @@ function M.has_headroom(self)
     return true
 end
 
+function M.end_roll(self)
+    local s = state(self)
+    self._compact_roll_exit = nil
+    s.roll_travel = nil
+    Timers.clear_window(s, "roll")
+    require("mvtk.player.player_stats").clear_source("ability:compact_form_roll")
+end
+
 function M.stand(self, force)
     local s = state(self)
     if not self._compact_active then return true end
@@ -106,7 +116,9 @@ function M.stand(self, force)
         self._bone_physics.foot_floor_adjust, self._bone_physics.head_offset = saved.ctx_foot, saved.head
     end
     self._compact_active, self._compact_mode_text = nil, nil
-    s.body, s.roll = nil, 0
+    self._compact_roll_exit = nil
+    s.body, s.roll_travel = nil, nil
+    Timers.start_window(s, "roll", 0)
     swap(self, false)
     require("mvtk.player.player_stats").clear_source("ability:compact_form")
     require("mvtk.player.player_stats").clear_source("ability:compact_form_roll")
@@ -118,21 +130,30 @@ function M.jump(self)
     if M.stand(self) then return true end
     if config(self).allow_jump and self.grounded then
         self.vy, self.grounded = self._jump_speed, false
-        self._coyote_t, self._jump_buffer_t = 0, 0
+        self._jump_cut_pending = true
+        Timers.clear_window(self, "_coyote_t")
+        Timers.clear_window(self, "_jump_buffer_t")
         return true
     end
     return false
 end
 
 function M.pre_physics(self, dt, input)
+    self._compact_roll_exit = nil
     if require("mvtk.core.pause").get() then return end
     if not self._compact_active then return end
     if self._in_water or (input and (input.move_y or 0) > 0.5) then
         if M.stand(self) then return end
     end
     local s = state(self)
+    s.roll_travel = nil
     if (s.roll or 0) > 0 then
-        s.roll = math.max(0, s.roll - dt)
+        local active, travel, offset = Timers.step_window(s, "roll", dt)
+        if active then
+            s.roll_travel = travel
+        elseif offset and not self._is_dead and (self._stun_t or 0) <= 0 then
+            self._compact_roll_exit = { offset = offset, dx = travel > 0 and self.vx * travel or nil }
+        end
     end
 end
 
@@ -145,19 +166,21 @@ function M.owns_motion(self, dt, input)
     require(PLAYER_STATE_MODULE).update(self, dt, input)
     if not self._is_dead and (self._stun_t or 0) <= 0 then
         self.vx = (self._cfg.walk_speed or 1200) * (config(self).roll_speed_mult or 1) * s.direction
+        local travel = s.roll_travel or dt
+        self._move_dx_correction = travel ~= dt and self.vx * (travel - dt) or nil
         self.facing = s.direction
     end
-    return true
+    return true, true
 end
 
 function M.reset(self, reason)
+    self._compact_roll_exit = nil
     local s = state(self)
     if reason == "teleport" and self._compact_active and s and s.body then
         -- reset_motion_state has already restored base halves. Never shrink twice.
         apply_body(self, s.body)
         swap(self, true)
-        s.roll = 0
-        require("mvtk.player.player_stats").clear_source("ability:compact_form_roll")
+        M.end_roll(self)
         return
     end
     M.stand(self, true)

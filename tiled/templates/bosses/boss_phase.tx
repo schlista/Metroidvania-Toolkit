@@ -26,6 +26,9 @@
      <property name="attack_interval_min" type="float" value="2"/>
      <property name="attack_interval_max" type="float" value="4"/>
      <property name="attack_range" type="float" value="0"/>
+     <property name="moveset" propertytype="boss_movesets" value="none"/>
+     <property name="telegraph_scale" type="float" value="1"/>
+     <property name="cooldown_scale" type="float" value="1"/>
      <property name="damage_multiplier" type="float" value="1"/>
      <property name="stagger_immune" type="bool" value="false"/>
      <property name="charge_speed" type="float" value="-1"/>
@@ -41,6 +44,8 @@
      <property name="behavior" propertytype="boss_behaviors" value="aggressive"/>
      <property name="speed_multiplier" type="float" value="1"/>
      <property name="movement_profile" propertytype="movement_profiles" value="ground_chase"/>
+     <property name="teleport_anchors" propertytype="boss_teleport_anchors" value=""/>
+     <property name="teleport_interval" type="float" value="0"/>
      <property name="facing_lock" type="bool" value="false"/>
      <property name="hover_height" type="float" value="0"/>
      <property name="jump_height" type="float" value="0"/>
@@ -68,7 +73,7 @@
      <property name="transition_new_music" propertytype="boss_music_tracks" value="none"/>
     </properties>
    </property>
-   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+   <property name="mvtk_template_version" type="string" value="2.10.0"/>
   </properties>
   <point/>
  </object>

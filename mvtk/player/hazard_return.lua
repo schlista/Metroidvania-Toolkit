@@ -1,6 +1,7 @@
 -- Transient return targets and delivery state; all movement uses RoomArrival.
 -- Keep dependencies lazy: real player harnesses load every feature.
 local M = {}
+local Timers = require "mvtk.player.timers"
 local function state(self)
     self._hazard_return = self._hazard_return or {}
     return self._hazard_return
@@ -93,7 +94,7 @@ local function contact(self, message)
     local s = state(self)
     local Rooms = require "mvtk.map.streaming.room_manager"
     if self._is_dead or not self.pos or not Rooms.is_startup_ready() or self._room_arrival or s.pending then return end
-    if (self._frame_counter or 0) <= (s.settle_until or -1)
+    if (self._surface_active_elapsed or 0) <= (s.settle_until or -1) + 1e-9
         and (message.rect_w or 0) > 0 and (message.rect_h or 0) > 0 then
         if math.abs(self.pos.x-message.rect_x) > message.rect_w/2 + 2*(self.collider_half_width or 0)
             or math.abs(self.pos.y-message.rect_y) > message.rect_h/2 + 3*(self.collider_half_height or 0) then return end
@@ -151,11 +152,13 @@ end
 function M.reset(self, reason)
     local s = state(self)
     if reason == "teleport" then
-        s.settle_until = (self._frame_counter or 0)+2
+        s.settle_until = (self._surface_active_elapsed or 0) + 2 * Timers.REFERENCE_STEP
         local pending, delivery = s.pending, self._room_arrival_delivery
         s.pending = nil
         if pending and delivery and delivery.hazard_return_request == pending.request then
-            self._respawn_grace_timer = math.max(self._respawn_grace_timer or 0,pending.grace)
+            if pending.grace > (self._respawn_grace_timer or 0) then
+                Timers.start_combat_window(self, "_respawn_grace_timer", pending.grace)
+            end
             require("mvtk.core.game_events").emit("hazard_return",{room_id=pending.room_id,lethal=pending.lethal})
         elseif enabled() then s.zone = nil; require("mvtk.player.safe_ground").forget(self) end
     elseif reason == "death" then s.zone,s.pending = nil,nil

@@ -4,6 +4,9 @@
 local PU = require "mvtk.prefabs.prefab_utils"
 local Spawn = require "mvtk.enemies.enemy_spawn_service"
 local EncounterPhase = require "mvtk.bosses.encounter_phase"
+local Pause = require "mvtk.core.pause"
+local Clock = require "mvtk.bosses.boss_clock"
+local Timers = require "mvtk.player.timers"
 local DebugOk, Debug = pcall(require, "developer.config.debug_config")
 local TimeOk, Time = pcall(require, "mvtk.core.time")
 
@@ -164,6 +167,7 @@ local function spawn_adds(self, phase)
     else
         dlog_throttle(self, "spawn_zero", 2.0, string.format("Summon attempt produced 0 adds (type=%s)", tostring(enemy_type)))
     end
+    return spawned > 0
 end
 
 local function apply_props(self, props)
@@ -226,6 +230,8 @@ function init(self)
 end
 
 function update(self, dt)
+    dt = Clock.delta(dt, Pause)
+    if dt <= 0 then return end
     if self.start_active ~= true then
         if not self._debug_disabled_logged then
             dlog(self, "Spawner inactive: start_active=false")
@@ -257,10 +263,10 @@ function update(self, dt)
         return
     end
 
-    self.timer = (self.timer or 0) - dt
-    if self.timer <= 0 then
-        spawn_adds(self, phase)
-        self.timer = tonumber(self.spawn_interval) or 4.0
+    local interval = tonumber(self.spawn_interval) or 4.0
+    local count = Timers.periodic_deadlines(self, "timer", interval, dt)
+    for _ = 1, count do
+        if not spawn_adds(self, phase) then break end
     end
 end
 

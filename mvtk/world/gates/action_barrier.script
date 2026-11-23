@@ -415,7 +415,7 @@ local function play_locked_feedback(self)
     if config.interaction and config.interaction.shake_on_hit then
         local original = go.get_position()
         go.animate(".", "position.x", go.PLAYBACK_ONCE_PINGPONG, original.x + 5, go.EASING_LINEAR, 0.05, 0, nil, go.PLAYBACK_LOOP_PINGPONG)
-        timer.delay(0.2, false, function()
+        require("mvtk.player.timers").schedule_native(self, 0.2, function()
             go.set_position(original)
         end)
     end
@@ -469,7 +469,7 @@ local function handle_unlocked_state(self, opts)
         if has_sprite() then
             msg.post("#sprite", "play_animation", {id = hash("break")})
         end
-        timer.delay(0.5, false, function()
+        require("mvtk.player.timers").schedule_native(self, 0.5, function()
             go.delete()
         end)
     else
@@ -496,7 +496,7 @@ local function restore_locked_state(self, reason)
     require("mvtk.tiled.object_presentation").visible(true)
     require("mvtk.tiled.object_presentation").restore("closed")
     if self._unlock_timer then
-        timer.cancel(self._unlock_timer)
+        require("mvtk.player.timers").cancel_native(self, self._unlock_timer)
         self._unlock_timer = nil
     end
 
@@ -540,7 +540,7 @@ local function start_timed_unlock(self, duration, source)
     end
 
     if self._unlock_timer then
-        timer.cancel(self._unlock_timer)
+        require("mvtk.player.timers").cancel_native(self, self._unlock_timer)
         self._unlock_timer = nil
     end
 
@@ -562,7 +562,7 @@ local function start_timed_unlock(self, duration, source)
         post_particlefx(self, "stop")
     end
 
-    self._unlock_timer = timer.delay(duration, false, function()
+    self._unlock_timer = require("mvtk.player.timers").schedule_native(self, duration, function()
         self._unlock_timer = nil
         GateManager.lock_gate(self.gate_id_str, "timer_expired")
     end)
@@ -1231,12 +1231,16 @@ function final(self)
         GateManager.unregister_gate_instance(self.gate_id_str, msg.url())
     end
     if self._unlock_timer then
-        timer.cancel(self._unlock_timer)
+        require("mvtk.player.timers").cancel_native(self, self._unlock_timer)
         self._unlock_timer = nil
     end
 end
 
 function update(self, dt)
+    if self._world_clock then
+        local Timers = require "mvtk.player.timers"
+        Timers.tick_native(self, dt, Timers.world_scale(dt, require("mvtk.core.pause")))
+    end
     if self.unlocked then
         local interaction = self.config and self.config.interaction or nil
         if self.config and self.config.type == "resource_requirement"

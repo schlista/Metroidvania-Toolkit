@@ -3,8 +3,9 @@
 local Keys = require "mvtk.player.stat_keys"
 local M = { LEASE_TICKS = 3 }
 local sources, listeners, warned = {}, {}, {}
-local cache, dirty, revision, tick_count, next_listener = {}, true, 0, 0, 0
+local cache, dirty, revision, next_listener = {}, true, 0, 0
 local ledger, ledger_handle
+local Timers
 
 local function copy(values)
     local result = {}
@@ -65,7 +66,20 @@ function M.set_source(id, values, opts)
     end
     local old = sources[id]
     local source = { layer = layer, values = accepted, group = opts.group,
-        duration = opts.duration, lease = opts.lease == true, refreshed_at = tick_count }
+        duration = opts.duration, lease = opts.lease == true }
+    if source.lease then
+        Timers = Timers or require "mvtk.player.timers"
+        Timers.start_window(source, "lease_remaining", (M.LEASE_TICKS + 1) * Timers.REFERENCE_STEP)
+    end
+    if opts.duration then
+        Timers = Timers or require "mvtk.player.timers"
+        if opts.reference_window then
+            Timers.start_window(source, "duration", opts.duration)
+            source.reference_window = true
+        else
+            Timers.start_combat_window(source, "duration", opts.duration)
+        end
+    end
     sources[id] = source
     if not old or old.layer ~= layer or old.group ~= source.group or old.lease ~= source.lease
         or not equal(old.values, accepted) then changed("set", id) end
@@ -109,12 +123,15 @@ end
 function M.tick(dt, active)
     if not active then return end
     ensure_ledger()
-    tick_count = tick_count + 1
     local expired = {}
     for id, source in pairs(sources) do
-        if source.duration then source.duration = math.max(0, source.duration - math.max(0, dt)) end
-        if (source.duration and source.duration <= 0)
-            or (source.lease and tick_count - source.refreshed_at > M.LEASE_TICKS) then
+        if source.reference_window then
+            Timers.tick_window(source, "duration", math.max(0, dt))
+        elseif source.duration then
+            Timers.tick_combat_deadline(source, "duration", math.max(0, dt))
+        end
+        local lease_expired = source.lease and Timers.tick_deadline(source, "lease_remaining", math.max(0, dt))
+        if (source.duration and source.duration <= 0) or lease_expired then
             expired[#expired + 1] = id
         end
     end
@@ -235,7 +252,7 @@ function M.reset_all()
     if ledger then ledger.unregister_listener(ledger_handle) end
     ledger, ledger_handle = nil, nil
     sources, listeners, warned, cache = {}, {}, {}, {}
-    dirty, revision, tick_count, next_listener = true, 0, 0, 0
+    dirty, revision, next_listener = true, 0, 0
 end
 
 M.MULTIPLIER_SOURCE = { id = "stats", order = 30, challenge = false, range = { 0, 10 },

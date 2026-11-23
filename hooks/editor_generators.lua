@@ -175,6 +175,15 @@ _C.write_sized_rect_generated_go = write_sized_rect_generated_go
 
 local AuthoredProxy = (function()
     local M = {}
+    local PropertyFlattener = require "mvtk.tiled.property_flattener"
+
+    function M.boss_props_for_bake(obj, map)
+        local inherited = map.mvtk_boss_inherited and map.mvtk_boss_inherited[obj.id]
+        if not inherited then return obj end
+        local explicit = PropertyFlattener.flatten(obj.properties)
+        for field in pairs(inherited) do explicit[field] = nil end
+        return setmetatable({properties = explicit, boss_export_has_provenance = true}, {__index = obj})
+    end
 
     local OPTIONAL_BOSS_SPAWN_TEXT_FIELDS = {
         intro_animation = true,
@@ -195,15 +204,19 @@ local AuthoredProxy = (function()
     local function append_text_props_from_object(props, obj, field_ids, optional_fields)
         for _, field_id in ipairs(field_ids) do
             local value = get_prop_value(obj, field_id)
-            if value == nil then value = BossFeedbackSettings.defaults[field_id] end
             if optional_fields and optional_fields[field_id] then
                 value = optional_id(value)
             end
-            if (field_id ~= "weak_to" and field_id ~= "resist_to" and field_id ~= "immune_to" and field_id ~= "vulnerable_to" and field_id ~= "status_immune")
-                or (value ~= nil and value ~= "") then
-                props[#props + 1] = text_prop(field_id, value or "")
+            local default = BossFeedbackSettings.defaults[field_id] or ""
+            if value ~= nil and value ~= default then
+                props[#props + 1] = text_prop(field_id, value)
             end
         end
+    end
+
+    local function boss_type_from_object(obj)
+        local preset = optional_id(get_prop_value(obj, "boss_preset"))
+        return preset ~= "" and preset or optional_id(get_prop_value(obj, "boss_type"))
     end
 
     local function infer_boss_visual_type(component_id)
@@ -225,14 +238,10 @@ local AuthoredProxy = (function()
     local function append_boss_spawn_text_props_from_object(props, obj, field_ids, room_id)
         append_text_props_from_object(props, obj, field_ids, OPTIONAL_BOSS_SPAWN_TEXT_FIELDS)
 
-        local boss_preset = OP.get_via(get_prop_value, obj, "boss_preset", "")
-        if boss_preset == nil or tostring(boss_preset) == "" or tostring(boss_preset) == "none" then
-            boss_preset = OP.get_via(get_prop_value, obj, "boss_type", "")
-        end
-        local boss_name = obj.name or ""
-        if boss_name == DEFAULT_BOSS_TEMPLATE_NAME then
-            boss_name = ""
-        end
+        local boss_preset = boss_type_from_object(obj)
+        local boss_name = get_prop_value(obj, "boss_name") or obj.name or ""
+        local normalized_name = boss_name:match("^%s*(.-)%s*$"):lower()
+        if normalized_name == "boss" or normalized_name == DEFAULT_BOSS_TEMPLATE_NAME:lower() then boss_name = "" end
         local visual_type = get_prop_value(obj, "boss_visual_type") or ""
         local visual_component = get_prop_value(obj, "visual_component") or ""
         if visual_type == "" then
@@ -243,27 +252,44 @@ local AuthoredProxy = (function()
                 "developer/assets/tiled/maps/" .. tostring(room_id) .. ".lua (boss object " .. tostring(obj.id) .. ")")
         end
 
-        props[#props + 1] = text_prop("boss_preset", boss_preset)
-        props[#props + 1] = text_prop("boss_type", boss_preset)
-        props[#props + 1] = text_prop("boss_name", boss_name)
+        if boss_preset ~= "" then props[#props + 1] = text_prop("boss_type", boss_preset) end
+        if boss_name ~= "" then props[#props + 1] = text_prop("boss_name", boss_name) end
         -- Omit the blank default so existing room collections remain unchanged.
         local bar_name = get_prop_value(obj, "bar_name")
         if type(bar_name) == "string" and bar_name:match("%S") then
             props[#props + 1] = text_prop("bar_name", bar_name)
         end
-        props[#props + 1] = text_prop("boss_visual_type", visual_type or "")
-        props[#props + 1] = text_prop("visual_component", visual_component or "")
+        if visual_type ~= "" then props[#props + 1] = text_prop("boss_visual_type", visual_type) end
+        if visual_component ~= "" then props[#props + 1] = text_prop("visual_component", visual_component) end
+        local music = optional_id(get_prop_value(obj, "music_track"))
+        if music == "" then music = optional_id(get_prop_value(obj, "battle_music")) end
+        if music == "" then music = optional_id(get_prop_value(obj, "combat_music")) end
+        if music ~= "" then props[#props + 1] = text_prop("music_track", music) end
     end
 
     local function append_number_props_from_object(props, obj, field_defaults)
         for _, spec in ipairs(field_defaults) do
-            props[#props + 1] = number_prop(spec[1], get_prop_value(obj, spec[1]), spec[2])
+            local value = tonumber(get_prop_value(obj, spec[1]))
+            if value ~= nil and value ~= spec[2] then
+                props[#props + 1] = number_prop(spec[1], value, spec[2])
+            end
         end
     end
 
     local function append_bool_props_from_object(props, obj, field_defaults)
         for _, spec in ipairs(field_defaults) do
-            props[#props + 1] = bool_prop(spec[1], get_prop_value(obj, spec[1]), spec[2])
+            local authored = get_prop_value(obj, spec[1])
+            if authored ~= nil then
+                local prop = bool_prop(spec[1], authored, spec[2])
+                if prop.value ~= tostring(spec[2]) then props[#props + 1] = prop end
+            end
+        end
+    end
+
+    local function append_optional_bools(props, obj, fields)
+        for _, field in ipairs(fields) do
+            local value = get_prop_value(obj, field)
+            if value ~= nil then props[#props + 1] = text_prop(field, bool_to_proto(value, false)) end
         end
     end
 
@@ -275,14 +301,13 @@ local AuthoredProxy = (function()
         "resist_to",
         "immune_to",
         "vulnerable_to",
-        "phase_config",
         "attack_pattern_ids",
         "arena_id",
+        "group_name",
         "intro_cutscene",
         "defeat_cutscene",
         "defeat_flag",
         "health_bar_position",
-        "music_track",
         "victory_music",
         "reward_drops",
         "reward_loot_table",
@@ -292,7 +317,6 @@ local AuthoredProxy = (function()
     }
 
     local boss_spawn_number_fields = {
-        { "max_health", 0 },
         { "defense", 0 },
         { "damage_resistance", 0 },
         { "stagger_threshold", -1 },
@@ -309,8 +333,11 @@ local AuthoredProxy = (function()
         { "charge_duration", -1 },
         { "charge_cooldown", -1 },
         { "charge_recovery", -1 },
-        { "reward_currency_min", 0 },
-        { "reward_currency_max", 0 },
+        { "reward_currency_min", -1 },
+        { "reward_currency_max", -1 },
+        { "charge_edge_padding", -1 },
+        { "attack_interval_min", -1 },
+        { "attack_interval_max", -1 },
         -- Contact damage (body collision)
         { "contact_damage", 0 },
         { "contact_knockback_x", -1 },
@@ -320,7 +347,7 @@ local AuthoredProxy = (function()
 
     local boss_spawn_bool_fields = {
         { "arena_lock", true },
-        { "show_health_bar", true },
+        { "shared_health", false },
     }
 
     for _, field in ipairs(BossFeedbackSettings.hash_fields) do
@@ -352,8 +379,8 @@ local AuthoredProxy = (function()
         { "phase", 1 },
         { "health_min", -1 },
         { "health_max", -1 },
-        { "attack_interval_min", 2 },
-        { "attack_interval_max", 4 },
+        { "attack_interval_min", -1 },
+        { "attack_interval_max", -1 },
         -- Phase-local overrides use the same -1 inheritance contract as the
         -- boss object. This lets a later phase accelerate only its charge.
         { "chase_speed", -1 },
@@ -363,8 +390,8 @@ local AuthoredProxy = (function()
         { "charge_duration", -1 },
         { "charge_cooldown", -1 },
         { "charge_recovery", -1 },
-        { "speed_multiplier", 1 },
-        { "damage_multiplier", 1 },
+        { "speed_multiplier", -1 },
+        { "damage_multiplier", -1 },
         { "transition_duration", 0 },
         { "transition_iframes", 0 },
         { "transition_camera_intensity", 0 },
@@ -379,10 +406,6 @@ local AuthoredProxy = (function()
 
     local boss_phase_bool_fields = {
         { "partner_defeated", false },
-        { "stagger_immune", false },
-        { "transition_flash", false },
-        { "transition_arena_darkness", false },
-        { "facing_lock", false },
     }
 
     function M.build_spawn_point_marker_props(obj, room_id, registration_id)
@@ -403,64 +426,97 @@ local AuthoredProxy = (function()
 
     function M.build_boss_spawn_marker_props(obj, room_id, registration_id)
         local props = {
+            bool_prop("boss_properties_baked", true, false),
             text_prop("registration_id", registration_id),
             number_prop("object_id", obj.id, 0),
             text_prop("room_id", room_id),
         }
         append_boss_spawn_text_props_from_object(props, obj, boss_spawn_text_fields, room_id)
         append_number_props_from_object(props, obj, boss_spawn_number_fields)
+        local max_health = tonumber(get_prop_value(obj, "boss_health") or get_prop_value(obj, "max_health") or get_prop_value(obj, "health"))
+        if max_health and max_health > 0 then props[#props + 1] = number_prop("max_health", max_health, 0) end
         if tonumber(get_prop_value(obj, "reward_xp")) and tonumber(get_prop_value(obj, "reward_xp")) > 0 then
             props[#props + 1] = number_prop("reward_xp", get_prop_value(obj, "reward_xp"), 0)
         end
         append_bool_props_from_object(props, obj, boss_spawn_bool_fields)
+        append_optional_bools(props, obj, {"show_health_bar", "phase_damage_gate"})
+        local ground_motion = get_prop_value(obj, "ground_motion")
+        if ground_motion == "On" or ground_motion == "Off" then
+            props[#props + 1] = text_prop("ground_motion", ground_motion)
+        end
+        local feet_offset = tonumber(get_prop_value(obj, "feet_offset"))
+        if feet_offset and feet_offset ~= 0 then
+            props[#props + 1] = number_prop("feet_offset", feet_offset, 0)
+        end
         return props
     end
 
     function M.build_boss_phase_marker_props(obj, room_id, registration_id)
-        local boss_preset = OP.get_via(get_prop_value, obj, "boss_preset", "")
-        if boss_preset == nil or tostring(boss_preset) == "" or tostring(boss_preset) == "none" then
-            boss_preset = OP.get_via(get_prop_value, obj, "boss_type", "")
-        end
+        local boss_preset = boss_type_from_object(obj)
         local props = {
+            bool_prop("boss_properties_baked", true, false),
             text_prop("registration_id", registration_id),
             number_prop("object_id", obj.id, 0),
             text_prop("room_id", room_id),
-            text_prop("boss_preset", boss_preset),
-            text_prop("boss_type", boss_preset),
         }
+        if boss_preset ~= "" then props[#props + 1] = text_prop("boss_type", boss_preset) end
         append_text_props_from_object(props, obj, boss_phase_text_fields, OPTIONAL_BOSS_PHASE_TEXT_FIELDS)
         append_number_props_from_object(props, obj, boss_phase_number_fields)
         append_bool_props_from_object(props, obj, boss_phase_bool_fields)
+        append_optional_bools(props, obj, {"stagger_immune", "transition_arena_darkness", "facing_lock"})
+        -- Old exports cannot distinguish an explicit false from unchecked.
+        local flash = get_prop_value(obj, "transition_flash")
+        if flash ~= nil then
+            local value = bool_to_proto(flash, false)
+            if obj.boss_export_has_provenance or value == "true" then
+                props[#props + 1] = text_prop("transition_flash", value)
+            end
+        end
+        -- The marker supplies these defaults even for rooms baked before the fields existed.
+        local moveset = optional_id(get_prop_value(obj, "moveset"))
+        if moveset ~= "" then
+            props[#props + 1] = text_prop("moveset", moveset)
+        end
+        for _, field in ipairs({ "telegraph_scale", "cooldown_scale" }) do
+            local scale = tonumber(get_prop_value(obj, field))
+            if scale and scale ~= -1 then
+                props[#props + 1] = number_prop(field, scale, -1)
+            end
+        end
+        local anchors = optional_id(get_prop_value(obj, "teleport_anchors"))
+        if anchors ~= "" then
+            props[#props + 1] = text_prop("teleport_anchors", anchors)
+        end
+        local interval = tonumber(get_prop_value(obj, "teleport_interval"))
+        if interval and interval ~= 0 then
+            props[#props + 1] = number_prop("teleport_interval", interval, 0)
+        end
         return props
     end
 
     function M.build_boss_arena_marker_props(obj, room_id, registration_id, width, height)
-        local boss_preset = OP.get_via(get_prop_value, obj, "boss_preset", "")
-        if boss_preset == nil or tostring(boss_preset) == "" or tostring(boss_preset) == "none" then
-            boss_preset = OP.get_via(get_prop_value, obj, "boss_type", "")
-        end
-        return {
+        local boss_preset = boss_type_from_object(obj)
+        local music = optional_id(get_prop_value(obj, "battle_music"))
+        if music == "" then music = optional_id(get_prop_value(obj, "combat_music")) end
+        local props = {
+            bool_prop("boss_properties_baked", true, false),
             text_prop("registration_id", registration_id),
             number_prop("object_id", obj.id, 0),
-            text_prop("arena_id", get_prop_value(obj, "arena_id") or ""),
-            bool_prop("shared_health", get_prop_value(obj, "shared_health"), false),
-            text_prop("group_name", get_prop_value(obj, "group_name") or ""),
-            text_prop("boss_id", get_prop_value(obj, "boss_id") or ""),
-            text_prop("boss_preset", boss_preset),
-            text_prop("boss_type", boss_preset),
-            text_prop("battle_music", optional_id(get_prop_value(obj, "battle_music"))),
-            text_prop("victory_music", optional_id(get_prop_value(obj, "victory_music"))),
-            bool_prop("is_boss_arena", get_prop_value(obj, "is_boss_arena"), true),
-            bool_prop("lock_on_enter", get_prop_value(obj, "lock_on_enter"), true),
-            bool_prop("unlock_on_clear", get_prop_value(obj, "unlock_on_clear"), true),
-            bool_prop("camera_lock", get_prop_value(obj, "camera_lock"), false),
-            number_prop("camera_priority", get_prop_value(obj, "camera_priority"), 10),
-            number_prop("phases", get_prop_value(obj, "phases"), 1),
-            number_prop("charge_edge_padding", get_prop_value(obj, "charge_edge_padding"), -1),
-            number_prop("zone_width", width, 1024),
-            number_prop("zone_height", height, 768),
             text_prop("room_id", room_id),
         }
+        if boss_preset ~= "" then props[#props + 1] = text_prop("boss_type", boss_preset) end
+        if music ~= "" then props[#props + 1] = text_prop("battle_music", music) end
+        if width ~= 1024 then props[#props + 1] = number_prop("zone_width", width, 1024) end
+        if height ~= 768 then props[#props + 1] = number_prop("zone_height", height, 768) end
+        append_text_props_from_object(props, obj, {"arena_id", "group_name", "boss_id", "victory_music"}, {victory_music = true})
+        append_bool_props_from_object(props, obj, {
+            {"shared_health", false}, {"is_boss_arena", true}, {"lock_on_enter", true},
+            {"unlock_on_clear", true}, {"camera_lock", false},
+        })
+        append_number_props_from_object(props, obj, {
+            {"camera_priority", 10}, {"phases", 1}, {"charge_edge_padding", -1},
+        })
+        return props
     end
 
     function M.build_arena_lock_marker_props(obj, room_id, registration_id, width, height)
@@ -2412,7 +2468,7 @@ local function gen_collection(rid)
                                 nil,
                                 nil,
                                 "script",
-                                AuthoredProxy.build_boss_spawn_marker_props(obj, rid, obj_id)
+                                AuthoredProxy.build_boss_spawn_marker_props(AuthoredProxy.boss_props_for_bake(obj, tiled_data), rid, obj_id)
                             )
                             object_count = object_count + 1
 
@@ -2426,7 +2482,7 @@ local function gen_collection(rid)
                                 nil,
                                 nil,
                                 "script",
-                                AuthoredProxy.build_boss_phase_marker_props(obj, rid, obj_id)
+                                AuthoredProxy.build_boss_phase_marker_props(AuthoredProxy.boss_props_for_bake(obj, tiled_data), rid, obj_id)
                             )
                             object_count = object_count + 1
 

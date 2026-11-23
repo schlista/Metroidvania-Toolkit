@@ -312,7 +312,7 @@ function M.shoot_at_player(config)
 
         -- Add prediction if configured
         if config.lead_target then
-            local predicted = Detection.predict_player_position(0.3)
+            local predicted = Detection.predict_player_position(pos, 0.3)
             if predicted then
                 direction = vmath.normalize(predicted - pos)
             end

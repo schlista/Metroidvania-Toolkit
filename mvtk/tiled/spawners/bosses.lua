@@ -107,6 +107,8 @@ end
 --   health_min / health_max: numbers (0.0 - 1.0)
 --   attacks: string (CSV of attack pattern ids)
 --   attack_interval_min / attack_interval_max: seconds
+--   moveset: named attack list, "none" uses attacks
+--   telegraph_scale / cooldown_scale: positive timing multipliers
 --   chase_speed: optional absolute chase speed (-1 inherits)
 --   charge_*: optional phase-local charge tuning (-1 inherits)
 --   behavior: string
@@ -129,6 +131,11 @@ function handlers.boss_phase(object, room_id)
         health_min = tonumber(props.health_min),
         health_max = tonumber(props.health_max),
         attacks = props.attacks or "",
+        moveset = props.moveset,
+        telegraph_scale = tonumber(props.telegraph_scale),
+        cooldown_scale = tonumber(props.cooldown_scale),
+        teleport_interval = tonumber(props.teleport_interval),
+        teleport_anchors = props.teleport_anchors,
         attack_interval_min = tonumber(props.attack_interval_min),
         attack_interval_max = tonumber(props.attack_interval_max),
         chase_speed = tonumber(props.chase_speed) or -1,

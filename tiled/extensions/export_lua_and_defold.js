@@ -44,8 +44,29 @@
     // 14: template presets
     // 15: managed template size normalization in dependency receipts
     // 16: preserve template classes in Lua, including bare/renamed objects
-    var apiVersion = 16;
+    // 17: distinguish inherited Boss and Boss Phase defaults in room exports
+    var apiVersion = 17;
     if (keepExisting(_g.MVTKMapExport, _g.MVTKMapExport && _g.MVTKMapExport.version >= apiVersion)) return;
+
+    function bossInheritedDefaults(record, instanceProperties, schema) {
+        var kind = record.type;
+        if (kind !== "boss" && kind !== "boss_phase") return null;
+        var variants = schema && schema.objects && schema.objects[kind] || [];
+        var template = "tiled/templates/bosses/" + kind + ".tx";
+        var spec = variants.filter(function (variant) { return variant.template === template; })[0];
+        if (!spec) return null;
+        if (record.properties.mvtk_preset_of) return [];
+        var explicit = relationships().flatten(instanceProperties, kind, schema);
+        var inherited = [];
+        Object.keys(spec.groups).forEach(function (group) {
+            var members = spec.groups[group].members;
+            Object.keys(members).forEach(function (field) {
+                if (!Object.prototype.hasOwnProperty.call(explicit, field) &&
+                    record.properties[field] === members[field].default) inherited.push(field);
+            });
+        });
+        return inherited.sort();
+    }
 
     // An evaluation script may trigger this same File-menu action to export a
     // deterministic batch of fixture maps. Only that explicit mode suppresses
@@ -4103,6 +4124,20 @@
             var relationshipSourceText = readTextFile(isExternalMap ? tmxStagePath : sourceMapPath);
             var relationshipSignature = relationships().fingerprint(relationshipSourceText);
             var relationshipLua = readTextFile(luaStagePath);
+            var bossDefaults = [];
+            var schema = groupedPropertySchema();
+            relationshipRecords.forEach(function (record, index) {
+                var fields = bossInheritedDefaults(record, relationshipOriginals[index], schema);
+                if (fields) {
+                    bossDefaults.push("[" + record.object_id + "]={" + fields.map(function (field) {
+                        return "[" + JSON.stringify(field) + "]=true";
+                    }).join(",") + "}");
+                }
+            });
+            if (bossDefaults.length > 0) {
+                relationshipLua = relationshipLua.replace(/return\s*\{/,
+                    "return {\n  mvtk_boss_inherited = {" + bossDefaults.join(",") + "},");
+            }
             relationshipLua = relationshipLua.replace(/return\s*\{/, "return {\n  mvtk_source_signature = \"" + relationshipSignature + "\",");
             relationshipLua = relationshipLua.replace(/return\s*\{/, "return {\n  mvtk_provenance = {version=2, source=" + JSON.stringify(sourceMapPath) + ", dependencies={" + provenanceEntries.join(",") + "}, sources={" + originalEntries.join(",") + "}},");
             writeTextFile(luaStagePath, relationshipLua);
@@ -4265,6 +4300,7 @@
 
     action.text = "Export Current Room";
     _g.MVTKMapExport = {
+        bossInheritedDefaults: bossInheritedDefaults,
         version: apiVersion,
         fingerprint: fileFingerprint, dependencyFingerprint: dependencyFingerprint,
         beginMemo: beginFingerprintMemo, endMemo: endFingerprintMemo,

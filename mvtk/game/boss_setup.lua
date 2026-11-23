@@ -2,10 +2,13 @@
 -- Boss authoring and spawn helpers extracted from main.script.
 
 local AuthoredObjectProps = require "mvtk.tiled.authored_object_props"
+local PlacedRegistration = require "mvtk.bosses.placed_registration"
 local BossFeedbackSettings = require "mvtk.bosses.feedback_settings"
 local RenderOrder = require "mvtk.core.render_order"
+local TransitionCues = require "mvtk.bosses.transition_cues"
 
 local M = {}
+M.receive_registration = PlacedRegistration.receive
 
 local trim_string = function(value)
     if value == nil then
@@ -123,7 +126,7 @@ function M.build_boss_spawn_data(message)
     local boss_props = {}
     local authored_object = nil
 
-    if room_id and object_id > 0 then
+    if not message.from_baked_marker and room_id and object_id > 0 then
         local ok, authored_props, object = pcall(AuthoredObjectProps.get_properties, room_id, object_id)
         if ok and type(authored_props) == "table" then
             copy_fields(boss_props, authored_props, true)
@@ -134,6 +137,9 @@ function M.build_boss_spawn_data(message)
     -- Explicit runtime properties win over authored data. Direct fields are a
     -- compatibility fallback for non-baked/dynamic spawners.
     copy_fields(boss_props, message.properties, true)
+    -- A baked marker's editable component values win, including its inherit defaults.
+    if message.ground_motion ~= nil then boss_props.ground_motion = message.ground_motion end
+    if message.feet_offset ~= nil then boss_props.feet_offset = message.feet_offset end
     for _, field in ipairs(BOSS_REGISTRATION_PROPERTY_FIELDS) do
         if boss_props[field] == nil and message[field] ~= nil then
             boss_props[field] = message[field]
@@ -155,9 +161,17 @@ function M.build_boss_spawn_data(message)
         or optional_id(boss_props.boss_preset)
         or optional_id(boss_props.boss_type)
     -- Keep missing placement names empty until the preset can supply its name.
-    local boss_name = non_generic_boss_name(message.boss_name)
-        or non_generic_boss_name(boss_props.boss_name)
-        or non_generic_boss_name(authored_object and authored_object.name)
+    local boss_name
+    if message.from_baked_marker then
+        boss_name = trim_string(boss_props.boss_name)
+        boss_props.intro_cutscene = optional_id(boss_props.intro_cutscene)
+        boss_props.defeat_cutscene = optional_id(boss_props.defeat_cutscene)
+    else
+        boss_name = non_generic_boss_name(message.boss_name)
+            or non_generic_boss_name(boss_props.boss_name)
+            or non_generic_boss_name(authored_object and authored_object.name)
+        boss_props.show_health_bar = coerce_bool(boss_props.show_health_bar, true)
+    end
     local boss_tag = trim_string(message.boss_tag)
         or trim_string(boss_props.boss_tag)
         or trim_string(boss_props.boss_id)
@@ -184,7 +198,7 @@ function M.build_boss_spawn_data(message)
         intro_cutscene = boss_props.intro_cutscene,
         defeat_cutscene = boss_props.defeat_cutscene,
         arena_lock = coerce_bool(boss_props.arena_lock, true),
-        show_health_bar = coerce_bool(boss_props.show_health_bar, true),
+        show_health_bar = boss_props.show_health_bar,
         health_bar_position = boss_props.health_bar_position,
         phase_config = boss_props.phase_config,
         chase_speed = tonumber(boss_props.chase_speed),
@@ -196,6 +210,7 @@ function M.build_boss_spawn_data(message)
         charge_recovery = tonumber(boss_props.charge_recovery),
         properties = boss_props,
         source_object_id = object_id,
+        from_baked_marker = message.from_baked_marker,
         spawned = false,
     }
 
@@ -398,8 +413,10 @@ function M.resolve_boss_preset_id(props, boss_data)
 end
 
 function M.resolve_boss_display_name(props, boss_data)
+    local placement_name = boss_data and boss_data.from_baked_marker and trim_string(boss_data.boss_name)
     local placed_name = trim_string(props and props.bar_name)
         or trim_string(boss_data and boss_data.bar_name)
+        or placement_name
         or non_generic_boss_name(props and props.boss_name)
         or non_generic_boss_name(boss_data and boss_data.boss_name)
     if placed_name then return placed_name end
@@ -456,9 +473,12 @@ function M.build_boss_phase_transition(def)
     local camera_intensity = tonumber(def.transition_camera_intensity)
     local camera_duration = tonumber(def.transition_camera_duration)
     if (camera_intensity and camera_intensity > 0) or (camera_duration and camera_duration > 0) then
+        -- A project may carry a boss_defaults.lua without transition_feedback.
+        local ok, boss_defaults = pcall(require, "developer.config.boss_defaults")
+        local defaults = TransitionCues.resolve(ok and boss_defaults or nil).authored_camera
         transition.camera_shake = {
-            intensity = (camera_intensity and camera_intensity > 0) and camera_intensity or 8,
-            duration = (camera_duration and camera_duration > 0) and camera_duration or duration or 0.5,
+            intensity = (camera_intensity and camera_intensity > 0) and camera_intensity or defaults.intensity,
+            duration = (camera_duration and camera_duration > 0) and camera_duration or duration or defaults.duration,
         }
     end
 
@@ -499,7 +519,8 @@ function M.build_boss_phase_definition(def, phase_count, fallback_attacks, healt
     end
 
     local attacks = split_csv(def.attacks)
-    if #attacks == 0 then
+    local moveset = optional_id(def.moveset)
+    if #attacks == 0 and not moveset then
         attacks = fallback_attacks or {}
     end
 
@@ -531,11 +552,17 @@ function M.build_boss_phase_definition(def, phase_count, fallback_attacks, healt
             max = max_health,
         },
         attacks = attacks,
+        moveset = moveset,
         attack_interval = {
             min = tonumber(def.attack_interval_min) or 2.0,
             max = tonumber(def.attack_interval_max) or tonumber(def.attack_interval_min) or 4.0,
         },
     }
+
+    for _, field in ipairs({ "telegraph_scale", "cooldown_scale" }) do
+        local scale = tonumber(def[field])
+        if scale and scale > 0 then phase[field] = scale end
+    end
 
     local behavior = trim_string(def.behavior)
     if behavior then
@@ -582,6 +609,10 @@ function M.build_boss_phase_definition(def, phase_count, fallback_attacks, healt
     if leash_radius and leash_radius > 0 then
         phase.leash_radius = leash_radius
     end
+    local interval = tonumber(def.teleport_interval)
+    if interval and interval > 0 then phase.teleport_interval = interval end
+    local anchors = split_csv(def.teleport_anchors)
+    if #anchors > 0 then phase.teleport_anchors = anchors end
 
     local attack_range_override = tonumber(def.attack_range)
     if attack_range_override and attack_range_override > 0 then
@@ -606,6 +637,23 @@ function M.build_boss_phase_definition(def, phase_count, fallback_attacks, healt
     local transition = M.build_boss_phase_transition(def)
     if transition then
         phase.transition = transition
+    end
+
+    if def.from_baked_marker then
+        phase.from_baked_marker = true
+        phase.stagger_immune = def.stagger_immune
+        phase.facing_lock = def.facing_lock
+        phase.attack_interval.min = tonumber(def.attack_interval_min)
+        phase.attack_interval.max = tonumber(def.attack_interval_max)
+        if def.transition_flash == false or def.transition_arena_darkness == false then
+            phase.transition = phase.transition or {}
+            phase.transition.flash = def.transition_flash
+            phase.transition.arena_darkness = def.transition_arena_darkness
+        end
+        -- A transition made solely from partial overrides can inherit its kind.
+        if phase.transition and not trim_string(def.transition_type) then
+            phase.transition.type = nil
+        end
     end
 
     return phase
@@ -951,6 +999,14 @@ function M.trigger_boss_fight(self, boss_id)
         if boss_preset then
             custom_config.boss_preset = boss_preset
         end
+        if props.phase_damage_gate ~= nil then
+            custom_config.phase_damage_gate = Util.to_bool(props.phase_damage_gate, true)
+        end
+        if props.ground_motion == "On" or props.ground_motion == "Off" then
+            custom_config.ground_motion = props.ground_motion == "On"
+        end
+        local feet_offset = tonumber(props.feet_offset)
+        if feet_offset and feet_offset > 0 then custom_config.feet_offset = feet_offset end
         if props.boss_visual_type and props.boss_visual_type ~= "" then
             custom_config.boss_visual_type = props.boss_visual_type
         end

@@ -8,7 +8,8 @@ local C = require "mvtk.bosses.boss_attacks.common"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    instance = C.instance(boss, pattern, instance)
     local pw = pattern.parry_window or {}
     local window = pw.window or C.Defaults.default_parry_window
 
@@ -22,12 +23,19 @@ function M.execute(boss, pattern)
     data.parry_counter_pattern = pw.counter_pattern
     C.play_resolved_animation(boss, "parry", true)
 
-    C.delay(window, function()
+    instance:on_cancel(function()
+        if boss.boss_data == data and data._parry_generation == generation then
+            data.parry_active, data.parry_counter_pattern = false, nil
+        end
+    end)
+
+    instance:after(window, function()
         if boss.boss_data == data and data._parry_generation == generation and data.parry_active then
             data.parry_active = false
             data.parry_counter_pattern = nil
             C.print("[BOSS_ATTACKS] Parry window closed")
         end
+        instance:on_cancel(nil)
     end)
 end
 

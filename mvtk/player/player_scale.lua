@@ -8,12 +8,19 @@ local M = {}
 M.MIN_SCALE = 0.25 / 1.75
 M.MAX_SCALE = 8.0
 
+-- Shrink the top of the hurtbox while leaving its bottom at the standing height.
+function M.compact_hurtbox(half_h, center_y, reduction_ratio)
+    local reduction = half_h * math.max(0, math.min(0.9, reduction_ratio or 0.45))
+    return half_h - reduction * 0.5, center_y - reduction * 0.5
+end
+
 M.SCALED_KEYS = {
     always = {
         "collider_half_height",
         "collider_half_width",
         "foot_floor_adjust",
         "head_margin",
+        "corner_correction_px",
         "zip_line.hang_offset_px",
         "ladder_climb.hang_offset_px",
         "roll.small_half_width",
@@ -25,6 +32,8 @@ M.SCALED_KEYS = {
         "run_speed",
         "stop_epsilon",
         "gravity",
+        "apex_hang_speed",
+        "max_fall_speed_px",
         "jump_height",
         "extended_jump_height",
         "landing_snap_distance",

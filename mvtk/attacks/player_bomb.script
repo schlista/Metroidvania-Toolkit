@@ -1,6 +1,7 @@
 -- Runtime attack actor; placed world objects still belong to baked rooms.
 local Pause = require "mvtk.core.pause"
 local C = require "mvtk.core.constants"
+local Timers = require "mvtk.player.timers"
 
 go.property("fuse", 0.9)
 go.property("radius", 96.0)
@@ -10,15 +11,14 @@ go.property("attack_type", "bomb")
 go.property("owner", msg.url())
 
 function init(self)
-    self.remaining = self.fuse
+    Timers.start_window(self, "remaining", self.fuse > 0 and self.fuse or Timers.REFERENCE_STEP)
     self.exploded = false
     sprite.play_flipbook("#sprite", "player_bomb")
 end
 
 function update(self, dt)
     if Pause.get() or self.exploded then return end
-    self.remaining = self.remaining - dt
-    if self.remaining > 0 then
+    if not Timers.tick_deadline(self, "remaining", dt) then
         local light = 0.65 + 0.35 * math.abs(math.sin(self.remaining * 30))
         go.set("#sprite", "tint", vmath.vector4(1, light, light, 1))
         return
@@ -34,6 +34,6 @@ function update(self, dt)
     local cfg = require("mvtk.core.util").require_config("developer.config.player_actions").bomb
     require("mvtk.fx.fx").play(cfg.explosion_fx, pos)
     if cfg.sound_explode ~= "" then require("mvtk.audio.audio").sfx(cfg.sound_explode) end
-    require("mvtk.core.gamefeel").impact(self.damage, { shake = cfg.camera_shake })
+    require("mvtk.core.gamefeel").impact(self.damage, { shake = cfg.camera_shake, player_combat = true })
     go.delete()
 end

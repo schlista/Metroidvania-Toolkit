@@ -1,26 +1,25 @@
 --- Boss "special" attack executor.
 -- Routes legacy aliases (charge / hazard / combo) and the per-pattern
--- callback escape hatch. Unknown special.types fall back to an AOE at the
--- player position so misconfigured presets still register.
+-- callback escape hatch. Named specials resolve before reaching dispatch.
 -- @module boss_attacks.special
 
 local C = require "mvtk.bosses.boss_attacks.common"
 local Charge = require "mvtk.bosses.boss_attacks.charge"
 local Hazard = require "mvtk.bosses.boss_attacks.hazard"
 local Combo  = require "mvtk.bosses.boss_attacks.combo"
-local AOE    = require "mvtk.bosses.boss_attacks.aoe"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    instance = C.instance(boss, pattern, instance)
     if pattern.type == "charge" then
-        return Charge.execute(boss, pattern)
+        return Charge.execute(boss, pattern, instance)
     end
     if pattern.type == "hazard" then
-        return Hazard.execute(boss, pattern)
+        return Hazard.execute(boss, pattern, instance)
     end
     if pattern.type == "combo" then
-        return Combo.execute(boss, pattern)
+        return Combo.execute(boss, pattern, instance)
     end
 
     local special = pattern.special or {}
@@ -29,21 +28,6 @@ function M.execute(boss, pattern)
         return
     end
 
-    local special_type = special.type or "unknown"
-    C.print(string.format("[BOSS_ATTACKS] Special attack: %s", special_type))
-
-    local player_pos = C.Detection.get_player_position()
-    if player_pos then
-        AOE.execute(boss, {
-            damage = pattern.damage or C.Defaults.default_aoe_damage,
-            damage_type = pattern.damage_type or "physical",
-            aoe = {
-                target = "player",
-                radius = special.radius or 100,
-                delay = special.delay or 0.8,
-            },
-        })
-    end
 end
 
 return M

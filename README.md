@@ -35,6 +35,7 @@ Find recipes and settings in the Creator Guide's [What the toolkit can do](docs/
 
 - Build a connected world with regions, maps and [fast travel](docs/CREATOR_WORKFLOW.html#fast-travel-network-and-rules).
 - Give players [movement abilities](docs/CREATOR_WORKFLOW.html#add-an-ability-pickup-and-gate) that open new routes through your rooms.
+- Shape how the player moves with [movement feel templates](docs/CREATOR_WORKFLOW.html#try-a-movement-feel-template), then tune jumps, braking and falls in one tab.
 - Make [switch puzzles and shortcuts](docs/CREATOR_WORKFLOW.html#make-a-shortcut), and change objects or terrain as the story advances.
 - Tune [player attacks](docs/CREATOR_WORKFLOW.html#tune-an-attack), energy costs and healing to shape your combat.
 - Give enemies different behaviours and build [boss encounters](docs/CREATOR_WORKFLOW.html#build-a-compact-boss-encounter), waves and combat trials.
@@ -56,7 +57,7 @@ After changing rooms, stop the game and choose **Project ▸ Reload Editor Scrip
   your Defold is the Apple Silicon (`arm64`) or Intel (`x86_64`) build when you report a problem.
 - The sprite player is the supported player. Spine is an optional add-on
   (**Project ▸ Spine Add-on...**) and needs your own Spine Editor license.
-- Saves are not guaranteed to load in a newer toolkit version. After updating, start a new save slot.
+- Saves are not guaranteed to load in a newer toolkit version. Each version's [release notes](CHANGELOG.md) say whether to start a new save slot.
 
 ## Report a problem
 

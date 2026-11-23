@@ -52,13 +52,7 @@ function M.handle_environment_message(self, message_id, message, sender, sync_pl
 
   if message_id == hash("external_force") then
     if message and message.conveyor then
-      self._conveyor_contacts = self._conveyor_contacts or {}
-      local now = (self._frame_counter or 0) + 1
-      self._conveyor_contacts[sender] = {
-        vx = message.vx or 0,
-        vy = message.vy or 0,
-        frame = now,
-      }
+      SurfaceEffects.note_conveyor(self, sender, message.vx or 0, message.vy or 0, message.overlap)
       SurfaceEffects.sum_conveyor_forces(self)
     else
       self._ext_fx = (self._ext_fx or 0) + (message and (message.vx or 0) or 0)
@@ -68,8 +62,7 @@ function M.handle_environment_message(self, message_id, message, sender, sync_pl
   end
 
   if message_id == hash("apply_external_force") then
-    -- Water currents use px/s vectors. Accept the legacy scalar form too so
-    -- authored volumes and hand-written triggers share one handled path.
+    -- Custom triggers can send a velocity vector or legacy scalar components.
     local force = message and message.force
     self._ext_fx = (self._ext_fx or 0) + (force and force.x or (message and message.vx) or 0)
     self._ext_fy = (self._ext_fy or 0) + (force and force.y or (message and message.vy) or 0)
@@ -77,20 +70,16 @@ function M.handle_environment_message(self, message_id, message, sender, sync_pl
   end
 
   if message_id == hash("on_conveyor") then
-    self._conveyor_contacts = self._conveyor_contacts or {}
     local dir = message and message.direction
     local speed = message and message.speed
     local vx, vy = SurfaceEffects.conveyor_vector(dir, speed)
-    local now = (self._frame_counter or 0) + 1
-    self._conveyor_contacts[sender] = { vx = vx, vy = vy, frame = now }
+    SurfaceEffects.note_conveyor(self, sender, vx, vy, message and message.overlap)
     SurfaceEffects.sum_conveyor_forces(self)
     return true
   end
 
   if message_id == hash("off_conveyor") then
-    if self._conveyor_contacts and self._conveyor_contacts[sender] then
-      self._conveyor_contacts[sender].frame = (self._frame_counter or 0) - 10
-    end
+    SurfaceEffects.end_conveyor(self, sender, message and message.grace)
     SurfaceEffects.sum_conveyor_forces(self)
     return true
   end

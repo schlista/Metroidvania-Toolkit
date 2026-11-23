@@ -1,5 +1,6 @@
 -- Saved quick-item selection and flask capacity; drinks belong to each host instance.
 local Util = require "mvtk.core.util"
+local Timers = require "mvtk.player.timers"
 local M = {}
 local charges, bonus_sources, selected = nil, {}, "heal"
 local cached, cached_revision
@@ -113,6 +114,7 @@ function M.start_channel(self, latched)
     toggles.sync(self, "heal")
     if latched and not toggles.set(self, "heal", true) then return false end
     s.drink={channel=true,latched=latched==true,entry={heal=cfg.channel.heal_amount},remaining=cfg.channel.channel_time,health=self.health}
+    Timers.start_combat_window(s.drink, "remaining", cfg.channel.channel_time, nil, 1e-7)
     require("mvtk.player.player_stats").set_source("ability:healing",{speed_mult=cfg.use.move_mult},{layer="temporary"})
     return true
 end
@@ -127,7 +129,7 @@ function M.on_tap(self)
         if require("mvtk.player.hold_toggles").enabled("heal") then return M.start_channel(self, true) end
         if (s.hint_toast_t or 0)<=0 then
             require("mvtk.prefabs.prefab_utils").toast({key="healing.hold_to_heal"})
-            s.hint_toast_t=3
+            Timers.start_combat_window(s, "hint_toast_t", 3)
         end
         return false
     end
@@ -141,6 +143,7 @@ function M.on_tap(self)
     end
     if refused(self) or not entry or entry.count<=0 then sound(cfg.use.sound_refuse); return false end
     s.drink={entry=entry,remaining=entry.use_time,health=self.health}
+    Timers.start_combat_window(s.drink, "remaining", entry.use_time, nil, 1e-7)
     require("mvtk.player.player_stats").set_source("ability:healing",{speed_mult=cfg.use.move_mult},{layer="temporary"})
     if entry.use_time<=0 then return complete(self) end
     return true
@@ -156,7 +159,8 @@ function M.on_hold(self)
         return M.start_channel(self, require("mvtk.player.hold_toggles").enabled("heal"))
     end
     if #M.entries(self)<2 then return M.on_tap(self) end
-    cancel(self); step(self); s.stepping=true; s.repeat_t=M.settings().quick.step_repeat_seconds
+    cancel(self); step(self); s.stepping=true
+    s.repeat_t, s.repeat_age = M.settings().quick.step_repeat_seconds, 0
     return true
 end
 local function publish(self)
@@ -189,7 +193,7 @@ function M.update(self,dt,input)
             cancel(self); s.suppress_toggle_tap=true
         end
     end
-    s.hint_toast_t=math.max(0,(s.hint_toast_t or 0)-dt)
+    Timers.tick_combat_window(s, "hint_toast_t", dt)
     local damaged=s.last_health and self.health<s.last_health
     if damaged and not s.hint_shown then
         if cfg.model=="channel" then
@@ -233,18 +237,28 @@ function M.update(self,dt,input)
         local holding=input.quick_use_held or (latched and toggles.get(self, "heal"))
         if interrupted or refused(self) or (channel and (blocked or not holding or not channel_usable())) then cancel(self)
         else
-            s.drink.remaining=s.drink.remaining-dt
-            if s.drink.remaining<=0.0000001 then
-                if complete(self) and channel and cfg.channel.repeat_while_held and holding
-                    and not refused(self) and channel_usable() then M.start_channel(self, latched) end
+            local remaining = dt
+            while s.drink do
+                local ready, spent = Timers.tick_combat_deadline(s.drink, "remaining", remaining)
+                if not ready then break end
+                if not complete(self) or not channel or not cfg.channel.repeat_while_held or not holding
+                    or refused(self) or not channel_usable() or not M.start_channel(self, latched) then break end
+                remaining = math.max(0, remaining - spent)
+                if remaining == 0 or cfg.channel.channel_time <= 0 then break end
             end
         end
     end
     if s.stepping then
         if not input.quick_use_held then s.stepping=false
         else
-            s.repeat_t=s.repeat_t-dt
-            while s.repeat_t<=0.0000001 do step(self); s.repeat_t=s.repeat_t+cfg.quick.step_repeat_seconds end
+            local ticks, step_dt = Timers.combat_steps(s, "repeat_age", dt)
+            for _ = 1, ticks do
+                s.repeat_t = s.repeat_t - step_dt
+                while s.repeat_t <= 1e-7 do
+                    step(self)
+                    s.repeat_t = s.repeat_t + cfg.quick.step_repeat_seconds
+                end
+            end
         end
     end
     publish(self)

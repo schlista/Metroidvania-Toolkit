@@ -84,6 +84,9 @@ function H.configure(self, overrides)
     tuning.swarm_leader_movement = cfg.swarm_leader_movement or "chase_flying"
     local tile = require "developer.config.tile_settings"
     tuning.leash_arrival_px = (tile.width or tile.size or 64) * 0.5
+    local tile_height = tonumber(tile.height or tile.tile_height or tile.size) or 64
+    local fall_cap = defaults.max_fall_speed_tiles
+    tuning.hop_terminal_speed = fall_cap and fall_cap * tile_height
     tuning.ambush_then = cfg.ambush_then or (self._grounded_movement and "chase_ground" or "chase_flying")
     self._roster = tuning
     if (tuning.leash_distance or 0) > 0 then require("mvtk.enemies.enemy_leash").configure(self) end
@@ -185,6 +188,7 @@ function H.constrain_swim(self, dt)
     self._swim_volume = volume
     if not volume then
         self.vel.x,self.vel.y = 0,0
+        self._swim_escape, self._swim_boxed = nil, nil
         self._player_detected,self._simple_movement_state = false,"idle"
         if not self._swim_warned then
             print("[ENEMY] Swim movement has no water at its position; idling.")
@@ -201,7 +205,32 @@ function H.constrain_swim(self, dt)
     self.vel.x,self.vel.y = (x-self.pos.x)/dt,(y-self.pos.y)/dt
 end
 
+function H.swim_terrain(self, dt, patrol_x, patrol_y)
+    if dt <= 0 then return end
+    self._swim_wall_x, self._swim_wall_y = nil, nil
+    if not patrol_x and not patrol_y then return end
+    local Terrain = require "mvtk.enemies.patrol_terrain"
+    if patrol_x then
+        local vx = self.vel.x
+        local hit
+        self.vel.x, hit = Terrain.limit(self, "x", vx, dt)
+        if hit then self._swim_wall_x = vx < 0 and -1 or 1 end
+    end
+    if patrol_y then
+        local vy = self.vel.y
+        local hit
+        self.vel.y, hit = Terrain.limit(self, "y", vy, dt)
+        if hit then self._swim_wall_y = vy < 0 and -1 or 1 end
+    end
+end
+
+local function swim_open(Terrain, self, dir, speed, dt, at_left, at_right)
+    if (dir < 0 and at_left) or (dir > 0 and at_right) then return false end
+    return Terrain.limit(self, "x", dir * speed, dt) ~= 0
+end
+
 function M.swim()
+    local Terrain = require "mvtk.enemies.patrol_terrain"
     return {update=function(self,dt)
         local volume = water_at(self.pos.x,self.pos.y)
         self.vel.x,self.vel.y = 0,0
@@ -210,9 +239,30 @@ function M.swim()
         local Detection = require "mvtk.enemies.detection"
         local target = Detection.get_player_position()
         local speed = self._roster.swim_speed * (self._speed_mult or 1) * (self._elite_speed_mult or 1)
-        if target and water_at(target.x,target.y) == volume
+        local chase = target and water_at(target.x,target.y) == volume
             and not self._leash_returning and (self._leash_cooldown or 0) <= 0
-            and Detection.can_detect_player(self.pos,self._detection_range or 240,false) then
+            and Detection.can_detect_player(self.pos,self._detection_range or 240,false)
+        local dir = self.facing or 1
+        local margin = self._roster.swim_margin_px
+        local at_right = self.pos.x >= volume.right-margin
+        local at_left = self.pos.x <= volume.left+margin
+        local same_volume = self._swim_volume == volume
+        local escape = same_volume and self._swim_escape
+        local boxed = same_volume and self._swim_boxed
+        local wall_x = same_volume and self._swim_wall_x
+        local wall_y = same_volume and self._swim_wall_y
+        if dt > 0 then
+            if escape and (escape == wall_x or (escape > 0 and at_right)
+                or (escape < 0 and at_left)) then escape = nil end
+            if chase and not escape then
+                local dx, dy = target.x-self.pos.x, target.y-self.pos.y
+                if wall_x and dx * wall_x > 0 then escape = -wall_x
+                elseif wall_y and dy * wall_y > 0 then escape = dir end
+            end
+            self._swim_escape = escape
+            if not same_volume then self._swim_boxed = nil end
+        end
+        if chase and not escape then
             local dx,dy=target.x-self.pos.x,target.y-self.pos.y
             local distance=math.sqrt(dx*dx+dy*dy)
             self._player_detected,self._simple_movement_state = true,"chase"
@@ -221,17 +271,39 @@ function M.swim()
                 self.vel.x,self.vel.y=dx/distance*speed,dy/distance*speed
             end
         else
-            if self.pos.x >= volume.right-self._roster.swim_margin_px then self.facing=-1
-            elseif self.pos.x <= volume.left+self._roster.swim_margin_px then self.facing=1 end
-            self.vel.x=(self.facing or 1)*speed
+            if escape then dir = escape
+            elseif at_right then dir = -1
+            elseif at_left then dir = 1 end
+            if dt > 0 and (boxed or dir == wall_x or (escape and wall_x)) then
+                if dir == wall_x then dir = -dir end
+                if swim_open(Terrain, self, dir, speed, dt, at_left, at_right) then
+                    boxed = nil
+                elseif boxed and swim_open(Terrain, self, -dir, speed, dt, at_left, at_right) then
+                    dir, boxed = -dir, nil
+                    if escape then self._swim_escape = dir end
+                else
+                    dir, boxed = 0, true
+                end
+                self._swim_boxed = boxed
+            elseif boxed then
+                dir = 0
+            end
+            self.vel.x = dir * speed
         end
         H.constrain_swim(self,dt)
+        Terrain.request(self, "x", self.vel.x)
+        Terrain.request(self, "y", self.vel.y)
         if self.vel.x ~= 0 then self.facing = self.vel.x < 0 and -1 or 1 end
-        clip(self,{"swim","walk","idle"})
+        if boxed and self.vel.x == 0 and self.vel.y == 0 then clip(self,{"idle"})
+        else clip(self,{"swim","walk","idle"}) end
     end}
 end
 
 function M.hop()
+    local Ground = require "mvtk.enemies.enemy_ground_physics"
+    local Terrain = require "mvtk.enemies.patrol_terrain"
+    local Ledge = require "mvtk.enemies.ledge_guard"
+    local Timers = require "mvtk.player.timers"
     return {update=function(self,dt)
         local cfg = self._roster
         local state = self._hop
@@ -240,7 +312,13 @@ function M.hop()
         if self._leash_returning or (self._leash_cooldown or 0)>0 then return end
         if state.phase == "in_air" then
             if self._airborne then
-                self.vel.x=state.direction*(self.speed or 80)*(self._speed_mult or 1)*(self._elite_speed_mult or 1)
+                local speed = state.direction * (self.speed or 80)
+                    * (self._speed_mult or 1) * (self._elite_speed_mult or 1)
+                local rise
+                if dt > 0 and (self._vy or 0) > 0 then rise = math.max(0, (self._vy - Ground.gravity() * dt) * dt) end
+                local vx, hit = Terrain.limit(self, "x", speed, dt, rise)
+                self.vel.x = vx
+                if dt > 0 then state.blocked_direction = hit and vx ~= speed and state.direction or nil end
             else state.phase,state.timer="land",cfg.hop_land_time;clip(self,{"land","idle"},true) end
             return
         end
@@ -255,17 +333,66 @@ function M.hop()
             local target = Detection.get_player_position()
             local detected = target and Detection.can_detect_player(self.pos,self._detection_range or 240,true)
             self._player_detected,self._simple_movement_state=detected==true,detected and "chase" or "patrol"
-            if detected then self.facing=target.x<self.pos.x and -1 or 1
+            local dir = self.facing or 1
+            if detected then dir=target.x<self.pos.x and -1 or 1
             else
                 local distance=self._patrol_distance or (self.enemy_type_config or {}).patrol_distance or 96
-                if self.pos.x>self.start_pos.x+distance then self.facing=-1
-                elseif self.pos.x<self.start_pos.x-distance then self.facing=1 end
+                if self.pos.x>self.start_pos.x+distance then dir=-1
+                elseif self.pos.x<self.start_pos.x-distance then dir=1 end
             end
-            state.direction=self.facing or 1
-            local Ground = require "mvtk.enemies.enemy_ground_physics"
-            Ground.launch(self,math.sqrt(2*Ground.gravity()*cfg.hop_height))
+            local gravity = Ground.gravity()
+            local launch_speed = math.sqrt(2*gravity*cfg.hop_height)
+            local speed = (self.speed or 80)*(self._speed_mult or 1)*(self._elite_speed_mult or 1)
+            local reference_dt = Timers.engine_reference_step()
+            local probe_dt = dt > 0 and dt or reference_dt
+            local guarded = self._ledge and self._ledge.enabled and not Ground.can_fall(self)
+            local reach
+            if guarded and gravity > 0 then
+                local drop = self._ledge.step_tolerance
+                local landing_speed = math.sqrt(launch_speed^2 + 2 * gravity * drop)
+                local flight_time = (launch_speed + landing_speed) / gravity
+                local terminal = cfg.hop_terminal_speed
+                if terminal and terminal > 0 and terminal < landing_speed then
+                    flight_time = (launch_speed + terminal) / gravity
+                        + (landing_speed^2 - terminal^2) / (2 * gravity * terminal)
+                end
+                -- Ground physics tests support at the next sampled position,
+                -- including the interval in which the arc crosses the floor.
+                reach = speed * (flight_time + math.max(probe_dt, reference_dt))
+            end
+            local rise = math.max(0, (launch_speed - gravity * probe_dt) * probe_dt)
+            local function takeoff_velocity(direction)
+                local vx = Terrain.limit(self, "x", direction * speed, probe_dt, rise)
+                if Terrain.at_room_edge(self, "x", direction) then return end
+                if vx == 0 and speed ~= 0 then
+                    -- Clear a low riser on the existing arc. The lower
+                    -- bound on the discrete apex matches the gravity step.
+                    local apex = math.max(rise, cfg.hop_height - launch_speed * probe_dt / 2)
+                    if Terrain.limit(self, "x", direction * speed, probe_dt, apex) == 0 then return end
+                end
+                -- Use the continuous envelope so the guard still holds with
+                -- a fractional time scale or an authored lower fall cap.
+                if reach then
+                    local edge = Terrain.room_edge(self, "x", direction)
+                    local distance = edge and math.min(reach, (edge - self.pos.x) * direction) or reach
+                    if Ledge.blocks(self, direction * speed, reference_dt, nil, distance) then return end
+                end
+                return vx
+            end
+            if dir == state.blocked_direction then dir = -dir end
+            local vx = takeoff_velocity(dir)
+            if vx == nil then
+                dir = -dir
+                vx = takeoff_velocity(dir)
+            end
+            if vx == nil then
+                state.timer = cfg.hop_prepare_time
+                return
+            end
+            self.facing, state.direction, state.blocked_direction = dir, dir, nil
+            Ground.launch(self,launch_speed)
             state.phase="in_air"
-            self.vel.x=state.direction*(self.speed or 80)*(self._speed_mult or 1)*(self._elite_speed_mult or 1)
+            self.vel.x=vx
             clip(self,{"jump","idle"},true)
         else state.phase,state.timer="idle_on_ground",cfg.hop_interval;clip(self,{"idle"}) end
     end}

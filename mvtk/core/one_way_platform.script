@@ -6,6 +6,9 @@
 -- This script notifies the player when overlapping so the player can request drop-through.
 
 local Util = require "mvtk.core.util"
+local OneWayPlatforms = require "mvtk.core.one_way_platform_registry"
+local Pause = require "mvtk.core.pause"
+local Timers = require "mvtk.player.timers"
 
 go.property("direction", "down") -- "down" = standard floor platform, "up" = inverted ceiling platform
 go.property("debug_logging", false)
@@ -122,6 +125,10 @@ function init(self)
   self._room_collision_retry_t = 0
   self._room_clear_attempts = 0
   local left, right, bottom, top, width, height = get_platform_world_bounds(self)
+  if self.direction == DIRECTION_UP then
+    self._inverted_id = go.get_id()
+    OneWayPlatforms.register(self._inverted_id, left, right, bottom)
+  end
   print(string.format(
     "[ONE_WAY id=%s dir=%s t=%.3f] init room_prop=%s resolved_room=%s clear_room_collision=%s room_manager=%s surface_classifier=%s util=%s tile=(%d,%d) root_scale=%s sprite_scale=%s sprite_size=%s bounds=(%.1f,%.1f)-(%.1f,%.1f) size=(%.1f,%.1f)",
     tostring(go.get_id()),
@@ -183,6 +190,9 @@ local function set_enabled(id, on)
 end
 
 local function set_collision_enabled(self, enabled)
+  -- The player resolves this direction geometrically. Its native body
+  -- must stay queryable when a falling player reverses under the underside.
+  if self.direction == DIRECTION_UP then return end
   if self._co_enabled == enabled then
     return
   end
@@ -415,7 +425,9 @@ local function should_allow_directional_pass(self, other_id, message)
 end
 
 function update(self, dt)
-  self._time = (self._time or 0) + (dt or 0)
+  if Pause.get() then return end
+  local _, _, elapsed = Timers.gameplay_delta(dt, Pause)
+  self._time = (self._time or 0) + elapsed
   local now = self._time or 0
 
   -- Extend/clear per-player pass windows while the player traverses the platform.
@@ -605,6 +617,7 @@ function on_message(self, message_id, message, sender)
 end
 
 function final(self)
+  if self._inverted_id then OneWayPlatforms.unregister(self._inverted_id) end
   self.players = {}
   self.player_sensors = {}
   self.player_recent = {}

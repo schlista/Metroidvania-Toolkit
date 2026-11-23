@@ -74,7 +74,11 @@ function M.impact(damage, opts)
   local dur = opts.shake_dur or 0.08
   local stop = opts.hitstop or (prof.stop_k * math.max(1, (tonumber(damage) or 1)))
   if M.enabled then M.shake(mag, dur, 25) end
-  if PauseOk and Pause and Pause.hitstop and stop and stop > 0 then Pause.hitstop(stop) end
+  if PauseOk and Pause and Pause.hitstop and stop and stop > 0 then
+    local timed = opts.player_combat or opts.kind == "boss_hurt"
+    Pause.hitstop(stop, timed and require("mvtk.player.timers") or nil,
+      opts.player_combat and opts.kind == "projectile", opts.kind == "boss_hurt")
+  end
   local r = opts.rumble or 0.25
   if M.rumble_enabled and Rumble and r and r > 0 then pcall(Rumble.play, r, math.floor((opts.rumble_ms or 90))) end
 end

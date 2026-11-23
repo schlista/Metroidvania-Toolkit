@@ -29,6 +29,7 @@ local Debug = Util.require_config("developer.config.debug_config", {
 })
 local Defaults = Util.require_config("developer.config.boss_defaults", {
     contact_damage       = 2,
+    contact_damage_interval = 0.5,
     contact_knockback_x  = 120,
     contact_knockback_y  = 80,
     default_sprite_size  = 64,
@@ -349,20 +350,10 @@ local get_current_phase
 local get_health_percent
 local select_attack
 local execute_attack
-local update_attack
-local is_attack_active
-local cancel_attack
 local get_attack_pattern
 local face_player
 local move_toward
 local get_arena_center
-local is_attack_ready
-local execute_melee_attack
-local execute_projectile_attack
-local execute_aoe_attack
-local execute_summon_attack
-local execute_beam_attack
-local execute_special_attack
 local play_animation
 local update_sprite_facing
 local flash_sprite
@@ -399,12 +390,6 @@ function init(self)
         if boss_health_override > 0 then
             custom_config = custom_config or {}
             custom_config.max_health = boss_health_override
-        end
-        if boss_id_str then
-            custom_config = custom_config or {}
-            custom_config.boss_tag = boss_id_str
-            custom_config.boss_id = boss_id_str
-            custom_config.spawn_id = boss_id_str
         end
         self.boss_id = BossManager.spawn_boss(boss_type_str, pos, custom_config)
     end
@@ -448,7 +433,7 @@ function init(self)
     resolve_sprite_target(self)
 
     -- Create state machine
-    self.state_machine = StateMachine.create(self)
+    self.state_machine = StateMachine.create(self, BossManager)
 
     -- Create phase controller. When no phases are authored, synthesize a
     -- single-phase fallback so the state machine still runs instead of the
@@ -475,12 +460,12 @@ function init(self)
     -- Set size if configured. Source art is assumed to be default_sprite_size
     -- pixels in the art pipeline; a boss authored at a different source size
     -- should override default_sprite_size in boss_defaults.lua.
+    local Motion = require "mvtk.bosses.boss_motion"
     if self.config.size then
-        local source = tonumber(Defaults.default_sprite_size) or 64
-        local w = tonumber(self.config.size.width)  or source
-        local h = tonumber(self.config.size.height) or source
-        go.set_scale(vmath.vector3(w / source, h / source, 1))
+        local sx, sy = Motion.config_scale(self.config.size, Defaults)
+        go.set_scale(vmath.vector3(sx, sy, 1))
     end
+    self._base_scale = Motion.capture_base_scale(self.self_url, self)
 
     -- Bind helper functions as methods
     self.play_animation = play_animation
@@ -493,21 +478,11 @@ function init(self)
     self.get_health_percent = get_health_percent
     self.get_attack_pattern = get_attack_pattern
     self.execute_attack = execute_attack
-    self.update_attack = update_attack
-    self.is_attack_active = is_attack_active
-    self.cancel_attack = cancel_attack
     self.face_player = face_player
     self.move_toward = move_toward
     self.get_arena_center = get_arena_center
-    self.is_attack_ready = is_attack_ready
     self.on_defeat = on_defeat
     self.on_phase_change = on_phase_change
-    self.execute_melee_attack = execute_melee_attack
-    self.execute_projectile_attack = execute_projectile_attack
-    self.execute_aoe_attack = execute_aoe_attack
-    self.execute_summon_attack = execute_summon_attack
-    self.execute_beam_attack = execute_beam_attack
-    self.execute_special_attack = execute_special_attack
 
     -- Phase transitions already apply their modifiers on completion; apply
     -- phase one once as well so its absolute chase speed and attack pool are
@@ -527,6 +502,21 @@ function init(self)
         self:play_animation(BossAnimations.resolve_or_key(self, "idle"), true)
     end
 
+    local spawn = go.get_position()
+    self.boss_data.spawn_x, self.boss_data.spawn_y = spawn.x, spawn.y
+    if self.config.ground_motion == nil then self.config.ground_motion = Defaults.ground_motion end
+    if self.config.ground_motion == true then
+        self.state_machine:prepare_locomotion(self:get_current_phase(), 0)
+    elseif self.config.arena_id or self.config.arena then
+        local Confinement = require "mvtk.bosses.boss_confinement"
+        self._confine_rect, self._confine_kind = Confinement.resolve_rect(self.config)
+        if self._confine_kind == "arena" then
+            local x, y = Confinement.clamp_boss(self, spawn.x, spawn.y)
+            if x ~= spawn.x or y ~= spawn.y then
+                go.set_position(vmath.vector3(x, y, spawn.z))
+            end
+        end
+    end
     print(string.format("[BOSS] %s initialized", self.config.name))
 end
 
@@ -534,9 +524,8 @@ function final(self)
     if BossManager.actor_probe then BossManager.actor_probe(go.get_id()) end
     require("mvtk.bosses.boss_motion").clear(go.get_id())
     CombatFeedback.set_target_owner(go.get_id(), false)
-    if self._active_charge then
-        BossAttacks.cancel_pattern(self, self._active_charge.pattern or { type = "charge" })
-    end
+    require("mvtk.bosses.attack_runtime").cancel(self, "removed")
+    if self._locomotion then self.state_machine:interrupt_locomotion() end
     -- Remove from manager
     if self.boss_id then
         BossManager.remove_boss(self.boss_id)
@@ -556,7 +545,9 @@ function update(self, dt)
     if require("mvtk.core.pause").get() then
         return
     end
-    require("mvtk.bosses.boss_motion").update(go.get_id(), dt)
+    local game_dt = require("mvtk.bosses.boss_clock").delta(dt, require("mvtk.core.pause"))
+    self._in_boss_update = true
+    require("mvtk.bosses.boss_motion").update(go.get_id(), game_dt)
     if self._paused_animation then
         local event = self._paused_animation
         self._paused_animation = nil
@@ -570,6 +561,11 @@ function update(self, dt)
         end
     end
     if self.boss_data.defeated then
+        require("mvtk.bosses.attack_runtime").cancel(self, "defeat")
+        self.boss_data._boss_step, self.boss_data._boss_clock_at = nil, nil
+        self._next_contact_hit = nil
+        if self._locomotion then self.state_machine:interrupt_locomotion() end
+        self._in_boss_update = false
         -- Ensure defeat flow runs even if boss was killed externally
         if self.state_machine and not self.state_machine:is_state(StateMachine.STATES.DEFEATED) then
             self.state_machine:change_state(StateMachine.STATES.DEFEATED)
@@ -580,7 +576,7 @@ function update(self, dt)
     -- Advance i-frame timer & drive hurt flash on the boss's sprite.
     if self.boss_data then
         resolve_sprite_target(self)
-        Invulnerability.update(self.boss_data, dt)
+        Invulnerability.update(self.boss_data, game_dt)
     end
 
     -- Keep script-local flag in sync with timer-driven state.
@@ -588,30 +584,42 @@ function update(self, dt)
         self.invulnerable = self.boss_data.invulnerable
     end
 
-    -- Update state machine
-    if BossManager.tick_stagger then BossManager.tick_stagger(self.boss_id, dt) end
-    if self.state_machine then
-        self.state_machine:update(dt)
+    -- Reset terrain intents and the shared ray allowance before AI or attacks.
+    if self._locomotion and game_dt > 0 then
+        self.state_machine:prepare_locomotion(self:get_current_phase(), game_dt)
     end
-
-    -- Update phase controller
-    if self.phase_controller then
-        self.phase_controller:update(dt)
+    local previous = self.boss_data.fight_time or 0
+    BossManager.tick_fight(self.boss_id, game_dt)
+    if game_dt > 0 then
+        if self.state_machine and self.state_machine.advance_frame then
+            self.state_machine:advance_frame(previous, game_dt, game_dt)
+        else
+            if BossManager.tick_stagger then BossManager.tick_stagger(self.boss_id, game_dt) end
+            if self.state_machine then self.state_machine:update(game_dt) end
+            require("mvtk.bosses.attack_runtime").update(self, game_dt)
+            if self.state_machine and self.state_machine.finish_attack then self.state_machine:finish_attack() end
+            if self.phase_controller then
+                self.phase_controller:update(game_dt)
+                if self.phase_controller.advance_transition then
+                    self.phase_controller:advance_transition(self.boss_data.fight_time or previous)
+                end
+            end
+        end
+        if self._locomotion then self.state_machine:update_locomotion(game_dt) end
+    else
+        require("mvtk.bosses.attack_runtime").prune(self)
     end
+    self._in_boss_update = false
 
     -- Keep the boss inside its arena (or its room when it has no arena) so it
     -- cannot chase the player out of the fight area.
     local Confinement = require("mvtk.bosses.boss_confinement")
     if not self._confine_rect then
-        self._confine_rect = Confinement.resolve_rect(self.config)
+        self._confine_rect, self._confine_kind = Confinement.resolve_rect(self.config)
     end
-    if self._confine_rect then
+    if self._confine_rect and (dt > 0 or not (self._locomotion and self._locomotion.active)) then
         local pos = go.get_position()
-        local size = self.config and self.config.size or {}
-        -- Keep charge_edge_padding clear of the edges as well as half the body.
-        local pad = math.max(0, tonumber(self.config and self.config.charge_edge_padding) or 0)
-        local x, y = Confinement.clamp(pos.x, pos.y, self._confine_rect,
-            (tonumber(size.width) or 0) * 0.5 + pad, (tonumber(size.height) or 0) * 0.5)
+        local x, y = Confinement.clamp_boss(self, pos.x, pos.y)
         if x ~= pos.x or y ~= pos.y then
             go.set_position(vmath.vector3(x, y, pos.z))
         end
@@ -657,8 +665,12 @@ function on_message(self, message_id, message, sender)
             self.state_machine:change_state(StateMachine.STATES.STUNNED, {stun_duration = message.duration})
             -- A parry reaction may have entered STUNNED before this queued
             -- gauge trigger arrives. The full knockdown owns its own duration.
-            self.state_machine.state_data.stun_duration = message.duration
-            self.state_machine.state_data.stun_timer = 0
+            if self.state_machine.restart_stun then
+                self.state_machine:restart_stun(message.duration)
+            else
+                self.state_machine.state_data.stun_duration = message.duration
+                self.state_machine.state_data.stun_timer = 0
+            end
             self:play_animation(BossAnimations.resolve_or_key(self, "stagger"), false)
         else
             -- A queued trigger may arrive after a boss phase transition begins.
@@ -717,7 +729,13 @@ function on_message(self, message_id, message, sender)
         if self.boss_data and self.boss_data.defeated then
             return
         end
-        if message.group == hash("player") and not self._active_charge then
+        if message.group == hash("player") and not self._active_charge
+            and not (self.boss_data and self.boss_data._burrowing) then
+            local Clock = require "mvtk.bosses.boss_clock"
+            local now = Clock.time(self.boss_data)
+            if self._next_contact_hit and not Clock.reached(now, self._next_contact_hit) then return end
+            local interval = self.config.contact_damage_interval or Defaults.contact_damage_interval or 0.5
+            self._next_contact_hit = now + interval
             local damage = self.config.contact_damage or Defaults.contact_damage or 2
             local mult = (self.boss_data and self.boss_data.damage_multiplier) or 1.0
             local amount = damage * mult
@@ -765,152 +783,97 @@ get_health_percent = function(self)
     return BossManager.get_boss_health_percent(self.boss_id)
 end
 
-local CANONICAL_ATTACK_TYPES = {
-    aoe = "aoe",
-    beam = "beam",
-    blade_storm = "aoe",
-    charge = "charge",
-    clone = "summon",
-    combo = "melee",
-    crystal_shard_enemy = "summon",
-    explosion = "aoe",
-    fire_wave = "beam",
-    hazard = "aoe",
-    melee = "melee",
-    poison_cloud = "aoe",
-    projectile = "projectile",
-    shadow_spawn = "summon",
-    slime = "summon",
-    special = "special",
-    spike_trap = "aoe",
-    summon = "summon",
-    teleport_attack = "charge",
-    thorn_minion = "summon",
-}
+local function attack_context(self, phase)
+    local Movement = require "mvtk.bosses.movement_strategies"
+    local Fallback = require "mvtk.bosses.attack_schedule_defaults"
+    local distance, player_pos, boss_pos = Movement.attack_distance(self, phase)
+    if not player_pos or not boss_pos then return nil end
 
-local BEHAVIOR_PROFILES = {
-    aggressive = { order = { "charge", "melee", "aoe", "projectile", "beam", "special", "summon" }, allow_repeat = true },
-    berserk = { order = { "charge", "melee", "aoe", "special", "projectile", "beam", "summon" }, allow_repeat = true },
-    cautious = { order = { "projectile", "beam", "aoe", "summon", "charge", "melee", "special" }, allow_repeat = false },
-    defensive = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = false },
-    desperate = { order = { "special", "aoe", "charge", "beam", "projectile", "melee", "summon" }, allow_repeat = true },
-    erratic = { order = { "special", "summon", "aoe", "projectile", "charge", "melee", "beam" }, allow_repeat = true },
-    patrol = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = false },
-    random = { order = { "projectile", "beam", "summon", "aoe", "charge", "melee", "special" }, allow_repeat = true, randomize = true },
-    relentless = { order = { "charge", "melee", "projectile", "aoe", "beam", "special", "summon" }, allow_repeat = false },
-    skilled = { order = { "charge", "projectile", "beam", "melee", "aoe", "summon", "special" }, allow_repeat = false },
-    testing = { order = { "projectile", "beam", "summon", "aoe", "melee", "charge", "special" }, allow_repeat = false },
-}
-
-local function normalize_behavior_name(value)
-    local behavior = tostring(value or "random"):lower()
-    if BEHAVIOR_PROFILES[behavior] then
-        return behavior
+    local rect, rect_kind = self._confine_rect, self._confine_kind
+    if not rect then
+        rect, rect_kind = require("mvtk.bosses.boss_confinement").resolve_rect(self.config)
     end
-    return "random"
+    -- A boss inside its own Boss Arena fights anywhere in it. A boss with no
+    -- arena starts with its room, so it waits until the player is close.
+    local engage_range = tonumber(self.config.engage_range) or Defaults.engage_range or Fallback.engage_range
+    local near_wall_distance = Defaults.near_wall_distance or Fallback.near_wall_distance
+    local near_wall = rect and math.min(math.abs(boss_pos.x - rect.min_x),
+        math.abs(boss_pos.x - rect.max_x)) <= near_wall_distance or false
+    local partners_total, partners_alive = BossManager.get_group_partner_counts(self.boss_id)
+    local SpawnService = require "mvtk.enemies.enemy_spawn_service"
+    local body, melee_body = Detection.get_player_body()
+    if body then
+        local swing_facing = (phase.facing_lock == true or not self.face_player) and (self.facing or 1)
+            or (player_pos.x > boss_pos.x and 1 or -1)
+        -- The implicit melee box is measured from the boss in swing direction.
+        melee_body = {x = (body.x - boss_pos.x) * swing_facing, y = body.y - boss_pos.y,
+            half_w = body.half_w, half_h = body.half_h}
+    end
+    return {
+        distance = distance,
+        melee_body = melee_body,
+        engaged = rect_kind == "arena" or distance <= engage_range,
+        dx = player_pos.x - boss_pos.x,
+        dy = player_pos.y - boss_pos.y,
+        facing = self.facing or 1,
+        player_grounded = Detection.get_player_grounded(),
+        player_height_dead_band = Defaults.player_height_dead_band or Fallback.player_height_dead_band,
+        boss_health = self:get_health_percent(),
+        phase_time = require("mvtk.bosses.boss_clock").time(self.boss_data) - (self._phase_started_at or 0),
+        sequence_wait = Defaults.sequence_wait or Fallback.sequence_wait,
+        adds_alive = SpawnService.count_alive("boss:" .. self.boss_id),
+        partners_total = partners_total,
+        partners_alive = partners_alive,
+        near_wall = near_wall,
+        last_attack = self.last_attack_name,
+        is_ready = function(name, _, entry)
+            local pattern = self:get_attack_pattern(name, entry)
+            if not pattern then return false, "unknown_pattern" end
+            local Schema = require "mvtk.bosses.attack_pattern_schema"
+            local height, settings = Schema.floor_height_limit(pattern, Defaults)
+            local floor = height and {pattern = pattern, height = height, settings = settings}
+            return BossManager.is_attack_ready(self.boss_id, name, pattern), nil, floor
+        end,
+        floor_reach = function(floor)
+            return require("mvtk.bosses.boss_telegraph").floor_reach(
+                self, floor.pattern, body, boss_pos, floor.height, floor.settings)
+        end,
+        cast_failure = function(entry)
+            return require("mvtk.bosses.boss_telegraph").arena_fit_failure(
+                self, self:get_attack_pattern(entry.attack, entry), rect)
+        end,
+    }
 end
 
-local function canonical_attack_type(pattern)
-    if type(pattern) ~= "table" then
-        return "special"
-    end
-    return CANONICAL_ATTACK_TYPES[pattern.type] or "special"
-end
-
-local function filter_repeated_attack(list, last_attack_name)
-    if not last_attack_name or #list <= 1 then
-        return list
-    end
-
-    local filtered = {}
-    for _, attack_name in ipairs(list) do
-        if attack_name ~= last_attack_name then
-            filtered[#filtered + 1] = attack_name
-        end
-    end
-
-    return (#filtered > 0) and filtered or list
-end
-
-local function pick_random_attack_name(list)
-    if not list or #list == 0 then
-        return nil
-    end
-    return list[math.random(#list)]
-end
-
-local function build_attack_groups(self, attack_names)
-    local groups = {}
-    for _, attack_name in ipairs(attack_names) do
-        local pattern = self:get_attack_pattern(attack_name)
-        local attack_type = canonical_attack_type(pattern)
-        groups[attack_type] = groups[attack_type] or {}
-        groups[attack_type][#groups[attack_type] + 1] = attack_name
-    end
-    return groups
-end
-
-local function select_attack_for_behavior(self, ready_attacks, behavior)
-    local profile = BEHAVIOR_PROFILES[normalize_behavior_name(behavior)] or BEHAVIOR_PROFILES.random
-    local groups = build_attack_groups(self, ready_attacks)
-    local last_attack_name = self.last_attack_name
-
-    if profile.randomize then
-        return pick_random_attack_name(filter_repeated_attack(ready_attacks, last_attack_name))
-    end
-
-    for _, attack_type in ipairs(profile.order or {}) do
-        local bucket = groups[attack_type]
-        if bucket and #bucket > 0 then
-            local choices = profile.allow_repeat and bucket or filter_repeated_attack(bucket, last_attack_name)
-            local selected = pick_random_attack_name(choices)
-            if selected then
-                return selected
-            end
-        end
-    end
-
-    return pick_random_attack_name(filter_repeated_attack(ready_attacks, last_attack_name))
-end
-
---- Select an attack to perform
--- @return Attack name or nil
+--- Select an attack and retain its authored entry for the wind-up.
+-- @return Attack name or nil, followed by the scheduler's reasons
 select_attack = function(self)
-    local current_phase = self:get_current_phase()
-    if not current_phase then
-        return nil
-    end
+    local phase = self:get_current_phase()
+    local ctx = phase and attack_context(self, phase)
+    if not ctx then return nil end
 
-    local available_attacks = current_phase.attacks or {}
-
-    -- Filter by cooldown
-    local ready_attacks = {}
-    for _, attack_name in ipairs(available_attacks) do
-        local pattern = self:get_attack_pattern(attack_name)
-        if pattern and BossManager.is_attack_ready(self.boss_id, attack_name, pattern) then
-            table.insert(ready_attacks, attack_name)
-        end
-    end
-
-    if #ready_attacks == 0 then
-        return nil  -- No attacks ready
-    end
-
-    -- Select based on the phase's authored behavior profile.
-    return select_attack_for_behavior(self, ready_attacks, current_phase.behavior)
+    local state = BossManager.get_attack_schedule(self, phase)
+    local entry, reasons = require("mvtk.bosses.attack_scheduler").pick(state.moveset, ctx, state, math.random)
+    if BossManager.schedule_probe then BossManager.schedule_probe(self, state, entry, reasons.status, reasons) end
+    self._selected_attack_entry = entry
+    return entry and entry.attack, reasons
 end
 
 --- Execute an attack
 -- @param attack_name Attack name
 -- @param pattern Attack pattern definition
 execute_attack = function(self, attack_name, pattern)
+    if self._locomotion and (self.boss_data._burrowing or self._locomotion.blink_advance) then
+        self.state_machine:interrupt_locomotion()
+    end
     print(string.format("[BOSS] %s executing: %s", self.config.name, attack_name))
     self.last_attack_name = attack_name
 
     -- Mark attack as used (cooldown)
     BossManager.use_attack(self.boss_id, attack_name)
 
-    BossAttacks.execute_pattern(self, pattern, { play_animation = true })
+    BossAttacks.execute_pattern(self, pattern, { play_animation = true,
+        defer_timers = self._in_boss_update == true and self._attack_due == nil })
 
     -- Play attack sound
     if self.config.audio and self.config.audio.attack then
@@ -918,29 +881,14 @@ execute_attack = function(self, attack_name, pattern)
     end
 end
 
---- Advance an attack with frame-driven runtime behavior (currently charge).
-update_attack = function(self, _attack_name, pattern, dt)
-    return BossAttacks.update_pattern(self, pattern, dt)
-end
-
---- Whether a frame-driven attack still owns the ATTACKING state.
-is_attack_active = function(self, _attack_name, pattern)
-    return BossAttacks.is_pattern_active(self, pattern)
-end
-
---- Stop any runtime behavior owned by the outgoing attack.
-cancel_attack = function(self, _attack_name, pattern)
-    BossAttacks.cancel_pattern(self, pattern)
-end
-
 --- Get attack pattern
 -- @param attack_name Attack name
 -- @return Pattern table or nil
-get_attack_pattern = function(self, attack_name)
+get_attack_pattern = function(self, attack_name, entry)
     -- boss_state_machine captures this resolved copy on ATTACKING entry and
     -- reuses it for telegraph, execution, updates, and cancellation.
     return BossManager.resolve_attack_pattern(
-        attack_name, self.boss_data, self:get_current_phase())
+        attack_name, self.boss_data, self:get_current_phase(), entry)
 end
 
 --- Face the player
@@ -959,20 +907,32 @@ end
 -- @param speed Movement speed (already includes any multipliers)
 -- @param dt Delta time
 move_toward = function(self, target_pos, speed, dt)
+    if dt <= 0 then return false end
     local pos = go.get_position()
     local offset = vmath.vector3(target_pos.x - pos.x, target_pos.y - pos.y, 0)
-    if offset.x == 0 and offset.y == 0 then return end
+    if offset.x == 0 and offset.y == 0 then return false end
     local direction = vmath.normalize(offset)
     local velocity = direction * speed
 
     -- Apply movement using delta time
     local new_pos = pos + velocity * dt
+    -- Idle movement runs before selection and warnings. Use the confined
+    -- position now so both see the same origin as the resulting swing.
+    local Confinement = require "mvtk.bosses.boss_confinement"
+    if not self._confine_rect then
+        self._confine_rect, self._confine_kind = Confinement.resolve_rect(self.config)
+    end
+    if self._confine_rect then
+        new_pos.x, new_pos.y = Confinement.clamp_boss(self, new_pos.x, new_pos.y)
+    end
+    if new_pos.x == pos.x and new_pos.y == pos.y then return false end
     go.set_position(new_pos)
 
     -- Update facing
-    if direction.x ~= 0 then
+    if direction.x ~= 0 and not self._hold_idle_facing then
         self.facing = direction.x > 0 and 1 or -1
     end
+    return true
 end
 
 --- Get arena center position
@@ -985,42 +945,6 @@ get_arena_center = function(self)
         return vmath.vector3((rect.min_x + rect.max_x) * 0.5, (rect.min_y + rect.max_y) * 0.5, go.get_position().z)
     end
     return go.get_position()
-end
-
---- Check if attack is ready (off cooldown)
--- @param attack_name Attack name
--- @return true if ready
-is_attack_ready = function(self, attack_name)
-    local pattern = self:get_attack_pattern(attack_name)
-    return BossManager.is_attack_ready(self.boss_id, attack_name, pattern)
-end
-
---[[============================================================================
-    ATTACK EXECUTION
-==============================================================================]]
-
-execute_melee_attack = function(self, pattern)
-    BossAttacks.execute_melee(self, pattern)
-end
-
-execute_projectile_attack = function(self, pattern)
-    BossAttacks.execute_projectile(self, pattern)
-end
-
-execute_aoe_attack = function(self, pattern)
-    BossAttacks.execute_aoe(self, pattern)
-end
-
-execute_summon_attack = function(self, pattern)
-    BossAttacks.execute_summon(self, pattern)
-end
-
-execute_beam_attack = function(self, pattern)
-    BossAttacks.execute_beam(self, pattern)
-end
-
-execute_special_attack = function(self, pattern)
-    BossAttacks.execute_special(self, pattern)
 end
 
 --[[============================================================================
@@ -1082,6 +1006,7 @@ end
 
 --- Called when boss is defeated
 on_defeat = function(self)
+    require("mvtk.bosses.attack_runtime").cancel(self, "defeat")
     if self._defeat_started then
         return
     end
@@ -1112,13 +1037,7 @@ on_defeat = function(self)
     -- Handled by BossManager (rewards, unlocks, etc.)
 end
 
---- Called when phase changes
--- @param old_phase Old phase index
--- @param new_phase New phase index
-on_phase_change = function(self, old_phase, new_phase)
-    print(string.format("[BOSS] Phase change: %d -> %d", old_phase, new_phase))
-
-    -- Sync arena mechanics with boss phase
+local function sync_arena_phase(self, new_phase, started_at)
     if BossArena and BossArena.transition_to_phase then
         local active = BossArena.get_active_arena and BossArena.get_active_arena() or nil
         local arena_id = self.config and (self.config.arena_id or self.config.arena) or nil
@@ -1128,10 +1047,37 @@ on_phase_change = function(self, old_phase, new_phase)
                 advance, grouped = BossManager.should_advance_arena(
                     self.boss_id, active.phase or active.current_phase or 0, new_phase)
             end
-            if advance then BossArena.transition_to_phase(new_phase, nil, grouped) end
+            if advance then
+                local record = self.boss_data
+                local elapsed = record and math.max(0, (record.fight_time or 0) - (started_at or 0))
+                BossArena.transition_to_phase(new_phase, nil, grouped, elapsed)
+            end
         end
     end
+end
 
+function late_update(self, dt)
+    if not self._arena_phase_requests then return end
+    if self.boss_data.defeated then
+        self._arena_phase_requests = nil
+        return
+    end
+    if require("mvtk.bosses.boss_clock").delta(dt, require("mvtk.core.pause")) <= 0 then return end
+    local requests = self._arena_phase_requests
+    self._arena_phase_requests = nil
+    for _, request in ipairs(requests) do sync_arena_phase(self, request.phase, request.at) end
+end
+
+--- Called when phase changes.
+on_phase_change = function(self, old_phase, new_phase)
+    print(string.format("[BOSS] Phase change: %d -> %d", old_phase, new_phase))
+    if self._in_boss_update then
+        -- The main arena update may still be owing this draw's delta.
+        self._arena_phase_requests = self._arena_phase_requests or {}
+        table.insert(self._arena_phase_requests, {phase = new_phase, at = self._phase_started_at})
+    else
+        sync_arena_phase(self, new_phase, self._phase_started_at)
+    end
 end
 
 dispatch_message = on_message

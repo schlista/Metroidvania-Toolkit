@@ -39,6 +39,7 @@ end
 -- angle: radians; the projectile's dir_x / dir_y are set to cos/sin(angle)
 -- props: table merged into factory props. Recognized fields:
 --   speed (default 300), lifetime (default 3.0), damage, facing,
+--   launch_age (game seconds already elapsed at the factory draw),
 --   extra_props (table of additional factory props to pass through).
 -- Returns the created instance id (or nil on failure).
 function M.fire(factory_ref, origin, angle, props)
@@ -61,6 +62,9 @@ function M.fire(factory_ref, origin, angle, props)
         dir_x = dir_x,
         dir_y = dir_y,
     }
+    if props.launch_age and props.launch_age > 0 then
+        factory_props.launch_age = props.launch_age
+    end
     if props.extra_props then
         for k, v in pairs(props.extra_props) do
             factory_props[k] = v

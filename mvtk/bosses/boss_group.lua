@@ -106,16 +106,44 @@ function M.join_pool(groups, active, boss_id)
     end
 end
 
-function M.apply_damage(active, boss, damage)
-    local pool = boss.shared_pool
-    if not pool then boss.health = boss.health - damage; return end
-    pool.pool = math.max(0, pool.pool - damage)
+local function mirror_pool_health(active, pool)
     for _, id in ipairs(pool.members) do
         local member = active[id]
         if member and not member.defeated then
             member.health = member.max_health * pool.pool / pool.pool_max
         end
     end
+end
+
+function M.phase_damage_boundary(active, boss, health, max_health)
+    local edge
+    local pool = boss.shared_pool
+    for _, id in ipairs(pool and pool.members or {boss.id}) do
+        local member = active[id]
+        local pc = member and member.phase_controller
+        if pc and pc.get_damage_boundary and not member.defeated and member.config.phase_damage_gate then
+            local boundary = pc:get_damage_boundary(health, max_health)
+            if boundary and (not edge or boundary > edge) then edge = boundary end
+        end
+    end
+    return edge
+end
+
+function M.set_health(active, boss, remaining_health)
+    local pool = boss.shared_pool
+    if not pool then boss.health = remaining_health; return end
+    pool.pool = remaining_health
+    mirror_pool_health(active, pool)
+end
+
+function M.apply_heal(active, boss, amount)
+    local pool = boss.shared_pool
+    if not pool then
+        boss.health = math.min(boss.max_health, boss.health + amount)
+        return
+    end
+    pool.pool = math.min(pool.pool_max, pool.pool + amount)
+    mirror_pool_health(active, pool)
 end
 
 function M.finish_damage(active, boss_id, source, kill)

@@ -5,17 +5,17 @@
 -- @module boss_attacks.grab
 
 local C = require "mvtk.bosses.boss_attacks.common"
+local Indicator = require "mvtk.bosses.indicator_geometry"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    instance = C.instance(boss, pattern, instance)
     C.print("[BOSS_ATTACKS] Grab attack")
 
     local grab = pattern.grab or {}
     local pos = go.get_position()
-    local reach = grab.reach or pattern.range or C.Defaults.default_melee_width
-    local width = grab.width or C.Defaults.default_melee_width
-    local height = grab.height or C.Defaults.default_melee_height
+    local reach, width, height = Indicator.grab_box(pattern, C.Defaults)
     local damage = (grab.damage or pattern.damage or C.Defaults.default_grab_damage) * C.damage_mult(boss)
     local duration = grab.duration
         or (boss.boss_data and boss.boss_data.grab_duration)
@@ -25,14 +25,13 @@ function M.execute(boss, pattern)
         or C.Defaults.default_grab_throw_kb
     local throw_ky = grab.throw_knockback_y or C.Defaults.default_melee_knockback_y
 
-    local player_pos = C.Detection.get_player_position()
-    if not player_pos then return end
-
     local hitbox_pos = vmath.vector3(pos.x + reach * 0.5 * boss.facing, pos.y, pos.z)
-    if not C.Geometry.point_in_box(hitbox_pos, width, height, player_pos) then
-        return
+    local function overlaps(body)
+        return C.Geometry.rect_in_box(hitbox_pos, width, height, body)
     end
 
+    -- The grab starts at execution, including when dispatched by a combo.
+    if not C.hit_body(instance, overlaps, "box", hitbox_pos, width, height) then return end
     local initial_payload = C.build_payload(boss, pattern, damage, 0, 0)
     initial_payload.grab_start = true
     initial_payload.grab_duration = duration
@@ -40,7 +39,7 @@ function M.execute(boss, pattern)
 
     C.play_resolved_animation(boss, "grab_hold", true)
 
-    C.delay(duration, function()
+    instance:after(duration, function()
         C.play_resolved_animation(boss, "grab_throw", true)
         local throw_payload = C.build_payload(
             boss, pattern, 0,

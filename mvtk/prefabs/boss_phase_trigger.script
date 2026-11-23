@@ -3,6 +3,8 @@
 
 local PU = require "mvtk.prefabs.prefab_utils"
 local Flags = require "mvtk.core.flags"
+local Pause = require "mvtk.core.pause"
+local Clock = require "mvtk.bosses.boss_clock"
 
 local function to_bool(value, default)
     if value == nil then return default end
@@ -53,14 +55,14 @@ local function linked_to_boss(self)
     return (self.boss_id_str or "") ~= "" or (self.boss_type_str or "") ~= ""
 end
 
-local function apply_phase(self)
+local function apply_phase(self, elapsed)
     local phase = tonumber(self.phase) or 1
     local forced_boss = nil
 
     local ok_mgr, BossManager = pcall(require, "mvtk.bosses.boss_manager")
     if ok_mgr and BossManager and BossManager.force_phase then
         local boss_id = resolve_boss_id(self)
-        if boss_id and BossManager.force_phase(boss_id, phase) ~= false then
+        if boss_id and BossManager.force_phase(boss_id, phase, elapsed) ~= false then
             forced_boss = boss_id
         end
     end
@@ -75,9 +77,9 @@ local function apply_phase(self)
         if not active or arena_id == "" or (active and active.id == arena_id) then
             local t = tonumber(self.transition_time) or 0
             if t > 0 then
-                BossArena.transition_to_phase(phase, t)
+                BossArena.transition_to_phase(phase, t, nil, elapsed)
             else
-                BossArena.transition_to_phase(phase)
+                BossArena.transition_to_phase(phase, nil, nil, elapsed)
             end
         end
     end
@@ -102,6 +104,10 @@ local function apply_phase(self)
     end
 end
 
+local function game_held()
+    return Pause.get() or Pause.is_hitstopped and Pause.is_hitstopped()
+end
+
 local function trigger(self)
     if self.trigger_once then
         if self._used then return end
@@ -113,15 +119,38 @@ local function trigger(self)
     end
 
     local delay = tonumber(self.delay) or 0
-    if delay > 0 then
-        if self._pending_timer then return end
-        self._pending_timer = timer.delay(delay, false, function()
-            self._pending_timer = nil
-            apply_phase(self)
-        end)
+    if self._pending_delay or self._phase_due then return end
+    if delay > 0 or game_held() then
+        self._pending_delay = math.max(0, delay)
     else
         apply_phase(self)
     end
+end
+
+function update(self, dt)
+    if not self._pending_delay and not self._phase_due then return end
+    dt = Clock.delta(dt, Pause)
+    if dt <= 0 then return end
+    if self._phase_due then
+        self._phase_due = self._phase_due + dt
+        return
+    end
+    local remaining = self._pending_delay - dt
+    if Clock.reached(0, remaining) then
+        self._pending_delay = nil
+        self._phase_due = math.max(0, -remaining)
+    else
+        self._pending_delay = remaining
+    end
+end
+
+function late_update(self, dt)
+    -- Both the boss and arena must have spent this display delta before the
+    -- elapsed tail can be taken off either clock, regardless of actor order.
+    if not self._phase_due or game_held() or Clock.delta(dt, Pause) <= 0 then return end
+    local elapsed = self._phase_due
+    self._phase_due = nil
+    apply_phase(self, elapsed)
 end
 
 local function apply_props(self, props)

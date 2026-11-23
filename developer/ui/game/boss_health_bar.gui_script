@@ -485,6 +485,10 @@ local function slot_message(self, message_id, message, sender)
 end
 
 function on_message(self, message_id, message, sender)
+    if message.boss_ui_payload then
+        message = BossUI and BossUI.receive(self._boss_ui_url, message.boss_ui_payload)
+        if not message then return end
+    end
     -- A phase-only consumer can use the existing receiver before init.
     if not self._slots then return slot_message(self, message_id, message, sender) end
     local id = message.boss_id or "default"

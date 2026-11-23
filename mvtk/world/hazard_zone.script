@@ -26,7 +26,7 @@ go.property("extend_time", 2.0)                     -- time spikes stay extended
 go.property("start_retracted", false)               -- start in retracted state
 go.property("arena_id", "")                   -- link to arena for phase control
 go.property("boss_id", "")                    -- optional named boss phase source
-go.property("active_phases", "")              -- empty = every active fight phase
+go.property("active_phases", "")              -- empty = every active fight phase; none = pulse only
 go.property("hide_when_inactive", true)        -- arena gate only; switches keep their art
 go.property("warn_time", 0)                    -- harmless blink before arena activation
 go.property("pattern", "")                    -- activation pattern
@@ -72,6 +72,8 @@ go.property("level_art_layer", "")
 go.property("tile_height", 64)
 
 local Pause = require "mvtk.core.pause"
+local Timers = require "mvtk.player.timers"
+local PlayerLife = require "mvtk.world.water_registry"
 local EMPTY_HASH = hash("")
 local FX_MANAGER_URL = msg.url("main:/fx_manager#fx_manager")
 local Util = require "mvtk.core.util"
@@ -86,6 +88,7 @@ local ToggleMessages = require "mvtk.prefabs.toggle_messages"
 local Presentation = require "mvtk.tiled.object_presentation"
 local ArtAnimation = require "mvtk.tiled.art_animation"
 local HazardImmunity = require "mvtk.world.hazard_immunity"
+local Pulse
 local function clear_slow(self)
     if self._slow_source then
         require("mvtk.player.player_stats").clear_source(self._slow_source)
@@ -95,6 +98,13 @@ end
 
 local apply_damage
 local arena_visual
+
+local function damage_period(self)
+    local seconds = self.damage_interval_value
+    -- Ordinary hits have at most one scheduled attempt per reference step
+    -- for very small positive intervals, just as on the saved 60 Hz path.
+    return seconds > 0 and math.max(seconds, Timers.engine_reference_step()) or seconds
+end
 
 -- Moving art lives in this object's own tilemap, which the baker writes with one
 -- layer ("solid"). Enable or disable that component instead of calling
@@ -305,6 +315,7 @@ end
 local function parse_active_phases(phases)
     local result = {}
     if type(phases) == "string" then
+        if phases:lower():match("^%s*none%s*$") then return result, true end
         for phase in phases:gmatch("(%d+)") do result[tonumber(phase)] = true end
     elseif type(phases) == "table" then
         for _, phase in ipairs(phases) do
@@ -325,13 +336,22 @@ end
 
 local function arena_gate(self, phase, active)
     self.current_arena_phase, self._arena_active = phase, active
-    local allowed = active and (not next(self.active_phase_set) or self.active_phase_set[phase] == true)
+    local by_phase = not (self._arena_linked and self._pulse_only)
+        and (not next(self.active_phase_set) or self.active_phase_set[phase] == true)
+    local pulse_warning, pulse_age
+    if active and self._pulse_arena then
+        pulse_warning, pulse_age = Pulse.warn_time(self._pulse_arena, self.hazard_id, self.hazard_type, self._pulse_only)
+    end
+    local allowed = active and (by_phase or pulse_warning ~= nil)
     if allowed == self.pattern_active then return end
     self.pattern_active = allowed
     local was_warning = self._arena_warning
     self._arena_warning = nil
-    if allowed and self.warn_time > 0 then
-        self._arena_warning = self.warn_time
+    self._arena_pulsed_warning = nil
+    local warning = by_phase and self.warn_time or pulse_warning
+    if allowed and warning > 0 then
+        self._arena_warning = warning
+        self._arena_pulsed_warning = not by_phase and pulse_age ~= nil or nil
         self._arena_blink_t = 0
         -- Resolve creator overrides once per activation, never per frame/poll.
         local settings = require("developer.config.runtime_settings").section("hazard_types", HazardTypes or {})
@@ -343,13 +363,15 @@ local function arena_gate(self, phase, active)
         arena_visual(self, visible)
         Util.set_component_enabled("#collision", visible, "mass")
     end
+    return self._arena_warning ~= nil, not by_phase and pulse_age or nil
 end
 
 local function poll_arena(self)
-    local phase, active = require("mvtk.bosses.encounter_phase").resolve{
+    local phase, active, _, _, arena_id = require("mvtk.bosses.encounter_phase").resolve{
         arena_id=self.arena_id, boss_id=self.boss_id,
     }
-    arena_gate(self, phase, active)
+    self._pulse_arena = active and arena_id or nil
+    return arena_gate(self, phase, active)
 end
 
 local function apply_base_enabled(self, enabled)
@@ -454,7 +476,6 @@ function init(self)
     -- inherit, player recovery comes from combat_config.feedback.hurt.stun_t.
     self.stun_value = HazardRegistry.stun_duration(self.stun_t, config and config.stun_t)
 
-    self.damage_timer = 0
     self.players_inside = {}
     self.base_enabled = self.enabled ~= false
     self.pattern_active = true
@@ -495,14 +516,16 @@ function init(self)
 
     -- Arena phase tracking
     self.current_arena_phase = 0
-    self.active_phase_set = parse_active_phases(self.active_phases)
+    self.active_phase_set, self._pulse_only = parse_active_phases(self.active_phases)
     self._arena_linked = not self._fluid and (self.arena_id ~= "" or self.boss_id ~= "")
     self._arena_hide = self._arena_linked and self.hide_when_inactive
     if self._arena_linked then
+        Pulse = Pulse or require "mvtk.bosses.arena_hazard_pulse"
         -- Force the first gate transition even if inactive at phase zero.
         self.pattern_active = nil
         poll_arena(self)
         self._arena_poll_t = 0.25
+        self._pulse_generation = Pulse.generation()
     end
 
     if self.motion_type ~= "" and self.motion_type ~= "none" then
@@ -526,36 +549,47 @@ function update(self, dt)
     if self._fluid then require("mvtk.world.fluid_volume_runtime").step(self, dt) end
     if Pause.get() then return end
     if self.lifetime > 0 then
-        self._lifetime_remaining = (self._lifetime_remaining or self.lifetime) - dt
-        if self._lifetime_remaining <= 0 then go.delete(); return end
+        if not self._lifetime_remaining then Timers.start_window(self, "_lifetime_remaining", self.lifetime, false) end
+        if Timers.tick_deadline(self, "_lifetime_remaining", dt) then go.delete(); return end
     end
-    HazardRegistry.tick_cooldowns(self.collision_cooldowns, dt)
+    local _, _, elapsed = Timers.gameplay_delta(dt, Pause)
+    HazardRegistry.tick_cooldowns(self.collision_cooldowns, elapsed)
     if self._pending_moving_art and set_retract_visual(self,
         self._arena_visible == false or self.is_retracted) then
         self._pending_moving_art = nil
     end
     if self._motion then self._motion:step(self, dt) end
 
+    local warning_elapsed = elapsed
     if self._arena_linked then
-        self._arena_poll_t = (self._arena_poll_t or 0) - dt
-        if self._arena_poll_t <= 0 then
-            self._arena_poll_t = 0.25
-            poll_arena(self)
+        -- A boss pulse is polled on the draw it happens; otherwise the phase is
+        -- polled on its own quarter-second clock.
+        local generation = Pulse.generation()
+        local pulsed = generation ~= self._pulse_generation
+        if pulsed then self._pulse_generation = generation end
+        local due = Timers.periodic_deadlines(self, "_arena_poll_t", 0.25, elapsed) > 0
+        if pulsed or due then
+            local opened, pulse_age = poll_arena(self)
+            if opened then warning_elapsed = math.max(0, pulse_age or 0) end
         end
     end
     if self._pending_arena_visual then arena_visual(self, self._arena_visible) end
-    if self._arena_warning then
-        self._arena_warning = self._arena_warning - dt
-        if self._arena_warning <= 0 then
+    if self._arena_warning and warning_elapsed > 0 then
+        self._arena_warning = self._arena_warning - warning_elapsed
+        local tolerance = self._arena_pulsed_warning and 1e-6 or 1e-12
+        if self._arena_warning <= tolerance then
+            if self._arena_pulsed_warning then elapsed = math.min(elapsed, math.max(0, -self._arena_warning)) end
             self._arena_warning = nil
+            self._arena_pulsed_warning = nil
             arena_visual(self, not self.is_retracted)
             Util.set_component_enabled("#collision", not self.is_retracted, "mass")
             refresh_enabled(self)
         else
-            self._arena_blink_t = self._arena_blink_t + dt
+            self._arena_blink_t = self._arena_blink_t + warning_elapsed
             if self._arena_blink_t >= self._arena_blink_period then
+                local edges = math.floor(self._arena_blink_t / self._arena_blink_period)
                 self._arena_blink_t = self._arena_blink_t % self._arena_blink_period
-                arena_visual(self, not self._arena_visible and not self.is_retracted)
+                if edges % 2 == 1 then arena_visual(self, not self._arena_visible and not self.is_retracted) end
             end
         end
     end
@@ -577,8 +611,13 @@ function update(self, dt)
             if self._pending_retract_visual and set_retract_visual(self, self.is_retracted) then
                 self._pending_retract_visual = nil
             end
-            self.retract_timer = self.retract_timer - dt
-            if self.retract_timer <= 0 then
+            local scale = Timers.world_scale(dt, Pause)
+            local left = Timers.world_delta(dt, scale)
+            if self._retract_clock ~= self.retract_timer then
+                self.retract_timer = Timers.reference_duration(self.retract_timer, scale)
+            end
+            while self.retract_timer <= left + 1e-12 do
+                left = math.max(0, left - self.retract_timer)
                 -- Toggle state
                 self.is_retracted = not self.is_retracted
                 if self.is_retracted then
@@ -598,7 +637,11 @@ function update(self, dt)
                     self.retract_timer = self.extend_time
                     hazard_log("Spikes extended: " .. hstr(self.hazard_id))
                 end
+                self.retract_timer = math.max(Timers.REFERENCE_STEP * scale,
+                    Timers.reference_duration(self.retract_timer, scale))
             end
+            self.retract_timer = self.retract_timer - left
+            self._retract_clock = self.retract_timer
 
             -- Don't damage while retracted
             if self.is_retracted then
@@ -609,14 +652,22 @@ function update(self, dt)
 
     refresh_slow(self)
 
-    -- Tick damage for players inside the zone
-    self.damage_timer = self.damage_timer + dt
-
-    if self.damage_timer >= self.damage_interval_value then
-        self.damage_timer = 0
-
-        for player_url, _ in pairs(self.players_inside) do
-            apply_damage(self, player_url)
+    if elapsed <= 0 or not next(self.players_inside) then return end
+    local life, alive = PlayerLife.player_life()
+    local interval = damage_period(self)
+    for player_url, contact in pairs(self.players_inside) do
+        if contact.life ~= life then contact.life, contact.remaining = life, nil end
+        if alive then
+            local fresh = contact.remaining == nil
+            if fresh then
+                apply_damage(self, player_url)
+                contact.remaining = interval
+            end
+            -- A zero period is the template's single contact burst.
+            if interval > 0 then
+                local count = Timers.periodic_deadlines(contact, "remaining", interval, elapsed)
+                for tick = 1, count do apply_damage(self, player_url, fresh or tick > 1) end
+            end
         end
     end
 end
@@ -627,27 +678,29 @@ function on_message(self, message_id, message, sender)
     end
 
     if message_id == hash("trigger_response") then
-        if not self.is_enabled then
-            return
-        end
-        self.has_trigger_responses = true
+        local active = self.is_enabled and not self.is_retracted and not self._room_hidden
+        if active then self.has_trigger_responses = true end
         local other_group = message.other_group
         hazard_log(string.format("DEBUG: trigger_response - other_group=%s, enter=%s, other_id=%s",
             tostring(other_group), tostring(message.enter), tostring(message.other_id)))
 
         if other_group == hash("player") then
-            if message.enter then
+            if message.enter and active then
                 -- Player entered hazard zone
-                self.players_inside[message.other_id] = true
+                local life, alive = PlayerLife.player_life()
+                local previous = self.players_inside[message.other_id]
+                if previous and previous.life == life then return end
+                local contact = { life = life }
+                self.players_inside[message.other_id] = contact
                 hazard_log(string.format("Player ENTERED hazard %s - will apply damage", hstr(self.hazard_id)))
 
                 -- Immediate first damage tick
-                if not Pause.get() then
+                if alive and not Pause.get() and (not Pause.scale or Pause.scale() > 0) then
                     apply_damage(self, message.other_id)
-                    self.damage_timer = 0
+                    contact.remaining = damage_period(self)
                 end
 
-            else
+            elseif not message.enter then
                 -- Player left hazard zone
                 local player_id = message.other_id
                 self.players_inside[player_id] = nil
@@ -667,7 +720,8 @@ function on_message(self, message_id, message, sender)
             hazard_log(string.format("DEBUG: collision_response - group=%s, other_id=%s",
                 tostring(message.group), tostring(message.other_id)))
         end
-        if not Pause.get() and message.group == hash("player") and self.is_enabled and not self.is_retracted then
+        if not Pause.get() and (not Pause.scale or Pause.scale() > 0)
+            and message.group == hash("player") and self.is_enabled and not self.is_retracted then
             if self.has_trigger_responses then
                 return
             end
@@ -707,7 +761,7 @@ function on_message(self, message_id, message, sender)
     elseif message_id == hash("set_active_phases") then
         -- Set which phases this hazard is active during
         -- message.phases can be a string "1,2,3" or a table {1, 2, 3}
-        self.active_phase_set = parse_active_phases(message.phases)
+        self.active_phase_set, self._pulse_only = parse_active_phases(message.phases)
         if self._arena_linked then
             arena_gate(self, self.current_arena_phase, self._arena_active)
         elseif not self._fluid and self.current_arena_phase > 0 then
@@ -726,7 +780,7 @@ function final(self)
     end
 end
 
-apply_damage = function(self, player_url)
+apply_damage = function(self, player_url, quiet)
     if Pause.get() then return end
     -- Protection takes precedence over every contact mode.
     if HazardImmunity.player_immune(self.required_resistance, self.immunity_item) then
@@ -775,12 +829,12 @@ apply_damage = function(self, player_url)
     end
     
     -- Play hit sound
-    if self.sound_on_hit ~= "" then
+    if not quiet and self.sound_on_hit ~= "" then
         pcall(msg.post, "main:/audio#controller", hash("play_sfx"), { sound_id = self.sound_on_hit })
     end
     
     -- Spawn hit particle
-    if self.particle_on_hit then
+    if not quiet and self.particle_on_hit then
         pcall(msg.post, FX_MANAGER_URL, hash("spawn_effect"), {
             effect_type = self.particle_on_hit,
             position = go.get_position(player_url)

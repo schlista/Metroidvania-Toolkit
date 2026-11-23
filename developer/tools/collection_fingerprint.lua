@@ -181,6 +181,50 @@ local function numeric_property(text, count)
     return table.concat(keys, ",")
 end
 
+local function field_value(fields, name)
+    for _, field in ipairs(fields) do
+        if field[1] == name then return field[3] end
+    end
+end
+
+-- Prepare marks the script component of each self-contained boss instance.
+-- Keep the marker and its identity in the Build signature, together with
+-- every other component, the prototype, and the instance's transform.
+local function ignore_boss_edits(fields)
+    local found = false
+    for _, instance in ipairs(fields) do
+        if instance[1] == "instances" and instance[2] == "m" then
+            for _, component in ipairs(instance[3]) do
+                if component[1] == "component_properties" and component[2] == "m"
+                    and field_value(component[3], "id") == "script" then
+                    local editable = {}
+                    local baked = false
+                    for _, property in ipairs(component[3]) do
+                        if property[1] == "properties" and property[2] == "m" then
+                            local id = field_value(property[3], "id")
+                            if id == "boss_properties_baked" then
+                                baked = field_value(property[3], "value") == "true"
+                                    and field_value(property[3], "type") == "PROPERTY_TYPE_BOOLEAN"
+                            elseif id and id ~= "registration_id" and id ~= "object_id" and id ~= "room_id" then
+                                editable[property] = true
+                            end
+                        end
+                    end
+                    if baked then
+                        found = true
+                        local kept = {}
+                        for _, property in ipairs(component[3]) do
+                            if not editable[property] then kept[#kept + 1] = property end
+                        end
+                        component[3] = kept
+                    end
+                end
+            end
+        end
+    end
+    return found
+end
+
 local canonical_message
 canonical_message = function(fields, context)
     local defaults = DEFAULTS[context]
@@ -238,6 +282,13 @@ end
 function M.canonical(text)
     local fields = parse(text)
     return fields and canonical_message(fields, "") or nil
+end
+
+function M.boss_edit_fingerprint(text)
+    local fields = parse(text)
+    if fields and ignore_boss_edits(fields) then
+        return "boss-edit" .. M.version .. ":" .. Adler.fingerprint(canonical_message(fields, ""))
+    end
 end
 
 -- A prepare run takes several snapshots of unchanged files. Remember results

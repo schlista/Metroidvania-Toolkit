@@ -11,88 +11,10 @@ local Hitstop = Util.require_module("mvtk.fx.hitstop")
 local BossArena = Util.require_module("mvtk.bosses.boss_arena")
 local Audio = Util.require_module("mvtk.audio.audio")
 
--- Transition types
-local TRANSITION_TYPES = {
-    -- Standard flash and shake
-    standard = {
-        hitstop_duration = 0.15,
-        shake_intensity = "heavy",
-        flash_color = vmath.vector4(1, 1, 1, 0.5),
-        flash_duration = 0.2,
-        pause_duration = 0.5
-    },
-
-    -- Boss enrages with red flash
-    rage = {
-        hitstop_duration = 0.2,
-        shake_intensity = "critical",
-        flash_color = vmath.vector4(1, 0.2, 0.2, 0.8),
-        flash_duration = 0.3,
-        pause_duration = 1.0,
-        boss_scale_pulse = 1.2,
-        spawn_particles = "rage_aura"
-    },
-
-    -- Boss heals/recovers
-    heal = {
-        hitstop_duration = 0.1,
-        shake_intensity = "medium",
-        flash_color = vmath.vector4(0.3, 1, 0.3, 0.6),
-        flash_duration = 0.3,
-        pause_duration = 0.7,
-        boss_scale_pulse = 1.1,
-        spawn_particles = "heal_effect"
-    },
-
-    -- Boss transforms/evolves
-    transform = {
-        hitstop_duration = 0.25,
-        shake_intensity = "critical",
-        flash_color = vmath.vector4(0.8, 0.4, 1, 0.9),
-        flash_duration = 0.5,
-        pause_duration = 1.5,
-        boss_disappear = true,
-        boss_reappear_delay = 1.0,
-        spawn_particles = "transformation",
-        music_change = true
-    },
-
-    -- Boss teleports away
-    teleport = {
-        hitstop_duration = 0.1,
-        shake_intensity = "light",
-        flash_color = vmath.vector4(0.5, 0.5, 1, 0.4),
-        flash_duration = 0.15,
-        pause_duration = 0.3,
-        boss_disappear = true,
-        boss_reappear_delay = 0.5,
-        spawn_particles = "teleport_out",
-        teleport_destination = true
-    },
-
-    -- Boss goes invulnerable and summons adds
-    summon = {
-        hitstop_duration = 0.15,
-        shake_intensity = "medium",
-        flash_color = vmath.vector4(0.7, 0.3, 0.9, 0.6),
-        flash_duration = 0.25,
-        pause_duration = 0.8,
-        boss_invulnerable = true,
-        spawn_adds = true,
-        spawn_particles = "summon_circle"
-    },
-
-    -- Environmental change (arena hazards activate)
-    environmental = {
-        hitstop_duration = 0.2,
-        shake_intensity = "critical",
-        flash_color = vmath.vector4(1, 0.5, 0, 0.7),
-        flash_duration = 0.3,
-        pause_duration = 1.0,
-        activate_hazards = true,
-        spawn_particles = "arena_activation"
-    }
-}
+local Cues = require("mvtk.bosses.transition_cues").resolve(
+    Util.require_config("developer.config.boss_defaults", {}))
+local Defaults = Cues.dramatic
+local TRANSITION_TYPES = Util.deep_copy(Defaults.presets)
 
 --- Execute a dramatic phase transition
 -- @param boss_url Boss game object URL
@@ -122,23 +44,28 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
 
     -- Step 1: Hitstop
     if config.hitstop_duration and config.hitstop_duration > 0 then
-        Hitstop.start_hitstop(config.hitstop_duration, config.shake_intensity)
+        Hitstop.start_hitstop(config.hitstop_duration, config.shake_intensity, nil, true)
     end
 
     -- Steps 2 and 3: camera shake and screen flash through the live owners.
     local Feedback = Util.require_module("mvtk.combat.combat_feedback")
-    if Feedback and config.shake_intensity then
-        pcall(Feedback.screen_shake, nil, config.shake_intensity)
+    if Feedback and config.shake_intensity and Cues.shake_enabled ~= false then
+        pcall(Feedback.screen_shake, config.shake_duration, config.shake_intensity)
     end
-    if Feedback and config.flash_color and config.flash_duration then
+    if Feedback and config.flash_color and config.flash_duration and config.flash_duration > 0
+        and Cues.flash_enabled ~= false then
+        local color = config.flash_color
+        if type(color) == "table" and color[1] then
+            color = vmath.vector4(color[1], color[2], color[3], color[4])
+        end
         pcall(Feedback.flash, {
-            color = config.flash_color,
+            color = color,
             duration = config.flash_duration
         })
     end
 
     -- Step 4: Boss effects
-    Pause.delay(0.1, function()
+    Pause.delay(Defaults.effects_delay, function()
         if not go.exists(boss_url) then
             if on_complete then on_complete() end
             return
@@ -149,15 +76,16 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
             local original_scale = go.get_scale(boss_url)
             Motion.scale(boss_url,
                 original_scale * config.boss_scale_pulse,
-                0.3, "out_quad", true)
+                Defaults.scale_duration, "out_quad", true)
         end
 
         -- Disappear/reappear
         if config.boss_disappear then
+            local base_scale = Motion.get_base_scale(boss_url)
             -- Shrink to disappear
             Motion.scale(boss_url,
-                vmath.vector3(0, 0, 1),
-                0.3, "in_cubic", false, function()
+                Motion.disappear_scale(base_scale),
+                Defaults.scale_duration, "in_cubic", false, function()
 
                 -- Teleport to new position if specified
                 if config.teleport_destination then
@@ -165,17 +93,15 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
                     if type(new_pos) == "function" then
                         new_pos = new_pos()
                     end
-                    if new_pos then
+                    if new_pos and new_pos ~= true then
                         go.set_position(new_pos, boss_url)
                     end
                 end
 
                 -- Reappear after delay
-                Pause.delay(config.boss_reappear_delay or 0.5, function()
+                Pause.delay(config.boss_reappear_delay or Defaults.reappear_delay, function()
                     if go.exists(boss_url) then
-                        Motion.scale(boss_url,
-                            vmath.vector3(1, 1, 1),
-                            0.3, "out_cubic")
+                        Motion.scale(boss_url, base_scale, Defaults.scale_duration, "out_cubic")
 
                         -- Reappear particles
                         if config.spawn_particles == "teleport_out" then
@@ -189,7 +115,7 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
         -- Invulnerability
         if config.boss_invulnerable then
             pcall(msg.post, boss_url, "set_invulnerable", {
-                duration = config.pause_duration or 1.0
+                duration = config.pause_duration or Defaults.pause_duration
             })
         end
 
@@ -216,11 +142,11 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
             end
         end
 
-        -- Activate hazards
+        -- Pulse every type of placed hazard that opts into transitions.
         if config.activate_hazards then
             local arena_id = options.arena_id
             if arena_id then
-                BossArena.trigger_arena_effect(arena_id, "hazard_pulse")
+                BossArena.trigger_arena_effect(arena_id, "hazard_pulse", {pulse_only = true})
             end
         end
 
@@ -228,7 +154,7 @@ function M.execute_transition(boss_url, transition_type, options, on_complete)
         if config.music_change and options.new_music then
             Audio.music(options.new_music, {
                 -- track removed, passed as first arg
-                t = 0.5
+                t = Defaults.music_fade
             })
         end
     end)
@@ -276,7 +202,9 @@ function M.quick_transition(boss_url, intensity)
         Hitstop.on_hit_medium()
     end
     local Feedback = Util.require_module("mvtk.combat.combat_feedback")
-    if Feedback then pcall(Feedback.screen_shake, nil, intensity) end
+    if Feedback and Cues.shake_enabled ~= false then
+        pcall(Feedback.screen_shake, nil, intensity)
+    end
 
     print("[DRAMATIC_TRANSITIONS] Quick transition executed")
 end

@@ -14,7 +14,7 @@ end
 
 -- Build directional intent without consuming input (Up still belongs to ladders).
 -- Ability availability/payment stays with the caller; this only reads authored input.
-function M.attack_intent(self, input, cfg, charge_t)
+function M.attack_intent(self, input, cfg, charge_t, charge_ready)
   input, cfg = input or {}, cfg or {}
   local ds, ca = ACTIONS.down_strike or {}, ACTIONS.charge_attack or {}
   local grounded = self.grounded and true or false
@@ -30,10 +30,17 @@ function M.attack_intent(self, input, cfg, charge_t)
       allow_down = not grounded or aim.allow_down_grounded == true,
     })
   end
+  if charge_ready == nil and charge_t == nil and (self._light_hold_t or 0) > 0
+    and self._buffered_charge_reference == false then
+    charge_ready = self._buffered_charge_remaining == 0
+  end
+  if charge_ready == nil then
+    charge_ready = (charge_t or self._light_hold_t or 0) >= (ca.threshold or 0.45)
+  end
   return {
     grounded = grounded,
     want_down_strike = down and true or false,
-    want_charged = ca.enabled and grounded and (charge_t or self._light_hold_t or 0) >= (ca.threshold or 0.45) or false,
+    want_charged = ca.enabled and grounded and charge_ready or false,
     want_up = (cfg.features or {}).up_attacks ~= false
       and y >= ((cfg.directional or {}).up_threshold or 0.6) and not down,
     aim_x = direction and direction.x or facing,

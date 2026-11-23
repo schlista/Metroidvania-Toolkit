@@ -30,6 +30,8 @@ end
 
 local M = {}
 local Pause = require "mvtk.core.pause"
+local Pulse = require "mvtk.bosses.arena_hazard_pulse"
+local Clock = require "mvtk.bosses.boss_clock"
 
 -- ============================================================================
 -- DATA STRUCTURES
@@ -37,6 +39,8 @@ local Pause = require "mvtk.core.pause"
 
 local arenas = {}           -- arena_id -> arena_data
 local active_arena = nil
+local clear_attack_effects
+local timed_pulses = {}
 
 -- Hazard types
 M.HAZARD_TYPES = {
@@ -105,7 +109,7 @@ function M.setup_arena(arena_id, config)
 
         -- State
         locked = false,
-        transition_timer = 0,
+        clock = 0,
         in_transition = false,
     }
 
@@ -121,9 +125,18 @@ function M.activate_arena(arena_id)
         return false
     end
 
+    if active_arena and active_arena ~= arena then
+        clear_attack_effects()
+        Pulse.clear(active_arena.id)
+        active_arena.phase_deadlines, active_arena.paused_phases = nil, nil
+        active_arena.in_transition = false
+    end
     active_arena = arena
     arena.locked = true
     arena.current_phase = 0
+    arena.clock = 0
+    arena.phase_deadlines, arena.paused_phases = nil, nil
+    arena.in_transition = false
 
     -- Lock arena doors
     M.lock_doors(arena)
@@ -145,6 +158,7 @@ end
 function M.deactivate_arena()
     release_global_effects()
     if not active_arena then return end
+    Pulse.clear(active_arena.id)
     require("mvtk.enemies.enemy_spawn_service").despawn_owner("arena:" .. active_arena.id, "arena_deactivated")
 
     -- Clear all hazards and platforms
@@ -157,6 +171,8 @@ function M.deactivate_arena()
 
     active_arena.locked = false
     active_arena.current_phase = 0
+    active_arena.phase_deadlines, active_arena.paused_phases = nil, nil
+    active_arena.in_transition = false
 
     log("Deactivated arena:", active_arena.id)
     active_arena = nil
@@ -166,21 +182,33 @@ end
 -- PHASE MANAGEMENT
 -- ============================================================================
 
+local function apply_due_phases(arena)
+    local deadlines = arena.phase_deadlines
+    if not deadlines then return end
+    while active_arena == arena and deadlines[1] and Clock.reached(arena.clock, deadlines[1].time) do
+        local due = table.remove(deadlines, 1)
+        if not due.escalate or due.phase > arena.current_phase then M.apply_phase(due.phase) end
+    end
+    if #deadlines == 0 then
+        arena.phase_deadlines = nil
+        arena.in_transition = false
+    end
+end
+
 --- Transition to a new phase
 -- @param phase_number Phase number to transition to
 -- @param transition_time Optional transition duration
 -- @param escalate_only Optional monotonic application for a grouped encounter
-function M.transition_to_phase(phase_number, transition_time, escalate_only)
+function M.transition_to_phase(phase_number, transition_time, escalate_only, elapsed)
+    local arena = active_arena
+    if not arena then return end
     if Pause.get() then
-        local arena = active_arena
-        Pause.delay(0, function()
-            if active_arena == arena then M.transition_to_phase(phase_number, transition_time, escalate_only) end
-        end)
+        arena.paused_phases = arena.paused_phases or {}
+        table.insert(arena.paused_phases, {phase = phase_number, time = transition_time, escalate = escalate_only})
         return
     end
-    if not active_arena then return end
 
-    local phase_config = active_arena.phases[phase_number]
+    local phase_config = arena.phases[phase_number]
     if not phase_config then
         log("WARNING: Phase", phase_number, "not configured")
         return
@@ -190,28 +218,24 @@ function M.transition_to_phase(phase_number, transition_time, escalate_only)
 
     log("Transitioning to phase", phase_number)
 
-    active_arena.in_transition = true
-    active_arena.transition_timer = transition_time
+    arena.in_transition = true
+    local due = arena.clock + math.max(0, transition_time) - (elapsed or 0)
+    local deadlines = arena.phase_deadlines or {}
+    arena.phase_deadlines = deadlines
+    local index = #deadlines + 1
+    while index > 1 and deadlines[index - 1].time > due do index = index - 1 end
+    table.insert(deadlines, index, {phase = phase_number, time = due, escalate = escalate_only})
 
     -- Callback for phase change
-    if active_arena.on_phase_change then
-        active_arena.on_phase_change(active_arena.current_phase, phase_number)
+    if arena.on_phase_change then
+        arena.on_phase_change(arena.current_phase, phase_number)
     end
 
     -- Start transition effects
     if phase_config.transition_effect then
         M.play_transition_effect(phase_config.transition_effect)
     end
-
-    -- Schedule phase application
-    local arena = active_arena
-    Pause.delay(transition_time, function()
-        -- Group requests may have different authored transition durations. An
-        -- older callback must never undo an already-applied higher boss phase.
-        if active_arena == arena and (not escalate_only or phase_number > (arena.current_phase or 0)) then
-            M.apply_phase(phase_number)
-        end
-    end)
+    if elapsed and elapsed > 0 then apply_due_phases(arena) end
 end
 
 --- Apply a phase configuration
@@ -223,7 +247,7 @@ function M.apply_phase(phase_number)
     if not phase_config then return end
 
     active_arena.current_phase = phase_number
-    active_arena.in_transition = false
+    active_arena.in_transition = active_arena.phase_deadlines ~= nil and #active_arena.phase_deadlines > 0
 
     log("Applying phase", phase_number)
 
@@ -384,30 +408,89 @@ end
 -- EFFECTS MANAGEMENT
 -- ============================================================================
 
+local EFFECT_OUTPUTS = {
+    darkness = function(level)
+        pcall(msg.post, "main:/light_manager#script", hash("set_darkness"), {level = level})
+    end,
+    gravity = function(scale)
+        local Stats = require "mvtk.player.player_stats"
+        if not scale or scale == 1 then Stats.clear_source("arena:gravity")
+        else Stats.set_source("arena:gravity", {gravity_mult=scale}, {layer="temporary"}) end
+    end,
+    slow_motion = function(factor)
+        Pause.set_speed_factor("arena_slow_motion", factor)
+        M._slow_motion_active = factor and true
+    end,
+}
+
+-- The phase supplies the baseline. Timed attacks temporarily override it,
+-- including when two bosses apply an effect to the same arena.
+local function set_effect_output(channel, value, owner)
+    local output = EFFECT_OUTPUTS[channel]
+    if not active_arena then output(value); return end
+    local outputs = active_arena.effect_outputs
+    if not outputs then
+        outputs = {}
+        active_arena.effect_outputs = outputs
+    end
+    local state = outputs[channel]
+    if not state then
+        state = {overrides = {}}
+        outputs[channel] = state
+    end
+    local overrides = state.overrides
+    if owner then
+        for i = #overrides, 1, -1 do
+            if overrides[i].owner == owner then table.remove(overrides, i) end
+        end
+        if value ~= nil then overrides[#overrides + 1] = {owner = owner, value = value} end
+    else
+        state.baseline = value
+    end
+    local top = overrides[#overrides]
+    local effective = top and top.value or state.baseline
+    if effective ~= state.effective or (not owner and not top) then
+        state.effective = effective
+        output(effective)
+    end
+end
+
+clear_attack_effects = function()
+    for channel, state in pairs(active_arena.effect_outputs or {}) do
+        if #state.overrides > 0 then
+            state.overrides = {}
+            state.effective = state.baseline
+            EFFECT_OUTPUTS[channel](state.baseline)
+        end
+    end
+end
+
 --- Apply an arena effect
 -- @param effect_id Effect identifier
-function M.apply_effect(effect_id)
+-- @param owner Optional attack instance that can later release this effect
+function M.apply_effect(effect_id, owner)
     if not active_arena then return end
 
     local effect_fn = M.effect_handlers[effect_id]
     if effect_fn then
-        effect_fn(active_arena)
-        active_arena.active_effects[effect_id] = true
+        effect_fn(active_arena, owner)
+        if not owner then active_arena.active_effects[effect_id] = true end
         log("Applied effect:", effect_id)
+        return true
     end
 end
 
 --- Remove an arena effect
 -- @param effect_id Effect identifier
-function M.remove_effect(effect_id)
+function M.remove_effect(effect_id, owner)
     if not active_arena then return end
 
     local remove_fn = M.effect_removers[effect_id]
     if remove_fn then
-        remove_fn(active_arena)
+        remove_fn(active_arena, owner)
     end
 
-    active_arena.active_effects[effect_id] = nil
+    if not owner then active_arena.active_effects[effect_id] = nil end
     log("Removed effect:", effect_id)
 end
 
@@ -418,6 +501,10 @@ function M.clear_all_effects()
     for effect_id, _ in pairs(active_arena.active_effects) do
         M.remove_effect(effect_id)
     end
+    for channel, state in pairs(active_arena.effect_outputs or {}) do
+        if state.effective ~= nil then EFFECT_OUTPUTS[channel](nil) end
+    end
+    active_arena.effect_outputs = nil
 end
 
 -- Effect handlers
@@ -427,21 +514,20 @@ M.effect_handlers = {
         if Feedback then pcall(Feedback.screen_shake, nil, "light") end
     end,
 
-    darkness = function(arena)
-        pcall(msg.post, "main:/light_manager#script", hash("set_darkness"), {level = 0.7})
+    darkness = function(arena, owner)
+        set_effect_output("darkness", 0.7, owner)
     end,
 
-    slow_motion = function(arena)
-        Pause.set_speed_factor("arena_slow_motion", 0.5)
-        M._slow_motion_active = true
+    slow_motion = function(arena, owner)
+        set_effect_output("slow_motion", 0.5, owner)
     end,
 
-    low_gravity = function(arena)
-        M.set_gravity(0.5)
+    low_gravity = function(arena, owner)
+        set_effect_output("gravity", 0.5, owner)
     end,
 
-    high_gravity = function(arena)
-        M.set_gravity(1.5)
+    high_gravity = function(arena, owner)
+        set_effect_output("gravity", 1.5, owner)
     end,
 
     rain = function(arena)
@@ -458,21 +544,20 @@ M.effect_removers = {
         -- Gamefeel shakes decay on their own; there is nothing to stop.
     end,
 
-    darkness = function(arena)
-        pcall(msg.post, "main:/light_manager#script", hash("set_darkness"), {})
+    darkness = function(arena, owner)
+        set_effect_output("darkness", nil, owner)
     end,
 
-    slow_motion = function(arena)
-        Pause.set_speed_factor("arena_slow_motion", nil)
-        M._slow_motion_active = nil
+    slow_motion = function(arena, owner)
+        set_effect_output("slow_motion", nil, owner)
     end,
 
-    low_gravity = function(arena)
-        M.set_gravity(1.0)
+    low_gravity = function(arena, owner)
+        set_effect_output("gravity", nil, owner)
     end,
 
-    high_gravity = function(arena)
-        M.set_gravity(1.0)
+    high_gravity = function(arena, owner)
+        set_effect_output("gravity", nil, owner)
     end,
 
     rain = function(arena)
@@ -513,19 +598,18 @@ end
 function M.set_arena_bounds(bounds)
     if not active_arena then return end
     active_arena.bounds = bounds
+    active_arena.bounds_authored = bounds ~= nil
     -- Update any boundary-dependent systems
 end
 
 --- Set gravity
 function M.set_gravity(scale)
-    local Stats = require "mvtk.player.player_stats"
-    if scale == 1 then Stats.clear_source("arena:gravity")
-    else Stats.set_source("arena:gravity", {gravity_mult=scale}, {layer="temporary"}) end
+    set_effect_output("gravity", scale)
 end
 
 --- Set darkness level
 function M.set_darkness(level)
-    pcall(msg.post, "main:/light_manager#script", hash("set_darkness"), {level = level})
+    set_effect_output("darkness", level)
 end
 
 --- Play transition effect
@@ -544,15 +628,45 @@ end
 -- UPDATE
 -- ============================================================================
 
---- Update arena system
+-- Called once by GameManager during gameplay. A transition can start a
+-- pulse on an arena lock before it has a live boss to supply a fight clock.
+function M.update_hazard_pulses(dt)
+    if not next(timed_pulses) then return end
+    local Clock = require "mvtk.bosses.boss_clock"
+    dt = Clock.delta(dt, Pause)
+    if dt <= 0 then return end
+    for token, pulse in pairs(timed_pulses) do
+        local elapsed = dt
+        if pulse.read_clock then
+            local now = pulse.read_clock()
+            if now then
+                elapsed, pulse.last_time = now - pulse.last_time, now
+            else
+                pulse.read_clock = nil
+            end
+        end
+        pulse.remaining = pulse.remaining - elapsed
+        if Clock.reached(0, pulse.remaining) or not Pulse.is_running(token) then
+            Pulse.stop(token)
+            timed_pulses[token] = nil
+        end
+    end
+end
+
+--- Advance the live arena and apply its due phases in deadline order.
 -- @param dt Delta time
 function M.update(dt)
-    if not active_arena then return end
-
-    -- Update transition
-    if active_arena.in_transition then
-        active_arena.transition_timer = active_arena.transition_timer - dt
+    M.update_hazard_pulses(dt)
+    local arena = active_arena
+    local elapsed = Clock.delta(dt, Pause)
+    if not arena or elapsed <= 0 then return end
+    local requests = arena.paused_phases
+    arena.paused_phases = nil
+    for _, request in ipairs(requests or {}) do
+        M.transition_to_phase(request.phase, request.time, request.escalate)
     end
+    arena.clock = arena.clock + elapsed
+    apply_due_phases(arena)
 end
 
 -- ============================================================================
@@ -656,12 +770,21 @@ end
 -- travel, shops or other rooms. Its world objects went with the previous
 -- world, so only the record and the global effects are released.
 function M.before_session_start()
+    Pulse.clear_all()
+    timed_pulses = {}
     release_global_effects()
-    if active_arena then active_arena.locked, active_arena.current_phase = false, 0 end
+    if active_arena then
+        active_arena.locked, active_arena.current_phase = false, 0
+        active_arena.effect_outputs = nil
+        active_arena.phase_deadlines, active_arena.paused_phases = nil, nil
+        active_arena.in_transition = false
+    end
     active_arena = nil
 end
 
 function M.cleanup()
+    Pulse.clear_all()
+    timed_pulses = {}
     if active_arena then
         M.deactivate_arena()
     end
@@ -701,6 +824,7 @@ function M.unlock_arena(arena_id)
         M.deactivate_arena()
         return
     end
+    Pulse.clear(arena_id)
     local a = arenas[arena_id]
     if a then a.locked = false end
 end
@@ -721,8 +845,20 @@ function M.get_arena(arena_id)
     }
 end
 
+local function fight_clock(arena_id)
+    local Bosses = require "mvtk.bosses.boss_manager"
+    local boss_id = Bosses.find_boss_id({arena_id = arena_id})
+    if not boss_id then return end
+    return function()
+        local boss = Bosses.get_boss(boss_id)
+        return boss and not boss.defeated and (boss._boss_clock_at or boss.fight_time) or nil
+    end
+end
+
 --- Trigger an ad-hoc arena effect.
---- effect_type: "screen_shake" | "flash" | "hazard_pulse" | "spawn_adds" | "moving_platforms"
+--- effect_type: "screen_shake" | "flash" | "hazard_pulse" | "spawn_adds"
+-- A hazard pulse can filter by a list of hazard_types and by pulse_only.
+-- Omitting filters pulses the whole arena.
 function M.trigger_arena_effect(arena_id, effect_type, params)
     local a = arenas[arena_id] or active_arena
     if not a then return end
@@ -744,24 +880,40 @@ function M.trigger_arena_effect(arena_id, effect_type, params)
         end
 
     elseif effect_type == "hazard_pulse" then
-        for _, hazard in pairs(a.active_hazards or {}) do
-            for _, go_id in ipairs(hazard.game_objects or {}) do
-                if go.exists(go_id) then
-                    pcall(msg.post, go_id, "pulse_activate")
-                end
-            end
-        end
+        if arena_id and a.id ~= arena_id then return end
+        local Schema = require "mvtk.bosses.attack_pattern_schema"
+        local defaults = Util.require_config("developer.config.boss_defaults")
+        local settings, err = Schema.hazard_pulse_options({
+            type = "hazard_pulse",
+            hazard_pulse = {warn_time = params.warn_time, duration = params.duration},
+        }, defaults)
+        if not settings then print("[BOSS_ARENA] " .. err); return end
+        local read_clock = fight_clock(a.id)
+        local started = read_clock and read_clock()
+        local token = Pulse.start(a.id, nil, settings.warn_time, {
+            hazard_types = params.hazard_types,
+            pulse_only = params.pulse_only,
+            elapsed = started and function() return (read_clock() or started) - started end,
+        })
+        if not token then return end
+        timed_pulses[token] = {remaining = settings.warn_time + settings.duration,
+            read_clock = read_clock, last_time = started}
 
     elseif effect_type == "spawn_adds" then
         local Spawn = require "mvtk.enemies.enemy_spawn_service"
         local bounds = a.bounds
         if bounds then
+            -- Baked arenas use x/y and size. Configured arenas can use corners.
+            local x = tonumber(bounds.x or bounds.min_x)
+            local y = tonumber(bounds.y or bounds.min_y)
+            if not (x and y) then return end
+            local width = tonumber(bounds.width) or (tonumber(bounds.max_x) or x) - x
+            local height = tonumber(bounds.height) or (tonumber(bounds.max_y) or y) - y
             local count = params.count or 3
             local defaults = require("developer.config.runtime_settings").section("enemy_defaults", require "developer.config.enemy_defaults")
             local enemy_type = params.enemy_type or defaults.default_archetype
             local radius = params.spawn_radius or 200
-            local cx = bounds.x + (bounds.width or 0) / 2
-            local cy = bounds.y + (bounds.height or 0) / 2
+            local cx, cy = x + width / 2, y + height / 2
             for i = 1, count do
                 local angle = (math.pi * 2 / count) * i
                 local pos = vmath.vector3(cx + math.cos(angle) * radius,
@@ -771,8 +923,6 @@ function M.trigger_arena_effect(arena_id, effect_type, params)
             end
         end
 
-    elseif effect_type == "moving_platforms" then
-        pcall(msg.post, "/arena_platforms#" .. tostring(arena_id), "activate_movement")
     end
 
     log("Triggered effect", effect_type, "on arena", arena_id)

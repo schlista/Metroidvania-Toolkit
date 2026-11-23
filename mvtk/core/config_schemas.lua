@@ -1272,14 +1272,14 @@ M.player_settings = {
     -- Movement
     walk_speed = { type = "number", range = {100, 8750}, description = "Player walking speed (pixels/second)" },
     run_speed = { type = "number", range = {200, 8750}, description = "Player running speed (pixels/second)" },
-    accel = { type = "number", range = {1, 100}, description = "Acceleration rate" },
-    decel = { type = "number", range = {1, 100}, description = "Deceleration rate" },
+    accel = { type = "number", range = {1, 1000}, description = "Acceleration rate" },
+    decel = { type = "number", range = {1, 1000}, description = "Deceleration rate" },
 
     -- Jumping
     gravity = { type = "number", range = {-8750, 0}, description = "Gravity force (negative number)" },
     jump_height = { type = "number", range = {50, 1750}, description = "Base jump height (pixels)" },
     coyote_time = { type = "number", range = {0, 1.0}, description = "Coyote time (seconds)" },
-    jump_buffer = { type = "number", range = {0, 1.0}, description = "Jump buffer time (seconds)" },
+    jump_buffer = { type = "number", range = {0, 2}, description = "Jump buffer time (seconds)" },
 
     -- Stats
     max_health = { type = "number", range = {1, 100}, description = "Maximum health" },
@@ -1287,6 +1287,43 @@ M.player_settings = {
     max_stamina = { type = "number", range = {0, 1000}, description = "Maximum stamina" },
   },
   optional = {
+    -- Movement controls without earlier config bounds keep accepting authored numbers.
+    run_accel = { type = "number", range = {0, 120} },
+    speed_jump_bonus = { type = "number", range = {0, 0.5} },
+    corner_correction_px = { type = "number", range = {0, 64} },
+    turn_brake_mult = { type = "number" },
+    air_accel_mult = { type = "number" },
+    air_decel_mult = { type = "number" },
+    fall_gravity_mult = { type = "number" },
+    variable_jump_mode = { type = "string", values = {"gravity_scale", "cut"} },
+    jump_release_gravity_mult = { type = "number" },
+    jump_cut_speed_mult = { type = "number", range = {0, 1} },
+    jump_min_hold_time = { type = "number" },
+    apex_hang_speed = { type = "number" },
+    apex_gravity_mult = { type = "number" },
+    fast_fall_mult = { type = "number" },
+    fast_fall_max_mult = { type = "number", range = {1, 3} },
+    max_fall_speed_px = { type = "number" },
+    air_dash = { fields = {
+      speed = { type = "number", optional = true },
+      duration = { type = "number", optional = true },
+      cooldown = { type = "number", optional = true },
+      max_air_dashes = { type = "number", optional = true },
+      directions = { type = "string", optional = true },
+      suspend_gravity = { type = "boolean", optional = true },
+      end_vertical_speed_mult = { type = "number", optional = true },
+    }},
+    extra_air_dash = { fields = {
+      bonus_dashes = { type = "number", optional = true },
+    }},
+    slide = { fields = {
+      speed = { type = "number", optional = true },
+      duration = { type = "number", optional = true },
+    }},
+    glide = { fields = {
+      gravity_mult = { type = "number", optional = true },
+      max_fall_speed = { type = "number", optional = true },
+    }},
     zip_line = { type = "table", fields = {
       hang_offset_px = { type = "number", range = {0, 1000} },
       release_on_jump = { type = "boolean" },
@@ -1337,6 +1374,15 @@ M.player_settings = {
     }},
     wall_climb = { type = "table", fields = {
       contact_grace = { type = "number", range = {0, 1.0} },
+      speed = { type = "number", optional = true },
+      climb_speed = { type = "number", optional = true },
+      stick_speed = { type = "number", optional = true },
+      wall_jump = { optional = true, fields = {
+        slide_fall_speed = { type = "number", optional = true },
+        slide_coyote_time = { type = "number", optional = true },
+        push_h = { type = "number", optional = true },
+        steer_lock = { type = "number", range = {0, 0.5}, optional = true },
+      }},
       ledge_climb = { type = "table", fields = {
         enabled = { type = "boolean" },
         climb_x = { type = "number", range = {0, 1750} },
@@ -1464,6 +1510,100 @@ M.debug_config = {
 -----------------------------------------------------------
 -- ADDITIONAL CRITICAL CONFIGS
 -----------------------------------------------------------
+
+M.boss_behaviors = {
+    name = "Boss Behaviours",
+    file = "developer/config/boss_behaviors.lua",
+    allow_unknown = true,
+    custom_validate = function(config)
+        local shipped = require("mvtk.bosses.attack_schedule_defaults").behaviors
+        local errors = {}
+        for name, profile in pairs(config) do
+            if not shipped[name] or type(profile) ~= "table" then
+                errors[#errors + 1] = tostring(name) .. ": expected a known boss behaviour and a table of weights"
+            else
+                for kind, value in pairs(profile) do
+                    if not shipped[name][kind] then
+                        errors[#errors + 1] = name .. ": unknown attack kind " .. tostring(kind)
+                    elseif type(value) ~= "number" or not (value > 0 and value < math.huge)
+                        or kind == "max_repeat" and (value < 1 or value % 1 ~= 0) then
+                        errors[#errors + 1] = name .. ": invalid value for " .. kind
+                    end
+                end
+            end
+        end
+        table.sort(errors)
+        return errors
+    end,
+}
+
+M.boss_movesets = {
+    name = "Boss Movesets",
+    file = "developer/config/boss_movesets.lua",
+    allow_unknown = true,
+    custom_validate = function(config)
+        local Scheduler = require "mvtk.bosses.attack_scheduler"
+        local patterns = {}
+        for name, pattern in pairs(require "mvtk.bosses.patterns.attack_patterns") do
+            patterns[name] = type(pattern) == "table"
+        end
+        for name, pattern in pairs(require "developer.config.attack_patterns") do
+            patterns[name] = type(pattern) == "table"
+        end
+
+        local errors, warnings, valid = {}, {}, {}
+        for name, moveset in pairs(config) do
+            local found, notes = Scheduler.validate(name, moveset, patterns)
+            if type(name) ~= "string" or not name:match("%S") or name == "none" then
+                found[#found + 1] = "invalid moveset name " .. tostring(name)
+            end
+            for _, err in ipairs(found) do errors[#errors + 1] = err end
+            for _, warning in ipairs(notes) do warnings[#warnings + 1] = warning end
+            if #found == 0 then valid[name] = moveset end
+        end
+        for name, preset in pairs(require "developer.config.boss_types") do
+            for index, phase in ipairs(preset.phases or {}) do
+                local moveset = valid[phase.moveset]
+                if moveset then
+                    -- Validate coverage using the profile of this assignment.
+                    local view = setmetatable({movement_profile = phase.movement_profile or preset.movement_profile
+                        or "ground_chase"}, {__index = moveset})
+                    local _, notes = Scheduler.validate(name .. " phase " .. index .. " (" .. phase.moveset .. ")",
+                        view, patterns)
+                    for _, warning in ipairs(notes) do warnings[#warnings + 1] = warning end
+                end
+            end
+        end
+        table.sort(errors)
+        table.sort(warnings)
+        return errors, warnings
+    end,
+}
+
+M.boss_types = {
+    name = "Boss Types",
+    file = "developer/config/boss_types.lua",
+    entries = {
+        optional = {
+            ground_motion = {type = "boolean", description = "Opt in to boss terrain movement"},
+            feet_offset = {type = "number", description = "Pixels below the boss centre that stand on the floor"},
+            teleport_interval = {type = "number", range = {0, math.huge}, description = "Seconds between idle blinks"},
+            teleport_anchors = {type = "table", description = "Ordered anchor names for idle blinks"},
+        },
+        allow_unknown = true,
+    },
+    custom_validate = function(config)
+        local errors = {}
+        for name, preset in pairs(config) do
+            local feet = type(preset) == "table" and preset.feet_offset
+            if type(feet) == "number" and not (feet > 0 and feet < math.huge) then
+                errors[#errors + 1] = tostring(name) .. ".feet_offset must be finite and greater than 0"
+            end
+        end
+        table.sort(errors)
+        return errors
+    end,
+}
 
 M.enemy_types = {
   name = "Enemy Types",
@@ -2428,16 +2568,16 @@ function M.validate_field(value, field_schema, field_name)
   if field_schema.fields and type(value) == "table" then
     for nested_name, nested_schema in pairs(field_schema.fields) do
       local nested_value = value[nested_name]
-      if nested_value == nil then
-        table.insert(errors, string.format(
-          "Field '%s.%s': Missing required field",
-          field_name, nested_name
-        ))
-      else
+      if nested_value ~= nil then
         local nested_errors = M.validate_field(nested_value, nested_schema, field_name .. "." .. nested_name)
         for _, err in ipairs(nested_errors) do
           table.insert(errors, err)
         end
+      elseif not nested_schema.optional then
+        table.insert(errors, string.format(
+          "Field '%s.%s': Missing required field",
+          field_name, nested_name
+        ))
       end
     end
   end

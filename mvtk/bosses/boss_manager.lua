@@ -39,6 +39,10 @@ do
     -- Literal require: Bob builds only literal requires (AUDIT_BUILD_BUNDLING row 6).
     local user_patterns = require "developer.config.attack_patterns"
     if type(user_patterns) == "table" then
+        -- Keep the shared framework catalogue independent of creator entries.
+        local merged = {}
+        for name, pat in pairs(attack_patterns) do merged[name] = pat end
+        attack_patterns = merged
         for name, pat in pairs(user_patterns) do
             attack_patterns[name] = pat
             user_pattern_names[name] = true
@@ -46,14 +50,33 @@ do
     end
 end
 
--- Validate attack pattern library at load-time. Bad patterns surface here
--- instead of as silent failures mid-fight. Validation never throws.
+-- Validate the library at load time. The resolver also checks new attack
+-- patterns after moveset overrides and creator defaults are known.
 do
     local PatternSchema = require "mvtk.bosses.attack_pattern_schema"
+    local reported_pattern_errors = {}
+    local function report_pattern_error(err)
+        if reported_pattern_errors[err] then return end
+        reported_pattern_errors[err] = true
+        _orig_print("[BOSS_MANAGER] attack_patterns: " .. err)
+    end
+
+    function M._valid_resolved_pattern(pattern, defaults)
+        if PatternSchema and PatternSchema.resolve then
+            local resolved, err = PatternSchema.resolve(pattern, defaults, report_pattern_error)
+            if not resolved then report_pattern_error(err); return false end
+        end
+        if not PatternSchema or not PatternSchema.effective_options then return true end
+        local settings, err = PatternSchema.effective_options(pattern, defaults)
+        if settings then return true end
+        report_pattern_error(err)
+        return false
+    end
+
     if PatternSchema and PatternSchema.validate_all then
         local count, errors = PatternSchema.validate_all(attack_patterns)
         for _, err in ipairs(errors or {}) do
-            _orig_print("[BOSS_MANAGER] attack_patterns: " .. tostring(err))
+            report_pattern_error(err)
         end
         if count > 0 and #errors == 0 then
             _orig_print(string.format(
@@ -68,11 +91,97 @@ local BossMusic = require "mvtk.bosses.boss_music"
 local Invulnerability = require "mvtk.combat.invulnerability"
 local BossDefaults = Util.require_config("developer.config.boss_defaults", {
     iframes_on_hit = 0.2,
-    iframes_on_phase_transition = 1.5,
+    phase_damage_gate = true,
     defeat_cleanup_delay = 2.0,
 })
-local Time = require "mvtk.core.time"
 local Flags = require "mvtk.core.flags"
+
+do
+    local named, behaviors
+
+    function M.get_phase_moveset(boss, phase)
+        local Scheduler = require "mvtk.bosses.attack_scheduler"
+        local config = boss.config or {}
+        local profile = phase.movement_profile or config.movement_profile or "ground_chase"
+        local function report_coverage(moveset, label, named_moveset)
+            if not Scheduler.coverage_scope(profile, phase.leash_radius) then return end
+            local rect, kind = require("mvtk.bosses.boss_confinement").resolve_rect(config)
+            local width = kind == "arena" and rect.max_x - rect.min_x or nil
+            local usable = named_moveset and function(entry)
+                return M.resolve_attack_pattern(entry.attack, boss, phase, entry) ~= nil
+            end
+            local warning = Scheduler.coverage_warning(label, moveset, profile, width, phase.leash_radius, usable)
+            if warning then _orig_print("[BOSS_MANAGER] Moveset coverage: " .. warning) end
+        end
+        local name = phase.moveset
+        local named_phase = type(name) == "string" and name ~= "" and name ~= "none"
+        if named_phase then
+            if not named then
+                named = {}
+                for key, moveset in pairs(Util.require_config("developer.config.boss_movesets", {})) do
+                    local errors = Scheduler.validate(key, moveset, attack_patterns)
+                    named[key] = #errors == 0 and {moveset = moveset}
+                        or {error = table.concat(errors, "; ")}
+                end
+            end
+            local found = named[name]
+            if found and found.moveset then
+                report_coverage(found.moveset, name, true)
+                return found.moveset, name
+            end
+
+            boss._moveset_warnings = boss._moveset_warnings or {}
+            if boss._moveset_warnings[phase] ~= name then
+                boss._moveset_warnings[phase] = name
+                local phase_index = phase.phase_index or 1
+                for index, configured in ipairs(boss.config.phases or {}) do
+                    if configured == phase then
+                        phase_index = index
+                        break
+                    end
+                end
+                _orig_print(string.format("[BOSS_MANAGER] WARNING: %s phase %s cannot use moveset '%s' (%s). Using phase attacks.",
+                    boss.config.name or boss.id or "Boss", tostring(phase_index), name, found and found.error or "missing"))
+            end
+        end
+
+        local defaults = require "mvtk.bosses.attack_schedule_defaults"
+        if not behaviors then
+            behaviors = Util.require_config("developer.config.boss_behaviors", defaults.behaviors)
+        end
+        local behavior = type(phase.behavior) == "string" and phase.behavior:lower() or "random"
+        if not defaults.behaviors[behavior] then behavior = "random" end
+        local authored = behaviors[behavior]
+        local weights = Util.merge(defaults.behaviors[behavior], type(authored) == "table" and authored or nil)
+        local effective_phase = {
+            attack_range = phase.attack_range or config.attack_range or BossDefaults.attack_range,
+            movement_profile = phase.movement_profile or config.movement_profile,
+            defaults = BossDefaults,
+        }
+        local moveset = Scheduler.implicit(phase.attacks or {}, weights, function(attack)
+            return M.resolve_attack_pattern(attack, boss, phase)
+        end, effective_phase)
+        if not named_phase then report_coverage(moveset, (config.name or boss.id or "Boss") .. " attacks list") end
+        return moveset
+    end
+end
+
+-- Movement and selection share one resolved moveset and one chase stop per
+-- phase. The phase controller clears the cache when it advances the phase.
+function M.get_attack_schedule(boss, phase)
+    local state = boss._attack_schedule
+    if state then return state end
+    local Scheduler = require "mvtk.bosses.attack_scheduler"
+    local fallback = require "mvtk.bosses.attack_schedule_defaults"
+    local moveset, name = M.get_phase_moveset(boss.boss_data, phase)
+    local attack_range = tonumber(phase.attack_range or boss.config.attack_range or BossDefaults.attack_range)
+        or fallback.attack_range
+    local margin = tonumber(BossDefaults.approach_margin) or fallback.approach_margin
+    state = {moveset = moveset, moveset_name = name,
+        approach_distance = Scheduler.approach_distance(moveset, attack_range, margin)}
+    boss._attack_schedule = state
+    return state
+end
 
 -- Storage
 local active_bosses = {}  -- boss_id -> {type, health, phase, state_machine, etc.}
@@ -225,6 +334,68 @@ local function stop_active_music(boss_id)
     BossMusic.pop(boss_id)
 end
 
+-- A placed Boss Phase that names no attacks and no moveset uses those of the
+-- same phase of its boss type (the last one, when the type has fewer phases).
+-- Placing a phase to tune movement or a transition must not leave the boss
+-- with nothing to do.
+-- A module field, not a local: this file's main chunk is at its local budget.
+function M.inherit_phase_attacks(final_config, type_def)
+    local placed, preset = final_config.phases, type_def and type_def.phases
+    if type(placed) ~= "table" then return end
+    for index, phase in ipairs(placed) do
+        if type(phase) == "table" then
+            local named = type(phase.moveset) == "string" and phase.moveset ~= "" and phase.moveset ~= "none"
+            local listed = type(phase.attacks) == "table" and #phase.attacks > 0
+            local source = type(preset) == "table" and preset[math.min(index, #preset)]
+            if not named and not listed and type(source) == "table" then
+                if type(source.attacks) == "table" and #source.attacks > 0 then
+                    phase.attacks = copy_table(source.attacks)
+                end
+                if type(source.moveset) == "string" and source.moveset ~= "" then
+                    phase.moveset = source.moveset
+                end
+            end
+            if phase.from_baked_marker then
+                phase.from_baked_marker = nil
+                M.inherit_placed_phase_fields(phase, source)
+            end
+        end
+    end
+end
+
+function M.inherit_placed_phase_fields(phase, source)
+    if type(source) == "table" then
+        for _, field in ipairs({
+            "behavior", "speed_multiplier", "damage_multiplier", "stagger_immune",
+            "telegraph_scale", "cooldown_scale", "movement_profile", "facing_lock",
+            "hover_height", "jump_height", "jump_speed", "leash_radius", "attack_range",
+            "teleport_interval", "teleport_anchors",
+        }) do
+            if phase[field] == nil then
+                local value = source[field]
+                phase[field] = type(value) == "table" and copy_table(value) or value
+            end
+        end
+        local interval = source.attack_interval or {}
+        phase.attack_interval.min = phase.attack_interval.min or interval.min
+        phase.attack_interval.max = phase.attack_interval.max or interval.max
+        local transition = source.transition
+        if type(transition) == "table" and (not phase.transition
+            or not phase.transition.type or phase.transition.type == transition.type) then
+            local resolved = copy_table(transition)
+            for key, value in pairs(phase.transition or {}) do resolved[key] = value end
+            phase.transition = resolved
+        end
+    end
+    if phase.transition and not phase.transition.type then
+        local effect = false
+        for _, value in pairs(phase.transition) do
+            if value ~= false then effect = true; break end
+        end
+        if effect then phase.transition.type = "cutscene" else phase.transition = nil end
+    end
+end
+
 --- Initialize boss manager
 -- @param custom_config Optional configuration overrides
 function M.init(custom_config)
@@ -273,9 +444,14 @@ function M.spawn_boss(boss_type, position, custom_config)
         end
     end
 
+    -- Only a boss type the placement names; the baseline used for a boss with no type gives nothing away.
+    M.inherit_phase_attacks(final_config, preset_id and type_def or nil)
     final_config.name = resolve_boss_display_name(final_config, preset_id, boss_id)
     final_config.boss_name = final_config.name
     final_config.boss_preset = trim_string(final_config.boss_preset) or preset_id
+    if final_config.phase_damage_gate == nil then
+        final_config.phase_damage_gate = BossDefaults.phase_damage_gate ~= false
+    end
 
     local health_factor = Multipliers.get("boss_health")
     local max_health = (final_config.max_health or 100) * health_factor
@@ -302,6 +478,7 @@ function M.spawn_boss(boss_type, position, custom_config)
         invulnerable = false,
         stunned = false,
         defeated = false,
+        fight_time = 0,
 
         -- Modifiers (changed by phases)
         speed_multiplier = 1.0,
@@ -310,9 +487,6 @@ function M.spawn_boss(boss_type, position, custom_config)
 
         -- Cooldowns
         attack_cooldowns = {},
-
-        -- Spawned time
-        spawn_time = Time.gettime(),
     }
 
     require("mvtk.combat.actor_elements").configure(boss, type_def, custom_config)
@@ -411,6 +585,13 @@ local function add_stagger(boss, amount)
     if boss.stagger.threshold > 0 then send_stagger(boss) end
 end
 
+-- The boss script ticks this after its pause gate.
+function M.tick_fight(boss_id, dt)
+    local boss = active_bosses[boss_id]
+    if not boss or boss.defeated then return end
+    boss.fight_time = boss.fight_time + math.max(0, dt)
+end
+
 -- Called only after the script's pause gate; no per-frame settings copies.
 function M.tick_stagger(boss_id, dt)
     local boss = active_bosses[boss_id]
@@ -418,6 +599,12 @@ function M.tick_stagger(boss_id, dt)
     BossStagger.tick(boss.stagger, dt)
     if boss.stagger.sent_fraction ~= BossStagger.fraction(boss.stagger)
         or boss.stagger.sent_staggered ~= (boss.staggered == true) then send_stagger(boss) end
+end
+
+local function blocks_direct_damage(boss)
+    local controller = boss.phase_controller
+    return Invulnerability.is_invulnerable(boss)
+        or (controller and controller.blocks_direct_damage and controller:blocks_direct_damage())
 end
 
 --- Damage a boss
@@ -435,7 +622,7 @@ function M.damage_boss(boss_id, damage, source)
 
     -- A parry reaction is not a damage hit, even if its payload has damage.
     if type(source) == "table" and source.source_attack == "parry_stun" then
-        if not Invulnerability.is_invulnerable(boss) then
+        if not blocks_direct_damage(boss) then
             add_stagger(boss, boss.stagger.parry_amount or 0)
         end
         return false
@@ -446,10 +633,12 @@ function M.damage_boss(boss_id, damage, source)
 
     local dot = type(source) == "table" and source.damage_over_time == true
     -- Check if vulnerable (timer-driven i-frames or hard flag)
-    if not dot and Invulnerability.is_invulnerable(boss) then
+    if not dot and blocks_direct_damage(boss) then
         return false
     end
 
+    -- A burrow evades every kind of damage. Other i-frames still allow DoT.
+    if boss._burrowing then return false end
     -- DoT bypasses stances and shields, and never contributes pressure.
     if not dot and boss.parry_active then
         local pattern = boss.parry_counter_pattern
@@ -490,7 +679,17 @@ function M.damage_boss(boss_id, damage, source)
     end
 
     -- Apply damage
-    require("mvtk.bosses.boss_group").apply_damage(active_bosses, boss, final_damage)
+    local Group = require "mvtk.bosses.boss_group"
+    local pool = boss.shared_pool
+    local health = pool and pool.pool or boss.health
+    local edge = Group.phase_damage_boundary(active_bosses, boss, health, pool and pool.pool_max or boss.max_health)
+    local remaining = health - final_damage
+    if remaining < (edge or 0) then
+        remaining = edge or 0
+        final_damage = health - remaining
+    end
+    if final_damage <= 0 then return false, 0, verdict end
+    Group.set_health(active_bosses, boss, remaining)
     if final_damage > 0 and damage > 0 and not (type(source) == "table" and source.source_attack == "parry_stun") then
         GameEvents.emit("enemy_damaged", {
             amount = final_damage,
@@ -506,7 +705,7 @@ function M.damage_boss(boss_id, damage, source)
         or (boss.config and boss.config.iframes_on_hit)
         or BossDefaults.iframes_on_hit
     if not dot and iframes and iframes > 0 then
-        Invulnerability.start(boss, iframes, "hit")
+        require("mvtk.combat.invulnerability").start(boss, iframes, "hit")
     end
 
     print(string.format("[BOSS_MANAGER] %s took %.1f damage (%.0f / %.0f)",
@@ -547,9 +746,14 @@ function M.damage_boss(boss_id, damage, source)
     end
 
     -- Check if defeated
-    require("mvtk.bosses.boss_group").finish_damage(active_bosses, boss_id, source, M.kill_boss)
+    Group.finish_damage(active_bosses, boss_id, source, M.kill_boss)
 
     return true, final_damage, verdict
+end
+
+local function retire_phase_controller(boss)
+    local controller = boss.phase_controller
+    if controller and controller.retire then controller:retire() end
 end
 
 --- Kill a boss
@@ -566,9 +770,9 @@ function M.kill_boss(boss_id, source)
 
     if boss.go_url then require("mvtk.combat.status_effects").clear(boss.go_url) end
     boss.defeated = true
+    retire_phase_controller(boss)
     boss.health = 0
     boss.defeat_source = source
-    boss.defeat_time = Time.gettime()
     boss.encounter_player_damage_taken = encounter_metrics.player_damage_taken
 
     if not has_undefeated_bosses() then
@@ -590,6 +794,10 @@ function M.kill_boss(boss_id, source)
     boss.group_final_member = group_last
     local boss_type_id = resolve_boss_identity_id(boss, boss_id)
     if group_last then
+        local arena_id = trim_string(boss.config.arena_id) or trim_string(boss.config.arena)
+        if arena_id and not M.find_boss_id({arena_id = arena_id}) then
+            require("mvtk.bosses.arena_hazard_pulse").clear(arena_id)
+        end
         -- Only the final kill commits the encounter, before delayed cleanup.
         local CP = require "mvtk.core.checkpoint"
         local saved, save_error = CP.batch("boss_defeated", function()
@@ -788,8 +996,7 @@ function M.process_defeat_rewards(boss_id, source)
     end
 
     -- ---- Conditional bonus drops ----
-    local fight_duration = boss.defeat_time and boss.spawn_time
-        and (boss.defeat_time - boss.spawn_time) or math.huge
+    local fight_duration = boss.defeated and boss.fight_time or math.huge
 
     -- No-hit bonus: extra drops when the player wasn't damaged during the fight.
     -- Config example: no_hit_bonus = { drops = { health_up = { chance = 1, amount = 1 } } }
@@ -834,6 +1041,14 @@ function M.process_defeat_rewards(boss_id, source)
     end
 
     boss.rewards_processed = true
+end
+
+--- Restore health without reviving a defeated boss.
+function M.heal_boss(boss_id, amount)
+    local boss = active_bosses[boss_id]
+    if not boss or boss.defeated or type(amount) ~= "number" or not (amount > 0) then return end
+    require("mvtk.bosses.boss_group").apply_heal(active_bosses, boss, amount)
+    M.update_boss_health_bar(boss_id)
 end
 
 --- Get boss health percentage
@@ -901,7 +1116,7 @@ function M.report_actor(actor, id, world_pos)
     end
     M.actor_probe(id, world_pos,
         state,
-        M.get_boss_phase(actor.boss_id) or 1, boss.health, boss.max_health)
+        M.get_boss_phase(actor.boss_id) or 1, boss.health, boss.max_health, actor)
 end
 
 --- Save/music encounter identity; cleanup retains its wider room fallback.
@@ -911,6 +1126,16 @@ end
 
 function M.group_live_count(key)
     return #require("mvtk.bosses.boss_group").live_members(active_bosses, key)
+end
+
+function M.get_group_partner_counts(boss_id)
+    local Group = require "mvtk.bosses.boss_group"
+    local members = Group.encounter_members(active_bosses, boss_id)
+    local living = 0
+    for _, id in ipairs(members) do
+        if id ~= boss_id and not active_bosses[id].defeated then living = living + 1 end
+    end
+    return #members - 1, living
 end
 
 function M.arena_live_phase(arena_id)
@@ -939,12 +1164,12 @@ end
 -- @param boss_id Boss identifier
 -- @param phase_index Target phase index (1-based)
 -- @return true if forced
-function M.force_phase(boss_id, phase_index)
+function M.force_phase(boss_id, phase_index, elapsed)
     local boss = active_bosses[boss_id]
     if not boss or not boss.phase_controller or not boss.phase_controller.force_phase then
         return false
     end
-    boss.phase_controller:force_phase(phase_index)
+    boss.phase_controller:force_phase(phase_index, elapsed)
     return true
 end
 
@@ -956,6 +1181,7 @@ function M.remove_boss(boss_id, retire_defeated)
     if active_bosses[boss_id] then
         print(string.format("[BOSS_MANAGER][MUSIC] remove_boss clearing music for %s", tostring(boss_id)))
         local boss = active_bosses[boss_id]
+        retire_phase_controller(boss)
         local Group = require "mvtk.bosses.boss_group"
         if not retire_defeated and boss.defeated and #Group.encounter_members(active_bosses, boss_id) > 1 then
             -- The actor can disappear before the last kill / delayed cleanup.
@@ -989,46 +1215,6 @@ function M.get_attack_pattern(pattern_name)
     return attack_patterns[pattern_name]
 end
 
-local CHARGE_PATTERN_OVERRIDES = {
-    charge_speed = "dash_speed",
-    charge_distance = "dash_distance",
-    charge_telegraph_time = "telegraph_time",
-    charge_duration = "duration",
-    charge_cooldown = "cooldown",
-    charge_recovery = "recovery",
-    charge_edge_padding = "edge_padding",
-}
-
-local POSITIVE_CHARGE_OVERRIDES = {
-    charge_speed = true,
-    charge_distance = true,
-}
-
-local function apply_direct_charge_pattern_overrides(pattern, source)
-    for source_key, pattern_key in pairs(CHARGE_PATTERN_OVERRIDES) do
-        local value = tonumber(source[source_key])
-        local accepts_value = value ~= nil and value >= 0
-            and (not POSITIVE_CHARGE_OVERRIDES[source_key] or value > 0)
-        if accepts_value then
-            pattern[pattern_key] = value
-        end
-    end
-end
-
-local function apply_charge_pattern_overrides(pattern, source)
-    if type(pattern) ~= "table" or type(source) ~= "table" then
-        return
-    end
-
-    -- Also accept an explicit attack_tuning table for hand-authored presets.
-    -- Tiled class properties are flattened, so their values are applied by
-    -- the second pass and take precedence over this optional nested form.
-    if type(source.attack_tuning) == "table" then
-        apply_direct_charge_pattern_overrides(pattern, source.attack_tuning)
-    end
-    apply_direct_charge_pattern_overrides(pattern, source)
-end
-
 local function resolve_boss_reference(boss_or_id)
     if type(boss_or_id) == "string" then
         return active_bosses[boss_or_id]
@@ -1059,34 +1245,44 @@ local function resolve_phase_reference(boss, phase)
 end
 
 --- Resolve an independent attack pattern for one boss and phase.
--- Precedence is framework pattern < merged boss preset/Tiled instance config
--- < current Tiled phase. The manager's spawn merge already establishes the
--- preset-versus-instance portion of that ordering.
+-- Tile scaling comes first, then boss and phase charge tuning in world pixels,
+-- then entry overrides, then the phase's telegraph and cooldown multipliers.
 -- @param pattern_name Pattern name
 -- @param boss_or_id Boss manager record, boss script instance, or manager id
 -- @param phase Optional phase table/index; defaults to the boss's current phase
+-- @param entry Optional selected moveset entry
 -- @return A deep-copied resolved pattern, or nil
-function M.resolve_attack_pattern(pattern_name, boss_or_id, phase)
+function M.resolve_attack_pattern(pattern_name, boss_or_id, phase, entry)
     local base_pattern = attack_patterns[pattern_name]
     if type(base_pattern) ~= "table" then
         return nil
     end
 
     local boss = resolve_boss_reference(boss_or_id)
-    local factor = 1
-    if not user_pattern_names[pattern_name] or base_pattern.scale_with_tiles == true then
-        factor = tonumber(boss and boss.config and boss.config.attack_pixel_scale)
-            or TileSettings.width / 64
+    phase = resolve_phase_reference(boss, phase) or {}
+    local pattern = AttackScale.for_boss(base_pattern, boss and boss.config, phase,
+        user_pattern_names[pattern_name], TileSettings.width)
+    if entry then
+        if entry._legacy_combo_step then
+            -- Inline combo overrides have always replaced whole top-level
+            -- fields. Apply them before the compatibility block is translated.
+            for key, value in pairs(entry._legacy_combo_step) do
+                if key ~= "pattern" and key ~= "delay" and key ~= "repeat" and key ~= "aim" then
+                    pattern[key] = type(value) == "table" and Util.deep_copy(value) or value
+                end
+            end
+            pattern._combo_step_applied = true
+        else
+            Util.deep_merge(pattern, entry.overrides)
+            if entry.cooldown ~= nil then pattern.cooldown = entry.cooldown end
+        end
     end
-    local pattern = AttackScale.scale_pattern(base_pattern, factor)
-    if pattern.type ~= "charge" then
-        return pattern
-    end
-
-    -- Authored charge overrides are already in world pixels, so apply them
-    -- after converting the framework pattern into this world's tile units.
-    apply_charge_pattern_overrides(pattern, boss and boss.config)
-    apply_charge_pattern_overrides(pattern, resolve_phase_reference(boss, phase))
+    pattern._attack_name = pattern_name
+    if not M._valid_resolved_pattern(pattern, BossDefaults) then return nil end
+    pattern.telegraph_time = (tonumber(pattern.telegraph_time) or BossDefaults.telegraph_time or 0.5)
+        * math.max(0, tonumber(phase.telegraph_scale) or 1)
+    pattern.cooldown = (tonumber(pattern.cooldown) or 3.0)
+        * math.max(0, tonumber(phase.cooldown_scale) or 1)
     return pattern
 end
 
@@ -1110,10 +1306,10 @@ function M.is_attack_ready(boss_id, attack_name, resolved_pattern)
     if last_used == nil then
         return true
     end
-    local current_time = Time.gettime()
     local cooldown = tonumber(pattern.cooldown) or 3.0
 
-    return (current_time - last_used) >= cooldown
+    local Clock = require "mvtk.bosses.boss_clock"
+    return Clock.reached(Clock.time(boss), last_used + cooldown)
 end
 
 --- Mark attack as used (start cooldown)
@@ -1125,8 +1321,7 @@ function M.use_attack(boss_id, attack_name)
         return
     end
 
-    local current_time = Time.gettime()
-    boss.attack_cooldowns[attack_name] = current_time
+    boss.attack_cooldowns[attack_name] = require("mvtk.bosses.boss_clock").time(boss)
 end
 
 --[[============================================================================
@@ -1254,8 +1449,10 @@ end
 --- Reset all active bosses (e.g., on player death)
 -- @param reason Optional reason string for logging
 function M.reset_active_bosses(reason)
+    require("mvtk.bosses.arena_hazard_pulse").clear_all()
     local count = 0
     for boss_id, boss in pairs(active_bosses) do
+        retire_phase_controller(boss)
         require("mvtk.enemies.enemy_spawn_service").despawn_owner("boss:" .. boss_id, reason)
         if boss and not boss.defeated then
             -- Unlock arena if it was locked
@@ -1290,6 +1487,9 @@ function M.reset_room_bosses(room_id, reason)
     for boss_id, boss in pairs(active_bosses) do
         local cfg = boss and boss.config or {}
         if not boss.group_committed and Util.normalize_room_id(cfg.room_id) == room then
+            local arena_id = trim_string(cfg.arena_id) or trim_string(cfg.arena)
+            if arena_id then require("mvtk.bosses.arena_hazard_pulse").clear(arena_id) end
+            retire_phase_controller(boss)
             require("mvtk.enemies.enemy_spawn_service").despawn_owner("boss:" .. boss_id, reason)
             if cfg.arena then
                 arenas[cfg.arena] = true
@@ -1425,9 +1625,11 @@ end
 
 --- Clear all bosses
 function M.clear_all()
+    require("mvtk.bosses.arena_hazard_pulse").clear_all()
     CombatFeedback.clear_bosses()
     print("[BOSS_MANAGER][MUSIC] clear_all -> stop_active_music()")
     stop_active_music()
+    for _, boss in pairs(active_bosses) do retire_phase_controller(boss) end
     active_bosses = {}
     M.groups = {}
     boss_id_counter = 0

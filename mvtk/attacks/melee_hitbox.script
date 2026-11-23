@@ -10,6 +10,7 @@ local Debug = require "developer.config.debug_config"
 local DebugDraw = require "mvtk.debug.debug_draw"
 local SwingRegistry = require "mvtk.combat.swing_registry"
 local ActiveHitboxes = require "mvtk.combat.active_hitboxes"
+local Timers = require "mvtk.player.timers"
 
 -- Tunables
 go.property("lifetime", 0.14)
@@ -72,14 +73,18 @@ function init(self)
   -- Stringified swing id used for the shared SwingRegistry lookup. Empty
   -- string disables the registry path (enemy / boss hitboxes don't pass one).
   self.swing_id_str = hash_to_string(self.swing_id) or ""
+  if self.swing_id_str ~= "" then SwingRegistry.retain(self.swing_id_str) end
+  if self.swing_id_str ~= "" or DamagePayload.source_is(self.source_actor, C.URL.PLAYER) then
+    self._player_lifetime = true
+    Timers.start_combat_window(self, "t", self.t)
+  end
   if self.cuts_projectiles then
     go.update_world_transform()
     local pos = go.get_world_position()
     local radius = self.debug_radius > 0 and self.debug_radius or self.debug_w * 0.5
-    self._cut_bounds = {x=pos.x, y=pos.y,
+    ActiveHitboxes.register(go.get_id(), {x=pos.x, y=pos.y,
       hw=self.debug_shape == "circle" and radius or self.debug_w * 0.5,
-      hh=self.debug_shape == "circle" and radius or self.debug_h * 0.5, ttl=self.t}
-    ActiveHitboxes.register(go.get_id(), self._cut_bounds)
+      hh=self.debug_shape == "circle" and radius or self.debug_h * 0.5})
   end
 end
 
@@ -100,12 +105,7 @@ function update(self, dt)
   if self.cuts_projectiles then
     go.update_world_transform()
     local pos = go.get_world_position()
-    if not ActiveHitboxes.move(go.get_id(), pos.x, pos.y) then
-      -- A query may have expired the lease during a long pause before this
-      -- script's first resumed update. Restore geometry for the live swing.
-      self._cut_bounds.x, self._cut_bounds.y = pos.x, pos.y
-      ActiveHitboxes.register(go.get_id(), self._cut_bounds)
-    end
+    ActiveHitboxes.move(go.get_id(), pos.x, pos.y)
   end
   -- Live hitbox visualization: F3 toggles DebugDraw.settings.draw_hitboxes
   -- via mvtk/debug/debug_overlay.gui_script. Posting every frame is the
@@ -121,12 +121,17 @@ function update(self, dt)
       DebugDraw.draw_attack_hitbox(pos, vmath.vector3(self.debug_w or 0, self.debug_h or 0, 0))
     end
   end
-  self.t = self.t - dt
+  if self._player_lifetime then
+    Timers.tick_combat_deadline(self, "t", dt)
+  else
+    self.t = self.t - dt
+  end
   if self.t <= 0 then go.delete(".") end
 end
 
 function final(self)
   if self.cuts_projectiles then ActiveHitboxes.remove(go.get_id()) end
+  if self.swing_id_str and self.swing_id_str ~= "" then SwingRegistry.release(self.swing_id_str) end
 end
 
 function on_message(self, message_id, message, sender)
@@ -205,7 +210,9 @@ function on_message(self, message_id, message, sender)
         payload.attack_type = self.attack_type_id
       end
       pcall(msg.post, target, hash("mvtk_apply_damage"), payload)
-      CombatFeedback.attack_impact("melee", dmg, self.boss_id, message.other_id, { sfx = "hit_melee" })
+      CombatFeedback.attack_impact("melee", dmg, self.boss_id, message.other_id, {
+        sfx = "hit_melee", player_combat = self._player_lifetime == true,
+      })
       -- Notify owner if requested (for pogo/down-strike bounce etc.)
       if self.on_hit_msg and self.on_hit_msg ~= "" then
         local target = self.owner or sender

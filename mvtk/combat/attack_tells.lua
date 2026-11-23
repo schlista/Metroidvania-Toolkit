@@ -2,8 +2,8 @@
 local M = {}
 
 -- These executors use common.build_payload's ~= false rule (projectiles
--- also use it on factory shots). Melee differs between its factory and
--- fallback; compound/non-hit patterns have no single inferred classification.
+-- also use it on factory shots). Melee requires an explicit opt-in.
+-- Compound and non-hit patterns have no single inferred classification.
 function M.boss_parryable(pattern)
     if pattern.parryable ~= nil then return pattern.parryable == true end
     local kind = pattern.type

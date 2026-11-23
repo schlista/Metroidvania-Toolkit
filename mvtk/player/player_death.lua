@@ -4,6 +4,7 @@
 local PlayerState = require "mvtk.player.player_state"
 local PlayerHost = require "mvtk.player.player_host"
 local GameEvents = require "mvtk.core.game_events"
+local BonePhysics = require "mvtk.player.bone_physics"
 local M = {}
 local guards = {}
 
@@ -44,16 +45,23 @@ function M.trigger_death(self, reason)
   end
   PlayerHost.reset(self, "death")
   PlayerState.cancel_ground_pound(self)
+  local timers = require "mvtk.player.timers"
+  timers.clear_window(self, "_backdash_t")
+  timers.clear_window(self, "_backdash_cool")
+  timers.clear_window(self, "_platform_drop_t")
+  timers.clear_window(self, "_one_way_ground_bypass_t")
   print("========================================")
   print("[PLAYER] ⚠️ PLAYER DEATH TRIGGERED! Reason:", reason or "unknown")
   print("========================================")
   require("mvtk.game.death_drop").capture_death(self)
   self._is_dead = true
+  require("mvtk.world.water_registry").set_player_alive(false)
   GameEvents.emit("player_died", { reason = reason or "unknown" })
   self.health = 0
   require("mvtk.player.resources").clamp_health(self)
   -- Let gravity finish pulling us down so the corpse settles on ground.
   self.vx = 0
+  self._jump_cut_pending = nil
   self.vy = math.min(self.vy or 0, DEATH_SETTLE_VY)
   self._control_locked = true
   self._death_settled = false
@@ -84,7 +92,7 @@ function M.snap_dead_to_ground(self, collision)
     -- Cast down from the current position to find the nearest ground.
     local origin = self.pos + vmath.vector3(0, half_h, 0)
     local target = origin - vmath.vector3(0, half_h * 3, 0)
-    local hit = physics.raycast(origin, target, GROUND_GROUPS)
+    local hit = BonePhysics.raycast_without_inverted(origin, target, GROUND_GROUPS)
     if hit and hit.position then
       hit_y = hit.position.y
     end

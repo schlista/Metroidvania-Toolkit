@@ -1,8 +1,11 @@
 local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+local Registration = require "mvtk.bosses.placed_registration"
 local FeedbackSettings = require "mvtk.bosses.feedback_settings"
 
 go.property("registration_id", "")
 go.property("object_id", 0)
+-- Format flag written by Prepare & Check for self-contained markers.
+go.property("boss_properties_baked", false)
 go.property("boss_type", "")
 go.property("boss_preset", "")
 go.property("boss_name", "")
@@ -11,7 +14,6 @@ go.property("boss_id", "")
 go.property("boss_tag", "")
 go.property("boss_visual_type", "")
 go.property("visual_component", "")
-go.property("phase_config", "")
 go.property("max_health", 0)
 go.property("defense", 0)
 go.property("damage_resistance", 0)
@@ -38,16 +40,18 @@ go.property("charge_recovery", -1)
 go.property("attack_pattern_ids", "")
 go.property("arena_id", "")
 go.property("arena_lock", true)
+go.property("shared_health", false)
+go.property("group_name", "")
 go.property("intro_cutscene", "")
 go.property("defeat_cutscene", "")
 go.property("defeat_flag", "")
-go.property("show_health_bar", true)
-go.property("health_bar_position", "top")
+go.property("show_health_bar", "") -- Blank inherits; enter true or false to override.
+go.property("health_bar_position", "")
 go.property("music_track", "")
 go.property("victory_music", "")
 go.property("reward_xp", 0) -- Positive overrides preset and project boss XP.
-go.property("reward_currency_min", 0)
-go.property("reward_currency_max", 0)
+go.property("reward_currency_min", -1)
+go.property("reward_currency_max", -1)
 go.property("reward_drops", "")
 go.property("reward_loot_table", "")
 go.property("reward_unlock_flag", "")
@@ -60,7 +64,14 @@ go.property("contact_damage", 0)
 go.property("contact_knockback_x", -1)
 go.property("contact_knockback_y", -1)
 go.property("contact_stun_t", -1)
--- Baked Tiled feedback fields (raw colors/names are rehydrated by object id).
+go.property("ground_motion", "type_default")
+go.property("feet_offset", 0)
+-- Also support authored custom properties from older worlds.
+go.property("phase_damage_gate", "")
+go.property("charge_edge_padding", -1)
+go.property("attack_interval_min", -1)
+go.property("attack_interval_max", -1)
+-- Baked Tiled feedback fields (colors are Tiled-style hex text).
 go.property("override_boss_feedback", false)
 go.property("boss_hurt_sfx", "enemy_hurt")
 go.property("boss_hitstop", 0.05)
@@ -93,9 +104,9 @@ local HASH_FIELDS = {
     "boss_tag",
     "boss_visual_type",
     "visual_component",
-    "phase_config",
     "attack_pattern_ids",
     "arena_id",
+    "group_name",
     "intro_cutscene",
     "defeat_cutscene",
     "defeat_flag",
@@ -154,7 +165,7 @@ local NUMBER_DEFAULTS = {
 
 local BOOL_FIELDS = {
     "arena_lock",
-    "show_health_bar",
+    "shared_health",
 }
 
 for _, field in ipairs(FeedbackSettings.hash_fields) do HASH_FIELDS[#HASH_FIELDS + 1] = field end
@@ -187,6 +198,19 @@ local function build_properties(self)
     end
     for _, field in ipairs(BOOL_FIELDS) do
         props[field] = Proxy.bool(self[field], false)
+    end
+    props.show_health_bar = Proxy.bool(self.show_health_bar, nil)
+    if self.boss_properties_baked then
+        props.room_id, props.object_id = self.room_id, self.object_id
+        props.boss_name, props.group_name = self.boss_name, self.group_name
+        props.ground_motion, props.feet_offset = self.ground_motion, self.feet_offset
+        props.phase_damage_gate = Proxy.bool(self.phase_damage_gate, nil)
+        props.charge_edge_padding = self.charge_edge_padding
+        if self.attack_interval_min >= 0 then props.attack_interval_min = self.attack_interval_min end
+        if self.attack_interval_max >= 0 then props.attack_interval_max = self.attack_interval_max end
+        if self.reward_currency_min < 0 then props.reward_currency_min = nil end
+        if self.reward_currency_max < 0 then props.reward_currency_max = nil end
+        return props
     end
     local object
     props, object = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
@@ -225,6 +249,18 @@ function init(self)
     props.boss_preset = boss_preset or ""
     props.boss_type = boss_preset or props.boss_type or ""
 
+    if self.boss_properties_baked then
+        Registration.post(self, "register_boss_spawn", {
+            id = boss_id,
+            position = Proxy.world_position(),
+            room_id = props.room_id,
+            object_id = props.object_id,
+            properties = props,
+            from_baked_marker = true,
+        })
+        return
+    end
+
     -- Keep this message deliberately small. The complete property set is
     -- recovered by main.script from room_id + object_id; sending it here as
     -- both top-level fields and `properties` can exceed Defold's table buffer.
@@ -238,6 +274,8 @@ function init(self)
         room_id = props.room_id,
         object_id = props.object_id,
         arena_id = props.arena_id,
+        ground_motion = self.ground_motion,
+        feet_offset = self.feet_offset,
     }
 
     -- A manually placed Defold marker has no exported Tiled object to
@@ -253,7 +291,6 @@ function init(self)
             "resist_to",
             "immune_to",
             "vulnerable_to",
-            "phase_config",
             "max_health",
             "stagger_threshold",
             "stagger_time",
@@ -278,4 +315,8 @@ function init(self)
     end
 
     Proxy.post_to_main("register_boss_spawn", payload)
+end
+
+function final(self)
+    Registration.cancel(self)
 end

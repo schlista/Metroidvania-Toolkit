@@ -4,8 +4,10 @@
 local BoneCollision = require "mvtk.animation.bone_collision"
 local SurfaceClassifier = require "mvtk.core.surface_classifier"
 local CeilingProbe = require "mvtk.player.ceiling_probe"
+local CeilingCorner = require "mvtk.player.ceiling_corner"
 local ColliderBounds = require "mvtk.player.collider_bounds"
 local SpineVisual = require "mvtk.player.spine_visual"
+local OneWayPlatforms = require "mvtk.core.one_way_platform_registry"
 local ok_tile, TileSettings = pcall(require, "developer.config.tile_settings")
 if not ok_tile or type(TileSettings) ~= "table" then
   TileSettings = {}
@@ -32,6 +34,8 @@ local DEFAULT_TILE_HEIGHT = tonumber(TileSettings.height or TileSettings.tile_he
 local DEFAULT_MIN_WALL_CLIMB_TILES = 3
 
 local PLATFORM = SurfaceClassifier.GROUPS.PLATFORM
+local PLATFORM_GROUPS = { PLATFORM }
+local ALL_HITS = { all = true }
 local GROUND_GROUPS = SurfaceClassifier.RAYCAST.GROUND
 -- Exclude the "world" group from wall raycasts: pushable blocks live in that
 -- group and must NOT be treated as walls here, otherwise resolve_horizontal
@@ -48,6 +52,19 @@ for _, g in ipairs(SurfaceClassifier.RAYCAST.WALL) do
   end
 end
 local CEILING_GROUPS = SurfaceClassifier.RAYCAST.CEILING
+
+local function raycast_without_inverted(origin, target, groups)
+  local hit = physics.raycast(origin, target, groups)
+  if not (hit and hit.group == PLATFORM and OneWayPlatforms.is_inverted(hit.id)) then return hit end
+  local nearest
+  for _, candidate in ipairs(physics.raycast(origin, target, groups, ALL_HITS) or {}) do
+    if (candidate.group ~= PLATFORM or not OneWayPlatforms.is_inverted(candidate.id))
+      and (not nearest or candidate.fraction < nearest.fraction) then
+      nearest = candidate
+    end
+  end
+  return nearest
+end
 
 local function ensure_offsets(self)
   local ctx = self._bone_physics
@@ -140,7 +157,7 @@ local function count_ground_support_hits(self, root_x, root_y, expected_root_y, 
     local sample_x = root_x + (half_width * offset)
     local origin = sv(7, sample_x, root_y - half_height + adjust + lift, 0)
     local target = sv(8, sample_x, root_y - half_height + adjust - max_probe, 0)
-    local hit = physics.raycast(origin, target, ctx.ground_groups)
+    local hit = raycast_without_inverted(origin, target, ctx.ground_groups)
     if hit and SurfaceClassifier.is_ground_collision(hit, ctx.max_slope_angle) then
       local candidate_root = hit.position.y + half_height - adjust
       if math.abs(candidate_root - expected_root_y) <= tolerance then
@@ -157,9 +174,17 @@ local function has_ground_support_span(self, root_x, root_y, expected_root_y, mi
 end
 
 local M = {}
+M.raycast_without_inverted = raycast_without_inverted
 
 function M.init(self, opts)
   opts = opts or {}
+  local ceiling_groups = opts.ceiling_groups or CEILING_GROUPS
+  -- The primary probe rejects platforms, so keep them out of its closest-hit query.
+  -- The wedge, ledge and ladder clearance checks still use the full list.
+  local ceiling_probe_groups = {}
+  for _, group in ipairs(ceiling_groups) do
+    if group ~= PLATFORM then ceiling_probe_groups[#ceiling_probe_groups + 1] = group end
+  end
   self._bone_physics = {
     spine_url = opts.spine_url or SpineVisual.resolve(),
     feet = opts.feet or DEFAULT_FEET,
@@ -170,7 +195,8 @@ function M.init(self, opts)
     head_margin = opts.head_margin or 0,
     ground_groups = opts.ground_groups or GROUND_GROUPS,
     wall_groups = opts.wall_groups or WALL_GROUPS,
-    ceiling_groups = opts.ceiling_groups or CEILING_GROUPS,
+    ceiling_groups = ceiling_groups,
+    ceiling_probe_groups = ceiling_probe_groups,
     slope_lift = opts.slope_lift or 2,  -- Small lift on slopes to prevent sinking (2 pixels)
     fallback_max = opts.fallback_max or 1024,
     snap_epsilon = opts.snap_epsilon or 2.5,
@@ -206,7 +232,8 @@ local function trace_climb(self, fmt, ...)
   if not (self and self._climb_trace) then
     return
   end
-  if not (self._in_climb or (self.bypass_ceiling_frames or 0) > 0 or (self.bypass_ground_frames or 0) > 0) then
+  if not (self._in_climb or (self.bypass_ceiling_frames or 0) > 0 or (self.bypass_ground_frames or 0) > 0
+    or (self._one_way_ground_bypass_t or 0) > 0) then
     return
   end
   local ok, body = pcall(string.format, fmt, ...)
@@ -233,7 +260,7 @@ local function try_step_up(self, dir, hit, foot_y)
   local lift = (ctx.foot_probe_lift or 12) + max_step
   local origin = vmath.vector3(hit.position.x + dir * math.max(clearance * 0.5, half_width * 0.20, 4), foot_y + lift, 0)
   local target = origin - vmath.vector3(0, max_step + 12, 0)
-  local step_hit = physics.raycast(origin, target, ctx.ground_groups)
+  local step_hit = raycast_without_inverted(origin, target, ctx.ground_groups)
   if not (step_hit and step_hit.position and SurfaceClassifier.is_walkable_surface(step_hit.normal, ctx.max_slope_angle)) then
     return false
   end
@@ -288,7 +315,7 @@ local function probe_wall_face(ctx, dir, wall_x, sample_y)
   local probe_depth = math.max((ctx.wall_clearance or 6) + 6, 12)
   local origin = sv(9, wall_x - dir * probe_gap, sample_y, 0)
   local target = sv(10, wall_x + dir * probe_depth, sample_y, 0)
-  local hit = physics.raycast(origin, target, ctx.wall_groups)
+  local hit = raycast_without_inverted(origin, target, ctx.wall_groups)
   if not hit then
     return nil, 0
   end
@@ -327,11 +354,11 @@ function M.probe_ledge_lip(self, wall_side)
   return center_is_wall and not top_is_wall, center_hit, top_hit, true
 end
 
-local function ledge_raycast(origin, target, groups)
+local function ledge_raycast(origin, target, groups, cast)
   if not (physics and physics.raycast) then
     return nil, false
   end
-  local ok, hit = pcall(physics.raycast, origin, target, groups)
+  local ok, hit = pcall(cast or physics.raycast, origin, target, groups)
   if not ok then return nil, false end
   return hit, true
 end
@@ -359,7 +386,7 @@ function M.probe_ledge_support(self, authored_target, hang_start, opts)
     local sample_x = authored_target.x + (sample * half_width)
     local origin = vmath.vector3(sample_x, authored_target.y + 4, authored_target.z or 0)
     local target = vmath.vector3(sample_x, min_surface_y - 2, authored_target.z or 0)
-    local hit, available = ledge_raycast(origin, target, ctx.ground_groups)
+    local hit, available = ledge_raycast(origin, target, ctx.ground_groups, raycast_without_inverted)
     if not available then return nil, "probe_unavailable" end
     if hit and hit.position
       and hit.position.y >= min_surface_y
@@ -426,7 +453,8 @@ function M.sweep_ledge_motion(self, from_pos, to_pos)
   local epsilon = 0.001
 
   local function cast_blocked(origin, target, reason)
-    local hit, available = ledge_raycast(origin, target, groups)
+    local cast = reason ~= "ceiling_blocked" and raycast_without_inverted or nil
+    local hit, available = ledge_raycast(origin, target, groups, cast)
     if not available then return true, "probe_unavailable" end
     if hit then return true, reason end
     return false
@@ -523,7 +551,7 @@ local function has_min_climbable_wall_height(self, dir, hit)
   return measured_height >= required_height, measured_height, required_height
 end
 
-local function resolve_horizontal(self, prev_pos)
+local function resolve_horizontal(self, prev_pos, bypass_ceiling)
   local ctx = self._bone_physics
   local displacement = self.pos - prev_pos
   local dx = displacement.x
@@ -559,9 +587,13 @@ local function resolve_horizontal(self, prev_pos)
   local min_ray_length = half_width + 32  -- Check at least 32 pixels beyond collider edge
   local ray_length = math.max(math.abs(dx) + half_width + (ctx.wall_clearance or 6), min_ray_length)
   local wall_side = 0
+  local physical_wall = 0
   local blocked = false
   local stepped_up = false
   local block_hit = nil
+  local previous_head_y, passive_face
+  local passive_probe = dx == 0 and (self.vx or 0) == 0 and (self._wall_side or 0) == 0
+    and not bypass_ceiling and CeilingCorner.free_airborne(self)
 
   -- Key insight: only treat a surface as a "wall" if it's ABOVE our foot level
   -- Anything at or below foot level is potential ground we can walk on
@@ -582,7 +614,7 @@ local function resolve_horizontal(self, prev_pos)
     local origin = sv(1, self.pos.x, sample_y, 0)
     local target_x = self.pos.x + dir * (ray_length + half_width)
     local target = sv(2, target_x, sample_y, 0)
-    local hit = physics.raycast(origin, target, ctx.wall_groups)
+    local hit = raycast_without_inverted(origin, target, ctx.wall_groups)
 
     if hit then
       dbg(self, "H-RAY HIT: sample=%.2f origin=(%.1f,%.1f) target=(%.1f,%.1f) hit_pos=(%.1f,%.1f) group=%s normal=(%.2f,%.2f)",
@@ -600,12 +632,28 @@ local function resolve_horizontal(self, prev_pos)
       
       local surface_kind = SurfaceClassifier.classify_collision(hit, ctx.max_slope_angle)
       local within_step_range = hit_height_above_feet <= max_step and hit_height_above_feet >= -10
+      local penetration = (self.pos.x + dir * half_width - hit.position.x) * dir
+      if (penetration > 0 or (passive_probe and penetration >= -0.001)) and previous_head_y == nil then
+        previous_head_y = (passive_probe or (not bypass_ceiling and CeilingCorner.eligible(self)))
+          and prev_pos.y + ColliderBounds.top(self) or math.huge
+      end
 
       if surface_kind == SurfaceClassifier.KINDS.GROUND then
         -- Walkable slope surface (and not a wall) - don't block
         dbg(self, "Walkable slope (not blocking): sample=%.2f normal=(%.2f,%.2f)",
           sample, normal and normal.x or 0, normal and normal.y or 0)
         -- Continue checking other samples
+      elseif penetration > 0 and (self.vy or 0) > 0 and sample_y > previous_head_y then
+        -- Give newly reached overhead geometry to the ceiling pass. Lower
+        -- samples still handle walls the body was already beside.
+        dbg(self, "Wall sample deferred to ceiling: sample=%.2f hit_y=%.2f previous_head_y=%.2f",
+          sample, sample_y, previous_head_y)
+      elseif passive_probe and penetration < half_width * (1 - CeilingProbe.SHOULDER_FRACTION)
+        and (penetration > 0 or (penetration >= -0.001
+          and (sample_y <= previous_head_y or hit.position.x == passive_face))) then
+        -- Facing alone cannot snap an unsupported body sideways while its
+        -- outer edge brushes a face outside the ceiling shoulder ray.
+        passive_face = hit.position.x
       elseif not ladder_climbing and within_step_range and try_step_up(self, dir, hit, foot_y) then
         stepped_up = true
         dbg(self, "Stepped up over obstacle: sample=%.2f hit_height=%.1f group=%s", sample, hit_height_above_feet, tostring(hit.group))
@@ -618,8 +666,6 @@ local function resolve_horizontal(self, prev_pos)
         -- Only correct position if the player's collider edge is actually at or past the wall.
         -- Without this check, the proactive ray range (min_ray_length) would snap the player
         -- toward walls they haven't reached yet.
-        local player_edge = self.pos.x + dir * half_width
-        local penetration = (player_edge - hit.position.x) * dir  -- positive = overlapping wall
         local attach_slop = ctx.wall_attach_slop or 3
         -- Ladder centering must not attract the player to nearby wall faces.
         -- Otherwise each snap back toward the ladder selects the opposite face
@@ -639,8 +685,11 @@ local function resolve_horizontal(self, prev_pos)
         -- a gap, or it freezes the player in mid-air short of the wall.
         if at_wall then
           wall_side = SurfaceClassifier.wall_side_from_normal(normal, dir)
+          physical_wall = wall_side
         end
         if wall_side ~= 0 then
+          -- A short wall still stops the steering lock even if it cannot be climbed.
+          if self._wall_jump_steering then self._wall_jump_steering = nil end
           local climbable, measured_height, required_height = has_min_climbable_wall_height(self, dir, hit)
           if not climbable then
             trace_climb(self, "wall_reject reason=min_height measured=%.1f required=%.1f hit=(%.1f,%.1f) side=%d group=%s",
@@ -662,14 +711,18 @@ local function resolve_horizontal(self, prev_pos)
     end
   end
 
-  return wall_side, stepped_up
+  return wall_side, stepped_up, physical_wall
+end
+
+local function corner_raycast(origin_x, origin_y, target_x, target_y, groups)
+  return physics.raycast(
+    sv(3, origin_x, origin_y, 0),
+    sv(4, target_x, target_y, 0),
+    groups)
 end
 
 local function ceiling_raycast(sample_x, origin_y, target_y, groups)
-  return physics.raycast(
-    sv(3, sample_x, origin_y, 0),
-    sv(4, sample_x, target_y, 0),
-    groups)
+  return corner_raycast(sample_x, origin_y, sample_x, target_y, groups)
 end
 
 -- CeilingProbe reads these synchronously and does not retain the options.
@@ -679,7 +732,43 @@ local ceiling_options = {
   raycast_fn = ceiling_raycast,
 }
 
-local function resolve_ceiling(self, prev_pos)
+local function inverted_platform_ceiling(self, prev_pos, top, clearance, width)
+  local dy = self.pos.y - prev_pos.y
+  if dy <= 0 then return nil end
+  local previous_head = prev_pos.y + top
+  local next_head = self.pos.y + top + clearance
+  local z = self.pos.z
+  local limit
+  -- An authored box can be narrower than the gap between the ordinary head
+  -- rays. Cast inside the actual overlap and confirm the collider is enabled.
+  for id, bounds in OneWayPlatforms.candidates() do
+    if bounds.underside > previous_head - clearance and bounds.underside < next_head then
+      local first = math.max(0, (bounds.underside - previous_head - clearance) / dy)
+      local last = math.max(0, math.min(1, (bounds.underside - previous_head) / dy))
+      local dx = self.pos.x - prev_pos.x
+      local x0, x1 = prev_pos.x + dx * first, prev_pos.x + dx * last
+      local left = math.max(math.min(x0, x1) - width, bounds.left)
+      local right = math.min(math.max(x0, x1) + width, bounds.right)
+      if left < right then
+        local x = (left + right) * 0.5
+        local from = sv(3, x, previous_head - clearance, z)
+        local to = sv(4, x, next_head, z)
+        local hits = physics.raycast(from, to, PLATFORM_GROUPS, ALL_HITS)
+        if hits then
+          for _, hit in ipairs(hits) do
+            if hit.id == id and SurfaceClassifier.is_ceiling_collision(hit) then
+              local y = math.max(prev_pos.y, hit.position.y - top - clearance)
+              if y < self.pos.y and (not limit or y < limit) then limit = y end
+            end
+          end
+        end
+      end
+    end
+  end
+  return limit
+end
+
+local function resolve_ceiling(self, prev_pos, grounded, physical_wall)
   local ctx = self._bone_physics
   ceiling_options.pos = self.pos
   ceiling_options.prev_pos = prev_pos
@@ -689,9 +778,16 @@ local function resolve_ceiling(self, prev_pos)
   ceiling_options.collider_top, ceiling_options.collider_bottom = ColliderBounds.top(self)
   ceiling_options.head_margin = ctx.head_margin
   ceiling_options.clearance = ctx.ceiling_clearance
-  ceiling_options.groups = ctx.ceiling_groups
+  ceiling_options.groups = ctx.ceiling_probe_groups
   ceiling_options.max_slope_angle = ctx.max_slope_angle
   local result = CeilingProbe.evaluate(ceiling_options)
+  local platform_y = inverted_platform_ceiling(self, prev_pos, result.effective_head or ceiling_options.collider_top,
+    ceiling_options.clearance or 8, ceiling_options.half_width)
+  if platform_y and (not result.clamp_y or platform_y <= result.clamp_y) then
+    result.clamp_y = platform_y
+    result.stop_upward_velocity = self.vy > 0
+    self._vertical_grid = nil
+  end
 
   for _, accepted in ipairs(result.hits or {}) do
     local hit = accepted.hit
@@ -700,8 +796,21 @@ local function resolve_ceiling(self, prev_pos)
       self.pos.y or 0, prev_pos and prev_pos.y or self.pos.y or 0, self.vy or 0)
   end
   if result.clamp_y ~= nil then
+    local uncorrected_x = self.pos.x
+    if platform_y ~= result.clamp_y
+      and CeilingCorner.try(self, ceiling_options, result, grounded, physical_wall, corner_raycast) then
+      if not inverted_platform_ceiling(self, prev_pos, result.effective_head,
+        ceiling_options.clearance or 8, ceiling_options.half_width) then
+        return false, true
+      end
+      self.pos.x = uncorrected_x
+    end
     self.pos.y = result.clamp_y
-    if result.stop_upward_velocity then self.vy = 0 end
+    if result.stop_upward_velocity then
+      self._vertical_grid = nil
+      self.vy = 0
+      self._jump_cut_pending = nil
+    end
     trace_climb(self, "ceiling_clamp new_pos_y=%.1f", self.pos.y or 0)
   end
   -- NOTE: an upward carrier that keeps moving after this clamp can still
@@ -738,7 +847,8 @@ local function resolve_corner_correction(self, prev_pos, wall_side)
       bottom = live_bottom
     end
     local ground_check_origin = self.pos + vmath.vector3(0, bottom, 0)
-    local ground_hit = physics.raycast(ground_check_origin, ground_check_origin - vmath.vector3(0, nudge_distance + 4, 0), ctx.ground_groups)
+    local ground_hit = raycast_without_inverted(ground_check_origin,
+      ground_check_origin - vmath.vector3(0, nudge_distance + 4, 0), ctx.ground_groups)
     
     if not ground_hit and new_y < self.pos.y then
       self.pos.y = new_y
@@ -751,7 +861,8 @@ local function resolve_corner_correction(self, prev_pos, wall_side)
       
       -- Check if horizontal nudge is safe
       local wall_check_origin = vmath.vector3(new_x, self.pos.y, 0) + vmath.vector3(wall_side * half_width, 0, 0)
-      local wall_check_hit = physics.raycast(wall_check_origin, wall_check_origin + vmath.vector3(wall_side * 8, 0, 0), ctx.wall_groups)
+      local wall_check_hit = raycast_without_inverted(wall_check_origin,
+        wall_check_origin + vmath.vector3(wall_side * 8, 0, 0), ctx.wall_groups)
       
       if not wall_check_hit then
         self.pos.x = new_x
@@ -773,10 +884,13 @@ local function resolve_ground(self, prev_pos)
   ctx.missed_ground_frames = ctx.missed_ground_frames or 0
   local vy = self.vy or 0
   local vx = self.vx or 0
+  -- A vertical current can lift the player without changing swim velocity.
+  local current_rise = (self._water_y or 0) > 0 and prev_pos and self.pos.y > prev_pos.y
+  local descending = vy <= 0 and not current_rise
   local was_grounded = self.grounded and true or false
   local max_snap_up = ctx.max_snap_up or 140
   local landing_snap_distance = ctx.landing_snap_distance or 0
-  local ignore_platform = (self._platform_drop_t or 0) > 0 or (vy > 0.1)
+  local ignore_platform = (self._platform_drop_t or 0) > 0 or vy > 0.1 or current_rise
   local ground_group = nil
 
   local function filter_hit(hit)
@@ -815,6 +929,12 @@ local function resolve_ground(self, prev_pos)
   local best_ground_y, best_normal, best_hit
   local pos_y = self.pos.y
   local adjust = ctx.foot_floor_adjust or 0
+  local airborne_fall = not was_grounded and descending and math.max(0, prev_pos.y - pos_y) or 0
+  local lift = ctx.foot_probe_lift or 12
+  -- A fast fall can leave the normal origin below the crossed face. Start
+  -- above the previous feet but keep the same samples and probe endpoint.
+  local extra_lift = not ignore_platform and airborne_fall >= lift
+    and airborne_fall + snap_eps - lift or 0
 
   local function consider_ground_hit(hit, candidate_root)
     if not hit then
@@ -830,15 +950,14 @@ local function resolve_ground(self, prev_pos)
   end
 
   if ctx.use_bone_feet and ctx.offsets then
-    local lift = ctx.foot_probe_lift or 12
     local extend = (ctx.ground_check or 64) + lift + math.max(0, -vy) * (ctx.descend_probe_mul or 0.03)
     for _, name in ipairs(ctx.feet) do
       local offset = ctx.offsets[name]
       if offset then
         local foot_pos = BoneCollision.get_bone_position(ctx.spine_url, name)
         if foot_pos then
-          local origin = foot_pos + vmath.vector3(0, lift, 0)
-          local hit = filter_hit(physics.raycast(origin, origin - vmath.vector3(0, extend, 0), ctx.ground_groups))
+          local origin = foot_pos + vmath.vector3(0, lift + extra_lift, 0)
+          local hit = filter_hit(raycast_without_inverted(origin, origin - vmath.vector3(0, extend + extra_lift, 0), ctx.ground_groups))
           if hit then
             local candidate_root = hit.position.y + offset - adjust
             consider_ground_hit(hit, candidate_root)
@@ -849,15 +968,14 @@ local function resolve_ground(self, prev_pos)
   end
 
   if not best_ground_y then
-    local lift = ctx.foot_probe_lift or 12
     local extend = (ctx.ground_check or 64) + lift + math.max(0, -vy) * (ctx.descend_probe_mul or 0.03)
     local foot_base_y = pos_y - half_height + adjust
     local samples = ctx.foot_samples or DEFAULT_COLLIDER_FOOT_SAMPLES
     for _, sample in ipairs(samples) do
       local sample_x = self.pos.x + (sample * half_width)
-      local origin = sv(7, sample_x, foot_base_y + lift, 0)
+      local origin = sv(7, sample_x, foot_base_y + lift + extra_lift, 0)
       local target = sv(8, sample_x, (foot_base_y + lift) - extend, 0)
-      local hit = filter_hit(physics.raycast(origin, target, ctx.ground_groups))
+      local hit = filter_hit(raycast_without_inverted(origin, target, ctx.ground_groups))
       if hit then
         local candidate_root = hit.position.y + half_height - adjust
         consider_ground_hit(hit, candidate_root)
@@ -884,20 +1002,22 @@ local function resolve_ground(self, prev_pos)
     -- Use 2.5x multiplier to handle steep slopes (tiles arranged diagonally)
     local slope_snap = moved_x * 2.5
     local max_allowed_snap = math.max(base_step, math.min(slope_snap, max_snap_up))
-    local can_land_from_air = (vy <= 0) and (bottom_y <= surface_y + landing_snap_distance)
+    local can_land_from_air = descending and bottom_y <= surface_y + landing_snap_distance
     -- Ground following must not undo upward jump or rope motion. A taut swing
     -- can start with a tiny rise while last frame still reported floor support.
-    local can_step_down_while_grounded = was_grounded and vy <= 0
+    local can_step_down_while_grounded = was_grounded and descending
       and delta < 0 and ((-delta) <= base_step)
 
     if delta > 0 then
-      if moved_x > 0.1 or trying_to_move then
+      local crossed_floor = delta > max_allowed_snap and airborne_fall > 0
+        and best_ground_y - slope_lift_offset(best_normal, ctx) <= prev_pos.y + snap_eps
+      if (moved_x > 0.1 or trying_to_move) and not crossed_floor then
         -- Moving: use slope-aware incremental snap
         local eased = math.min(delta, max_allowed_snap)
         self.pos.y = self.pos.y + eased
         delta = eased
       else
-        -- Standing still: snap directly to ground to prevent slow fall
+        -- Finish a crossing on this draw; easing is for steps into higher ground.
         self.pos.y = best_ground_y
         delta = 0
       end
@@ -931,7 +1051,7 @@ local function resolve_ground(self, prev_pos)
   
   local origin = sv(5, self.pos.x, prev_root.y + half_height, 0)
   local target_down = sv(6, self.pos.x, prev_root.y + half_height - distance, 0)
-  local hit = filter_hit(physics.raycast(origin, target_down, ctx.ground_groups))
+  local hit = filter_hit(raycast_without_inverted(origin, target_down, ctx.ground_groups))
 
   if hit then
     local ground_y = hit.position.y + half_height - (ctx.foot_floor_adjust or 0)
@@ -952,8 +1072,8 @@ local function resolve_ground(self, prev_pos)
     local moved_x = math.abs(self.pos.x - prev_pos.x)
     local base_step = math.max(16, math.min(half_height * 0.35, 64))
     local trying_to_move = math.abs(vx) > 10
-    if (bottom_y <= best_fallback_hit.position.y + landing_snap_distance and vy <= 0) or
-       (was_grounded and vy <= 0 and delta < 0 and (-delta) <= base_step) or
+    if (bottom_y <= best_fallback_hit.position.y + landing_snap_distance and descending) or
+       (was_grounded and descending and delta < 0 and (-delta) <= base_step) or
        (delta > 0 and delta <= max_snap_up and trying_to_move) then
 
       -- Apply same slope-aware snapping logic to fallback ray
@@ -962,7 +1082,9 @@ local function resolve_ground(self, prev_pos)
       local max_allowed_snap = math.max(base_step, math.min(slope_snap, max_snap_up))
 
       if delta > 0 then
-        if moved_x > 0.1 or trying_to_move then
+        local crossed_floor = delta > max_allowed_snap and airborne_fall > 0
+          and ground_y - slope_lift_offset(best_fallback_normal, ctx) <= prev_pos.y + snap_eps
+        if (moved_x > 0.1 or trying_to_move) and not crossed_floor then
           -- Moving: use slope-aware incremental snap
           local eased = math.min(delta, max_allowed_snap)
           self.pos.y = self.pos.y + eased
@@ -993,7 +1115,7 @@ local function resolve_ground(self, prev_pos)
   -- Bridge brief raycast misses with a cached ground plane to avoid oscillation/jitter.
   local near_cached_y = ctx.last_ground_y and math.abs((self.pos.y or 0) - ctx.last_ground_y) <= (snap_eps + 2.0)
   -- Do not reuse cached ground when moving upward; only allow during descent/idle
-  local shallow_fall = vy <= 0 and vy > -280
+  local shallow_fall = descending and vy > -280
   local allow_cached = ctx.last_ground_y and near_cached_y and shallow_fall and (ctx.missed_ground_frames or 0) <= 3
 
   if allow_cached and not (ignore_platform and ctx.last_ground_group == PLATFORM) then
@@ -1008,19 +1130,112 @@ local function resolve_ground(self, prev_pos)
   return false, nil, nil, nil
 end
 
-function M.resolve(self, prev_pos)
+-- Reuse the terrain queries without committing the proposed body state.
+-- Spine probes read the game object's transform, so supply the test pose
+-- for those reads and restore it before returning to the live update.
+function M.probe_swing_segment(self, from, to)
+  local ctx = {}
+  for key, value in pairs(self._bone_physics) do ctx[key] = value end
+  local z = self.pos.z
+  local start = vmath.vector3(from.x, from.y, z)
+  local proposed = vmath.vector3(to.x, to.y, z)
+  local probe = setmetatable({pos = proposed, vx = to.vx, vy = to.vy,
+    _bone_physics = ctx, _grapple_swing_path = false, _grapple_swing_step = false}, {
+    __index = function(_, key) return self[key] end,
+  })
+  local restore
+  if ctx.use_bone_feet then
+    restore = go.get_position()
+    go.set_position(proposed)
+    -- A first probe can initialize offsets without changing the live cache.
+    for _, field in ipairs({"offsets", "missing_foot_log"}) do
+      local copy = {}
+      for key, value in pairs(ctx[field] or {}) do copy[key] = value end
+      ctx[field] = copy
+    end
+  end
+  local collision = M.resolve(probe, start, nil, nil, true)
+  if restore then go.set_position(restore) end
+  return collision, proposed, probe.vx, probe.vy
+end
+
+local function finish_swing_contact(self, step, collision, room_check)
+  if not (collision.grounded or collision.wall_contact ~= 0 or collision.ceiling_contact) then return collision end
+  local target = {x = step.end_x, y = step.end_y, vx = step.vx + step.bx, vy = step.vy + step.by}
+  local reference, pos, vx, vy = M.probe_swing_segment(self, step, target)
+  if reference.grounded ~= collision.grounded or reference.wall_contact ~= collision.wall_contact
+    or reference.ceiling_contact ~= collision.ceiling_contact or reference.ground_group ~= collision.ground_group
+    or (collision.grounded and (not reference.ground_hit or not collision.ground_hit))
+    or (collision.wall_contact ~= 0 and pos.x ~= self.pos.x)
+    or ((collision.grounded or collision.ceiling_contact) and pos.y ~= self.pos.y)
+    or (room_check and not room_check(self.pos, pos, self.collider_half_width or 0, self.collider_half_height or 0)) then
+    return collision
+  end
+  self.pos.x, self.pos.y, self.vx, self.vy = pos.x, pos.y, vx, vy
+  if reference.grounded then self._bone_physics.last_ground_x = pos.x end
+  return reference
+end
+
+local function resolve_swing_path(self, prev_pos, guard_corner_move, room_check)
+  local path = self._grapple_swing_path
+  self._grapple_swing_path = nil
+  if not path or self.pos.x ~= path.x or self.pos.y ~= path.y then
+    return M.resolve(self, prev_pos, guard_corner_move, room_check)
+  end
+
+  -- A late draw can cross more than one swing chord. Use the ordinary
+  -- resolver on each chord so its wall and floor rays see the turn.
+  local dest_x, dest_y, vx, vy = self.pos.x, self.pos.y, self.vx, self.vy
+  local ground_bypass, ceiling_bypass = self.bypass_ground_frames, self.bypass_ceiling_frames
+  local origin = vmath.vector3(prev_pos)
+  for _, point in ipairs(path) do
+    self.pos.x, self.pos.y, self.vx, self.vy = point.x, point.y, point.vx, point.vy
+    local allowed = not guard_corner_move or guard_corner_move(self, origin, room_check)
+    go.set_position(self.pos)
+    local collision = M.resolve(self, origin, guard_corner_move, room_check)
+    if not allowed or collision.grounded or collision.ceiling_contact or (collision.wall_contact or 0) ~= 0
+      or self.pos.x ~= point.x or self.pos.y ~= point.y or self.vx ~= point.vx or self.vy ~= point.vy then
+      self._grapple_swing_step = nil
+      self._grapple_rope_length, self._grapple_launch_length = point.length, point.launch_length
+      self._grapple_step_vx, self._grapple_step_vy = point.vx - point.bx, point.vy - point.by
+      self._grapple_contact_elapsed = point.elapsed
+      collision.corner_room_refused = collision.corner_room_refused or not allowed
+      return collision
+    end
+    self.bypass_ground_frames, self.bypass_ceiling_frames = ground_bypass, ceiling_bypass
+    origin.x, origin.y = self.pos.x, self.pos.y
+  end
+  self.pos.x, self.pos.y, self.vx, self.vy = dest_x, dest_y, vx, vy
+  local allowed = not guard_corner_move or guard_corner_move(self, origin, room_check)
+  go.set_position(self.pos)
+  local collision = M.resolve(self, origin, guard_corner_move, room_check)
+  collision.corner_room_refused = collision.corner_room_refused or not allowed
+  return collision
+end
+
+function M.resolve(self, prev_pos, guard_corner_move, room_check, probe)
+  if self._grapple_swing_path then
+    return resolve_swing_path(self, prev_pos, guard_corner_move, room_check)
+  end
   local ctx = self._bone_physics
   if not ctx or not ctx.spine_url then
-    go.set_position(self.pos)
+    if not probe then go.set_position(self.pos) end
     return { grounded = self.grounded and true or false, ceiling_contact = false }
   end
 
+  local swing_step = self._grapple_swing_step
+  if swing_step and (self.pos.x ~= swing_step.draw_x or self.pos.y ~= swing_step.draw_y) then swing_step = nil end
   ensure_offsets(self)
+
+  local previous_bypass = self.bypass_ground_frames
+  local previous_missed = ctx.missed_ground_frames
+  local previous_no_ground = ctx.no_ground_frames
+  local previous_steering = self._wall_jump_steering
 
   -- Check for bypass_ground_frames - used by crumble platform to prevent
   -- physics from pushing player back onto baked tilemap collision
-  local bypass_ground = (self.bypass_ground_frames or 0) > 0
-  if bypass_ground then
+  local bypass_ground = (self.bypass_ground_frames or 0) > 0 or (self._one_way_ground_bypass_t or 0) > 0
+  if (self.bypass_ground_frames or 0) > 0 then
     self.bypass_ground_frames = self.bypass_ground_frames - 1
     trace_climb(self, "bypass_ground active remaining=%d", self.bypass_ground_frames or 0)
   end
@@ -1047,7 +1262,7 @@ function M.resolve(self, prev_pos)
 
   -- Resolve horizontal collisions before ground snapping so shared "solid" walls
   -- cannot be mistaken for floor while the player is still overlapping them.
-  local wall_side, stepped_up = resolve_horizontal(self, prev_pos)
+  local wall_side, stepped_up, physical_wall = resolve_horizontal(self, prev_pos, bypass_ceiling)
   if self and (self._in_climb or bypass_ceiling) then
     trace_climb(self, "resolve_horizontal wall_side=%s stepped_up=%s pos=(%.1f,%.1f) prev=(%.1f,%.1f)",
       tostring(wall_side), tostring(stepped_up),
@@ -1090,15 +1305,28 @@ function M.resolve(self, prev_pos)
     end
   end
 
-  local ceiling_contact = false
+  local ceiling_contact, corrected_corner = false, false
   if not bypass_ceiling then
-    ceiling_contact = resolve_ceiling(self, prev_pos)
+    ceiling_contact, corrected_corner = resolve_ceiling(self, prev_pos, grounded, physical_wall)
   end
-  resolve_corner_correction(self, prev_pos, wall_side)
+  if corrected_corner then
+    if guard_corner_move and not guard_corner_move(self, prev_pos, room_check) then
+      -- The room guard has rolled back the move. Resolve the old pose just
+      -- as for an ordinary refusal, without carrying over tentative history.
+      self.bypass_ground_frames = previous_bypass
+      self._wall_jump_steering = previous_steering
+      ctx.missed_ground_frames = previous_missed
+      ctx.no_ground_frames = previous_no_ground
+      local collision = M.resolve(self, prev_pos)
+      collision.corner_room_refused = true
+      return collision
+    end
+    wall_side = 0
+  else
+    resolve_corner_correction(self, prev_pos, wall_side)
+  end
 
-  go.set_position(self.pos)
-
-  return {
+  local collision = {
     grounded = grounded,
     ground_normal = normal,
     ground_hit = hit_pos,
@@ -1106,6 +1334,9 @@ function M.resolve(self, prev_pos)
     wall_contact = wall_side,
     ceiling_contact = ceiling_contact,
   }
+  if swing_step then collision = finish_swing_contact(self, swing_step, collision, room_check) end
+  if not probe then go.set_position(self.pos) end
+  return collision
 end
 
 return M

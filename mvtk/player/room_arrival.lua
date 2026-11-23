@@ -2,6 +2,7 @@
 -- Room preparation continues on the streamer's update; a cancelled request
 -- releases its pin and can never deliver an old position later.
 local C = require "mvtk.core.constants"
+local Timers = require "mvtk.player.timers"
 local M = {}
 
 -- Resolve after reset hooks select the collider that will actually arrive.
@@ -86,6 +87,7 @@ function M.intercept(self, manager, id, message, sender)
     local copy = {}
     for key, value in pairs(message) do copy[key] = value end
     self._room_arrival = { token = token, id = id, message = copy, sender = sender, hold = hold }
+    if message.reason == "hazard_return" then Timers.start_combat_window(self._room_arrival, "hold", hold) end
     return true
 end
 
@@ -109,7 +111,12 @@ function M.update(self, manager, deliver, dt)
             report(pending.message, err)
         else
             if (pending.hold or 0) > 0 then
-                pending.hold = math.max(0, pending.hold - math.max(0, tonumber(dt) or pending.hold))
+                local elapsed = math.max(0, tonumber(dt) or pending.hold)
+                if pending.message.reason == "hazard_return" and dt ~= nil then
+                    Timers.tick_combat_deadline(pending, "hold", elapsed)
+                else
+                    pending.hold = math.max(0, pending.hold - elapsed)
+                end
             end
             if (pending.hold or 0) > 0 then return true end
             if not ready then return true end

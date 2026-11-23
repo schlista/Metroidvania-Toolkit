@@ -47,6 +47,9 @@ go.property("vehicle_collision_id", "") -- Internal baked sibling id; release-sa
 
 local v3 = vmath.vector3
 local KinematicPath = require "mvtk.world.kinematic_path"
+local Timeline = require "mvtk.world.platform_timeline"
+local Timers = require "mvtk.player.timers"
+local Pause = require "mvtk.core.pause"
 local C = require "mvtk.core.constants"
 local Util = require "mvtk.core.util"
 local TriggerBus = require "mvtk.world.trigger_bus"
@@ -421,34 +424,39 @@ local function move_to(self, target_pos)
     })
 end
 
-local function start_wait(self)
-    if (self.wait or 0) > 0 then
-        self.waiting = true
-        timer.delay(self.wait, false, function()
-            self.waiting = false
-        end)
+local function position_at(self, phase, duration)
+    local progress = phase / duration
+    if self.platform_type == "circular" then return move_circular(self, progress) end
+    if self.platform_type == "path" and self.waypoints then return move_path(self, progress) end
+    return move_linear(self, progress)
+end
+
+local function cancel_boarding_preview(self)
+    if self.boarding_origin then
+        move_to(self, self.boarding_origin)
+        self.boarding_origin = nil
     end
 end
 
 local function start_motion(self)
     self.pending_start = false
     self.start_timer = nil
+    self.boarding_origin = nil
     if self.completed then
         move_to(self, v3(self.start))
     end
     self.t = 0
     self.dir = 1
-    self.waiting = false
+    Timeline.reset(self)
     self.completed = false
     self.active = true
 end
 
 local function cancel_start_timer(self)
-    if self.start_timer then
-        timer.cancel(self.start_timer)
-        self.start_timer = nil
-    end
+    Timers.cancel_native(self, self.start_timer)
+    self.start_timer = nil
     self.pending_start = false
+    cancel_boarding_preview(self)
 end
 
 local function request_start(self)
@@ -461,11 +469,17 @@ local function request_start(self)
             return
         end
         self.pending_start = true
-        self.start_timer = timer.delay(delay, false, function()
+        local handle
+        handle = Timers.schedule_native(self, delay, function(overrun, scale)
+            if self.start_timer == handle then self.start_timer = nil end
             if self.pending_start and not self.active then
                 start_motion(self)
+                self.boarding_travel = Timers.REFERENCE_STEP * scale + overrun
+            else
+                self.boarding_origin = nil
             end
         end)
+        self.start_timer = handle
     else
         start_motion(self)
     end
@@ -490,23 +504,57 @@ local function apply_signal(self, on)
     end
 end
 
-local function movement_ready(self)
+local function movement_ready(self, starting, preview)
     if not self.tiles_initialized or self.pending_room_tile_clear then
         return false
     end
     if not self.enabled then
         return false
     end
-    if (tonumber(self.start_delay_remaining) or 0) > 0 then
+    if not starting and (tonumber(self.start_delay_remaining) or 0) > 0 then
         return false
     end
     if self.trigger_armed == false then
         return false
     end
-    if self.use_new_controls and not self.active and not self.vehicle_driver then
+    if self.use_new_controls and not self.active and not self.vehicle_driver
+        and not (preview or (starting and (tonumber(self.wait_time) or 0) <= 0)) then
         return false
     end
     return true
+end
+
+local function start_delay_travel(self, dt, scale)
+    if (self.start_delay_remaining or 0) <= 0 then return dt, false end
+    if dt <= 0 then return 0, false end
+    local step = Timers.REFERENCE_STEP * scale
+    local clock = self.start_delay_clock
+    if not clock then
+        clock = {seconds=self.start_delay_remaining, elapsed=0, scale=scale}
+        self.start_delay_clock = clock
+        clock.length = Timers.reference_duration(clock.seconds, scale)
+    elseif clock.scale ~= scale then
+        local previous_step = Timers.REFERENCE_STEP * clock.scale
+        local updates = math.floor((clock.elapsed + 1e-12) / previous_step)
+        local spent = updates * Timers.binary32(Timers.engine_reference_step() * clock.scale)
+        clock.seconds = math.max(0, clock.seconds - spent)
+        clock.elapsed = math.max(0, clock.elapsed - updates * previous_step) * scale / clock.scale
+        clock.scale = scale
+        clock.length = Timers.reference_duration(clock.seconds, scale)
+    end
+    local opening = clock.elapsed
+    clock.elapsed = opening + Timers.world_delta(dt, scale)
+    self.start_delay_remaining = math.max(0, clock.length - clock.elapsed)
+    if self.start_delay_remaining <= 1e-12 then
+        self.start_delay_remaining, self.start_delay_clock = 0, nil
+        if self.use_new_controls and self.trigger_armed then
+            self.active = (tonumber(self.wait_time) or 0) <= 0
+        end
+    end
+    -- The old countdown allowed travel on the update that spent its final
+    -- step. Advance along that interval without opening the gate early.
+    local travel = math.max(0, clock.elapsed - math.max(opening, clock.length - step))
+    return travel, travel > 1e-12
 end
 
 local function apply_enabled(self, enabled, message_id)
@@ -523,7 +571,8 @@ local function apply_enabled(self, enabled, message_id)
     else
         self.active = false
         self.pending_start = false
-        self.waiting = false
+        cancel_boarding_preview(self)
+        Timeline.clear_wait(self)
     end
 end
 
@@ -1093,8 +1142,16 @@ function final(self)
 end
 
 function update(self, dt)
-    if self._room_hidden then return end
-    if self.vehicle_driver and self.vehicle_driver.paused() then return end
+    local scale = Timers.world_scale(dt, Pause)
+    local timer_dt = Timers.world_delta(dt, scale)
+    Timers.tick_native(self, dt, scale)
+    -- The saved boarding callback ran before this reference movement update.
+    dt = self.boarding_travel or dt
+    self.boarding_travel = nil
+    if self._room_hidden or (self.vehicle_driver and self.vehicle_driver.paused()) then
+        Timeline.age_wait(self, timer_dt, scale)
+        return
+    end
     dt = FrameClock.snap(dt)
     if self.tiles_baked and not self.tiles_initialized then
         self.tiles_initialized = initialize_baked_tiles(self)
@@ -1105,22 +1162,21 @@ function update(self, dt)
     if self.pending_room_tile_clear then
         retry_room_tile_clear(self, false)
     end
-    if self.start_delay_remaining and self.start_delay_remaining > 0 then
-        self.start_delay_remaining = math.max(0, self.start_delay_remaining - dt)
-        if self.start_delay_remaining > 0 then
-            return
-        end
-        if self.use_new_controls and self.trigger_armed then
-            self.active = (tonumber(self.wait_time) or 0) <= 0
-        end
+    local starting
+    dt, starting = start_delay_travel(self, dt, scale)
+    local preview = 0
+    if self.pending_start and not self.active and not self.completed and self.t == 0
+        and (self.start_delay_remaining or 0) <= 0 and dt > 0 then
+        preview = Timers.native_preview(self, scale)
     end
-    if not movement_ready(self) then
-        return
-    end
-    if self.waiting then
+    if not movement_ready(self, starting, preview > 1e-12) then
+        cancel_boarding_preview(self)
+        Timeline.age_wait(self, timer_dt, scale)
         return
     end
     if self.is_path and not self.tiles_ready then
+        cancel_boarding_preview(self)
+        Timeline.age_wait(self, timer_dt, scale)
         return
     end
 
@@ -1133,7 +1189,6 @@ function update(self, dt)
 
     local mode
     if self.use_new_controls then
-        if not self.active then return end
         if self.loop then
             mode = self.one_way and "wrap_mod" or "pingpong"
         else
@@ -1147,32 +1202,21 @@ function update(self, dt)
         mode = "pingpong"
     end
 
-    local event
-    self.t, self.dir, event = KinematicPath.advance(self.t, self.dir, dt, dur, mode)
-    if event == "turn" then
-        start_wait(self)
-    elseif event == "complete" then
+    if preview > 1e-12 then
+        self.boarding_origin = self.boarding_origin or self.last_pos
+        local phase = mode == "wrap_mod" and preview % dur or math.min(preview, dur)
+        move_to(self, position_at(self, phase, dur))
+        return
+    end
+
+    local moved, _, completed = Timeline.step(self, dt, dur, mode, self.wait, scale)
+    if completed then
         self.active = false
         self.completed = true
     end
+    if not moved then return end
 
-    local t01 = self.t / dur
-    local target_pos
-
-    -- Calculate position based on platform type
-    local is_circular = self.platform_type == "circular"
-    local is_path = self.platform_type == "path" and self.waypoints
-
-    if is_circular then
-        target_pos = move_circular(self, t01)
-    elseif is_path then
-        target_pos = move_path(self, t01)
-    else
-        -- Linear (horizontal/vertical) - default fallback
-        target_pos = move_linear(self, t01)
-    end
-
-    move_to(self, target_pos)
+    move_to(self, position_at(self, self.t, dur))
 end
 
 function on_message(self, message_id, message, sender)

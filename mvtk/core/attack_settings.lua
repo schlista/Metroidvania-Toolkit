@@ -25,6 +25,70 @@ local function get(value, path)
     return value
 end
 
+-- Legacy shipped recoveries for projects that saved startup or a hit window
+-- while leaving recovery inherited. Zero recovery today cannot recover the
+-- old number when the old hit window swallowed it.
+local legacy_recovery = {
+    air_launcher=0.16, air_light_1=0.12, air_up_light=0.14, charged_slash=0.22,
+    counter_attack=0.16, down_strike=0.12, heavy_1=0.24, light_1=0.14,
+    light_2=0.15, light_3=0.18, mixed_finisher_1=0.20, mixed_finisher_2=0.22,
+    ranged_shot=0.12, up_light=0.14,
+}
+
+function M.recovery_start(timeline)
+    local finish = tonumber(timeline.startup) or 0
+    for _, window in ipairs(timeline.active_windows or {}) do
+        finish = math.max(finish, (tonumber(window.start) or 0) + (tonumber(window.duration) or 0))
+    end
+    return finish
+end
+
+function M.combo_start(window, finish, recovery)
+    return tonumber(window.start) or finish - math.max(0.08, tonumber(recovery) or 0)
+end
+
+local function timing_override(timeline)
+    if timeline.startup ~= nil or timeline.recovery ~= nil then return true end
+    for _, window in pairs(timeline.active_windows or {}) do
+        if window.start ~= nil or window.duration ~= nil then return true end
+    end
+    return false
+end
+
+-- Return the sparse values to replace so load preserves all unrelated overrides.
+function M.recovery_migration(config, authored, saved)
+    local converted = {}
+    for id, attack in pairs(saved or {}) do
+        local override = attack.timeline
+        if override and timing_override(override) then
+            local baseline = config.attacks[id]
+            local authored_timeline = ((authored or {})[id] or {}).timeline
+            local old_recovery = override.recovery
+            if old_recovery == nil and not (authored_timeline and authored_timeline.recovery ~= nil) then
+                old_recovery = legacy_recovery[id]
+            end
+            if old_recovery ~= nil then
+                local timeline = merge(copy(baseline.timeline or {}), override)
+                local startup, active_end = timeline.startup or 0, M.recovery_start(timeline)
+                -- Match the old addition before subtracting. Reassociating
+                -- the three numbers can miss an exact reference-frame edge.
+                local old_finish = math.max(startup + old_recovery, active_end)
+                local recovery = active_end == startup and old_recovery
+                    or math.min(old_recovery, old_finish - active_end)
+                local row = { recovery = recovery }
+                local combo = baseline.combo_window or {}
+                if next(baseline.combo_links or {}) and combo.start == nil and get(attack, "combo_window.start") == nil then
+                    local old_start = M.combo_start(combo, old_finish, old_recovery)
+                    local new_start = M.combo_start(combo, active_end + recovery, recovery)
+                    if old_start ~= new_start then row.combo_start = old_start end
+                end
+                converted[id] = row
+            end
+        end
+    end
+    return converted
+end
+
 -- Optional directional projectile values only get controls when authored:
 -- their absence selects dynamic aim/knockback, which has no numeric default.
 local projectile_numbers = {
@@ -67,7 +131,8 @@ function M.catalog(config, damage_types)
         add("energy_cost", "Energy cost", attack.energy_cost or 0, 0, 10000, 0.25)
         local timeline = attack.timeline or {}
         add("timeline.startup", "Startup (seconds)", timeline.startup or 0, 0, 60, 0.01)
-        add("timeline.recovery", "Recovery (seconds)", timeline.recovery or 0, 0, 60, 0.01)
+        add("timeline.recovery", "Post-hit recovery (seconds)", timeline.recovery or 0, 0, 60, 0.01).help =
+            "Seconds to wait after the last hit window closes, or after startup if this attack has no hit windows. Zero ends the attack immediately at that point."
         for wi, window in ipairs(timeline.active_windows or {}) do
             local path, prefix = "timeline.active_windows." .. wi, "Window " .. wi .. " "
             add(path .. ".start", prefix .. "start (seconds)", window.start, 0, 60, 0.01)
@@ -123,12 +188,19 @@ function M.resolve(config, overrides, damage_types)
     for _, spec in pairs(fields) do
         known[spec.attack_id .. "." .. spec.attack_path] = spec
     end
+    -- Migration can pin a formerly implicit combo start. A lead longer than
+    -- the attack can make that start negative, which means immediately open.
+    local combo_start = { type = "number", min = -math.huge, max = math.huge }
+    for id in pairs(config.attacks or {}) do
+        known[id .. ".combo_window.start"] = combo_start
+    end
     local function check(value, path)
         local spec = known[path]
         if spec then
             assert(type(value) == spec.type, path .. " must be a " .. spec.type)
             if spec.type == "number" then
-                assert(value == value and value >= spec.min and value <= spec.max, path .. " is outside its supported range")
+                assert(math.abs(value) < math.huge and value >= spec.min and value <= spec.max,
+                    path .. " is outside its supported range")
             else assert(spec.values[value], path .. " has an unsupported damage type") end
         else
             assert(type(value) == "table", "Unknown attack override: " .. path)

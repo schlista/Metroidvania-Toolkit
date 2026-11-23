@@ -4,6 +4,7 @@ local Motion = require "mvtk.world.carry_motion"
 local Pause = require "mvtk.core.pause"
 local Util = require "mvtk.core.util"
 local Flags = require "mvtk.core.flags"
+local Timers = require "mvtk.player.timers"
 
 go.property("carry_id", "")
 go.property("room_id", "")
@@ -35,13 +36,16 @@ local function returning(self)
     if self.mode == "carried" and self.owner then
         msg.post(self.owner, "mvtk_carry_begin", {object=msg.url(), ended=true})
     end
-    self.mode, self.return_t, self.fuse = "return", self.cfg.return_delay, nil
+    self.mode, self.fuse = "return", nil
+    Timers.discard_window(self, "fuse")
+    Timers.start_window(self, "return_t", math.max(Timers.REFERENCE_STEP, self.cfg.return_delay))
+    self.flight_grid = nil
     Util.post_component_enabled("#co", false)
     if self.placeholder then Util.post_component_enabled("#sprite", false) end
     require("mvtk.tiled.object_presentation").visible(false)
 end
 local function rest(self)
-    self.mode, self.vx, self.vy = "rest", 0, 0
+    self.mode, self.vx, self.vy, self.flight_grid = "rest", 0, 0, nil
     interaction(self, true)
 end
 local function begin(self)
@@ -78,9 +82,54 @@ local function raycast(x, y, tx, ty, names)
     return hit
 end
 
+local function move(self, dt)
+    local grid = self.flight_grid
+    if not grid and Timers.reference_frame(dt) then
+        local gravity = self.gravity * (self.vy < 0 and self.fall_mult or 1)
+        local speed = math.sqrt(self.vx*self.vx + self.vy*self.vy)
+        local x,y,vx,vy,hit = Motion.step(self,dt,gravity,raycast)
+        place(self,x,y); self.vx,self.vy = vx, math.max(self.max_fall,vy)
+        return hit, speed
+    end
+    local remaining = dt
+    while remaining > 1e-12 do
+        if not grid or grid.vy ~= self.vy then
+            grid = {left = Timers.REFERENCE_STEP, gravity = self.gravity * (self.vy < 0 and self.fall_mult or 1),
+                speed = math.sqrt(self.vx*self.vx + self.vy*self.vy)}
+        end
+        local piece = math.min(remaining, grid.left)
+        local x,y,vx,vy,hit = Motion.step(self, piece, grid.gravity, raycast)
+        self.x, self.y, self.vx, self.vy = x, y, vx, vy
+        grid.left, grid.vy = grid.left - piece, vy
+        if hit or grid.left <= 1e-12 then
+            self.vy = math.max(self.max_fall, vy)
+            if hit then
+                place(self, x, y)
+                self.flight_grid = nil
+                return hit, grid.speed
+            end
+            grid = nil
+        end
+        remaining = remaining - piece
+    end
+    self.flight_grid = grid
+    place(self, self.x, self.y)
+end
+
+local function detonate(self)
+    local kind = self.cfg.kinds[self.kind]
+    local action = Util.require_config("developer.config.player_actions").bomb
+    factory.create(require("mvtk.core.constants").URL.FACTORY.bomb,
+        vmath.vector3(self.x,self.y,self.home.z+self.offset.z), nil,
+        {fuse=0, radius=kind.radius_tiles * Util.require_config("developer.config.tile_settings").width,
+            damage=self.bomb_damage, attack_type=kind.hit_tag, owner=self.owner, knockback=action.knockback_px})
+    returning(self)
+end
+
 function init(self)
     self.cfg = Util.require_config("developer.config.carry_settings")
     go.update_world_transform()
+    require("mvtk.enemies.patrol_obstacles").track(msg.url(".").path, hash("world"), self)
     self.home = go.get_position()
     self.placeholder = pcall(go.get, "#sprite", "size")
     local world = go.get_world_position()
@@ -102,8 +151,7 @@ function update(self, dt)
     if Pause.get() then return end
     if self.mode == "consumed" or self.mode == "socketed" then return end
     if self.mode == "return" then
-        self.return_t = self.return_t - dt
-        if self.return_t <= 0 then
+        if Timers.tick_deadline(self, "return_t", dt) then
             place(self, self.home.x + self.offset.x, self.home.y + self.offset.y)
             Util.post_component_enabled("#co", true)
             if self.placeholder then Util.post_component_enabled("#sprite", true) end
@@ -111,27 +159,21 @@ function update(self, dt)
         end
         return
     end
+    local travel, expired = dt, false
     if self.fuse then
-        self.fuse = self.fuse - dt
-        if self.fuse <= 0 then
-            local kind = self.cfg.kinds[self.kind]
-            local action = Util.require_config("developer.config.player_actions").bomb
-            factory.create(require("mvtk.core.constants").URL.FACTORY.bomb,
-                vmath.vector3(self.x,self.y,self.home.z+self.offset.z), nil,
-                {fuse=0, radius=kind.radius_tiles * Util.require_config("developer.config.tile_settings").width,
-                    damage=self.bomb_damage, attack_type=kind.hit_tag, owner=self.owner, knockback=action.knockback_px})
-            returning(self); return
-        end
+        -- The saved detonation update reads the position before its movement.
+        travel = math.max(0, math.min(dt, Timers.window_remaining(self, "fuse") - Timers.REFERENCE_STEP))
+        expired = Timers.tick_deadline(self, "fuse", dt)
+        if not expired and Timers.reference_frame(dt) and dt - travel <= 1e-7 then travel = dt end
     end
-    if self.mode == "carried" then return end
-    local bounds = require("mvtk.map.streaming.room_manager").get_room_bounds(self.room_id)
-    if bounds and self.y + self.half_h < bounds.min_y then returning(self); return end
-    local gravity = self.gravity * (self.vy < 0 and self.fall_mult or 1)
-    local speed = math.sqrt(self.vx*self.vx + self.vy*self.vy)
-    local x,y,vx,vy,hit = Motion.step(self,dt,gravity,raycast)
-    place(self,x,y); self.vx,self.vy = vx, math.max(self.max_fall,vy)
-    if hit then impact(self,speed) end
-    if not hit and self.mode == "rest" then self.mode = "drop"; interaction(self,false) end
+    if self.mode ~= "carried" and travel > 0 then
+        local bounds = require("mvtk.map.streaming.room_manager").get_room_bounds(self.room_id)
+        if bounds and self.y + self.half_h < bounds.min_y then returning(self); return end
+        local hit, speed = move(self, travel)
+        if hit then impact(self,speed) end
+        if not hit and self.mode == "rest" then self.mode = "drop"; interaction(self,false) end
+    end
+    if expired and self.mode ~= "return" then detonate(self) end
 end
 
 function on_message(self, message_id, message, sender)
@@ -179,7 +221,9 @@ function on_message(self, message_id, message, sender)
         end
         interaction(self,false); self.mode, self.owner = "carried", message.owner
         self.bomb_damage = message.bomb_damage
-        if self.cfg.kinds[self.kind].explodes and not self.fuse then self.fuse = self.fuse_time end
+        if self.cfg.kinds[self.kind].explodes and not self.fuse then
+            Timers.start_window(self, "fuse", math.max(Timers.REFERENCE_STEP, self.fuse_time))
+        end
         Util.post_component_enabled("#co", false)
     elseif message_id == hash("carry_follow") and self.mode == "carried" then
         place(self,message.x,message.y)
@@ -187,6 +231,7 @@ function on_message(self, message_id, message, sender)
         if message.mode == "lost" then returning(self); return end
         place(self,message.x,message.y)
         self.mode,self.vx,self.vy = message.mode,message.vx,message.vy
+        self.flight_grid = nil
         self.damage,self.bomb_damage,self.owner = message.damage,message.bomb_damage,message.owner
         Util.post_component_enabled("#co", true)
     elseif message_id == hash("contact_point_response") and self.mode ~= "carried" and self.mode ~= "return" and self.mode ~= "socketed" then

@@ -526,6 +526,7 @@ end
 
 function init(self)
     pcall(go.update_world_transform)
+    require("mvtk.enemies.patrol_obstacles").track(msg.url(".").path, hash("world"), self, true)
     if not self.show_sprite then
         Util.set_component_enabled("#sprite", false)
     end

@@ -85,7 +85,10 @@ function M.advance(t, dir, dt, duration, mode)
         end
     elseif mode == "wrap_sub" then
         t = t + dt
-        if t >= dur then t = t - dur end
+        if t >= dur then
+            local remainder = t - dur
+            t = remainder < dur and remainder or t % dur
+        end
     elseif mode == "once_hold" then
         if dir > 0 then t = math.min(t + dt, dur) end
     end

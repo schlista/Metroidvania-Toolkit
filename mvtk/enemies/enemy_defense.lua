@@ -121,13 +121,12 @@ end
 
 function M.open_window(self)
     if self._guard_open_timer or (self._guard_open_t or 0) <= 0 then return end
+    local Timers = require "mvtk.player.timers"
+    Timers.start_window(self, "_guard_open_t", self._guard_open_t, false)
     local life = self.patterns
     self._guard_open_timer = timer.delay(0, true, function(actor, handle, elapsed)
         if actor.patterns ~= life then timer.cancel(handle); return end
-        if not require("mvtk.core.pause").get() then
-            actor._guard_open_t = math.max(0, actor._guard_open_t - elapsed)
-        end
-        if actor._guard_open_t <= 0 then
+        if not require("mvtk.core.pause").get() and Timers.tick_deadline(actor, "_guard_open_t", elapsed) then
             actor._guard_open_timer = nil
             timer.cancel(handle)
         end

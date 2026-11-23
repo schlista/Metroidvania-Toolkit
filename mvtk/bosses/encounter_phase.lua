@@ -5,7 +5,7 @@ local function named(value)
     return type(value) == "string" and value:match("%S") ~= nil
 end
 
---- Return boss phase, encounter activity, lock state and source reason.
+--- Return boss phase, encounter activity, lock state, source reason and arena id.
 -- Requires stay lazy so arena and boss services can also use this resolver.
 function M.resolve(criteria)
     criteria = criteria or {}
@@ -22,7 +22,7 @@ function M.resolve(criteria)
     local locked = arena and arena.locked == true or false
     if arena_id and not named(criteria.boss_id) and not named(criteria.boss_type) and Bosses.arena_live_phase then
         local phase, live, group_locked = Bosses.arena_live_phase(arena_id)
-        if live then return phase, true, locked or group_locked, "boss" end
+        if live then return phase, true, locked or group_locked, "boss", arena_id end
     end
     local boss_id = Bosses.find_boss_id({arena_id = arena_id,
         boss_id = criteria.boss_id, boss_type = criteria.boss_type})
@@ -30,7 +30,7 @@ function M.resolve(criteria)
     if boss and not boss.defeated then
         local configured_arena = boss.config and boss.config.arena
         locked = locked or (configured_arena ~= nil and configured_arena ~= false and configured_arena ~= "")
-        return Bosses.get_boss_phase(boss_id), true, locked, "boss"
+        return Bosses.get_boss_phase(boss_id), true, locked, "boss", arena_id
     end
     -- A piece that names its boss follows only that boss. After a defeat the
     -- arena stays locked through the cleanup delay, but the encounter is over.
@@ -40,7 +40,7 @@ function M.resolve(criteria)
     if arena then
         local phase = arena.phase or arena.current_phase or 0
         if locked and phase == 0 then phase = 1 end
-        return phase, locked or arena.boss_active == true, locked, "arena"
+        return phase, locked or arena.boss_active == true, locked, "arena", arena_id
     end
     return 0, false, false, "none"
 end

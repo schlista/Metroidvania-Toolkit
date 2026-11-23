@@ -9,6 +9,8 @@ local TP = require "mvtk.core.tiled_props"
 local ToggleMessages = require "mvtk.prefabs.toggle_messages"
 local EncounterPhase = require "mvtk.bosses.encounter_phase"
 local Presentation = require "mvtk.tiled.object_presentation"
+local Pause = require "mvtk.core.pause"
+local Timers = require "mvtk.player.timers"
 
 local to_bool = TP.to_bool
 local parse_phase_set = TP.parse_phase_set
@@ -65,18 +67,19 @@ function init(self)
     self.active_phases_str = PU.normalize_hash_string(self.active_phases) or ""
     self.active_phase_set = parse_phase_set(self.active_phases_str)
     self._enabled = nil
-    self._poll_t = 0
+    local interval = tonumber(self.poll_interval) or 0.25
+    -- Preserve the saved first follow-up on the first reference update.
+    self._poll_t = interval > 0 and math.min(interval, Timers.REFERENCE_STEP) or 0
     update_state(self)
 end
 
 function update(self, dt)
-    if self._room_hidden then return end
-    self._poll_t = (self._poll_t or 0) - dt
-    if self._poll_t > 0 then
-        return
+    if self._room_hidden or self.arena_id_str == "" or Pause.get() then return end
+    local interval = tonumber(self.poll_interval) or 0.25
+    local _, _, elapsed = Timers.gameplay_delta(dt, Pause)
+    if Timers.periodic_deadlines(self, "_poll_t", interval, elapsed) > 0 then
+        update_state(self)
     end
-    self._poll_t = tonumber(self.poll_interval) or 0.25
-    update_state(self)
 end
 
 function on_message(self, message_id, message, sender)

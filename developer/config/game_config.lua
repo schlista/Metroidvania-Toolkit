@@ -42,7 +42,7 @@ local Config = {}
 Config.build = {
     -- Game version string (shown in menus, logs)
     -- Format: major.minor.patch (e.g., "1.0.0", "0.5.2")
-    version = "0.1.0",
+    version = "0.2.0",
 
     -- Save format version number
     -- IMPORTANT: Increment this when you change save data structure

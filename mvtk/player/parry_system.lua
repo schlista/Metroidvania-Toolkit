@@ -6,6 +6,7 @@ local Util = require "mvtk.core.util"
 local CombatConfig = require "mvtk.combat.config"
 local CombatFeedback = require "mvtk.combat.combat_feedback"
 local GameEvents = require "mvtk.core.game_events"
+local Timers = require "mvtk.player.timers"
 
 local M = {}
 
@@ -59,10 +60,9 @@ end
 
 -- State
 local parry_active = false
-local parry_timer = 0
-local parry_cooldown = 0
 local can_parry = true
-local invincible_timer = 0
+local clocks = { parry = 0, perfect = 0, cooldown = 0, invincible = 0 }
+local reference_trace = true
 local last_parry_was_perfect = false
 local parry_count = 0  -- Track consecutive parries
 
@@ -70,10 +70,9 @@ local parry_count = 0  -- Track consecutive parries
 function M.init()
     refresh_config()
     parry_active = false
-    parry_timer = 0
-    parry_cooldown = 0
+    clocks = { parry = 0, perfect = 0, cooldown = 0, invincible = 0 }
+    reference_trace = true
     can_parry = true
-    invincible_timer = 0
     last_parry_was_perfect = false
     parry_count = 0
 end
@@ -83,12 +82,15 @@ end
 function M.update(dt)
     -- Update parry window
     if parry_active then
-        parry_timer = parry_timer - dt
+        if dt > 0 and not Timers.combat_reference_frame(dt) then reference_trace = false end
+        local remaining = Timers.window_remaining(clocks, "parry")
+        Timers.tick_combat_window(clocks, "perfect", dt)
 
-        if parry_timer <= 0 then
+        if Timers.tick_combat_window(clocks, "parry", dt) then
             -- Parry window expired without successful parry
             parry_active = false
-            parry_cooldown = PARRY_COOLDOWN
+            local elapsed = reference_trace and 0 or math.max(0, dt - remaining)
+            Timers.start_combat_window(clocks, "cooldown", PARRY_COOLDOWN, elapsed)
             can_parry = false
             print("[PARRY] Window expired - missed parry")
             return "parry_missed"
@@ -97,18 +99,14 @@ function M.update(dt)
 
     -- Update cooldown
     if not can_parry then
-        parry_cooldown = parry_cooldown - dt
-
-        if parry_cooldown <= 0 then
+        if Timers.tick_combat_window(clocks, "cooldown", dt) then
             can_parry = true
             print("[PARRY] Ready to parry again")
         end
     end
 
     -- Update invincibility frames
-    if invincible_timer > 0 then
-        invincible_timer = invincible_timer - dt
-    end
+    Timers.tick_combat_deadline(clocks, "invincible", dt)
 
     return nil
 end
@@ -130,7 +128,9 @@ function M.start_parry()
     end
 
     parry_active = true
-    parry_timer = PARRY_WINDOW_DURATION
+    reference_trace = true
+    Timers.start_combat_window(clocks, "parry", PARRY_WINDOW_DURATION)
+    Timers.start_inclusive_combat_window(clocks, "perfect", PERFECT_PARRY_WINDOW)
     print(string.format("[PARRY] Started - Window: %.3fs", PARRY_WINDOW_DURATION))
 
     return true
@@ -166,15 +166,17 @@ function M.attempt_parry(incoming, attacker_url)
     local source_actor = attack.source_actor or attack.source or attacker_url
 
     -- Calculate if this was a perfect parry
-    local time_in_window = PARRY_WINDOW_DURATION - parry_timer
-    local is_perfect = feature_enabled("perfect_parry", true) and (time_in_window <= PERFECT_PARRY_WINDOW)
+    local time_in_window = PARRY_WINDOW_DURATION - clocks.parry
+    local within_perfect = (reference_trace and time_in_window <= PERFECT_PARRY_WINDOW)
+        or (not reference_trace and clocks.perfect > 0)
+    local is_perfect = feature_enabled("perfect_parry", true) and within_perfect
     local counter_enabled = feature_enabled("parry_counter", true)
 
     -- Successful parry!
     parry_active = false
-    parry_cooldown = PARRY_COOLDOWN * 0.5  -- Reduced cooldown on success
+    Timers.start_combat_window(clocks, "cooldown", PARRY_COOLDOWN * 0.5)
     can_parry = false
-    invincible_timer = PARRY_INVINCIBILITY_FRAMES
+    Timers.start_combat_window(clocks, "invincible", PARRY_INVINCIBILITY_FRAMES)
     last_parry_was_perfect = is_perfect
     parry_count = parry_count + 1
 
@@ -236,7 +238,7 @@ end
 --- Check if player is currently invincible from parry
 -- @return True if invincible
 function M.is_invincible()
-    return invincible_timer > 0
+    return clocks.invincible > 0
 end
 
 --- Check if can currently parry
@@ -254,13 +256,13 @@ end
 --- Get current parry window remaining time
 -- @return Remaining time or 0
 function M.get_parry_time_remaining()
-    return parry_active and parry_timer or 0
+    return parry_active and clocks.parry or 0
 end
 
 --- Get parry cooldown remaining
 -- @return Remaining cooldown or 0
 function M.get_cooldown_remaining()
-    return not can_parry and parry_cooldown or 0
+    return not can_parry and clocks.cooldown or 0
 end
 
 --- Check if last parry was perfect
@@ -285,7 +287,7 @@ end
 function M.cancel_parry()
     if parry_active then
         parry_active = false
-        parry_cooldown = PARRY_COOLDOWN
+        Timers.start_combat_window(clocks, "cooldown", PARRY_COOLDOWN)
         can_parry = false
         print("[PARRY] Cancelled")
     end
@@ -297,10 +299,10 @@ function M.get_stats()
     return {
         can_parry = can_parry,
         is_parrying = parry_active,
-        is_invincible = invincible_timer > 0,
-        parry_time_remaining = parry_timer,
-        cooldown_remaining = parry_cooldown,
-        invincibility_remaining = invincible_timer,
+        is_invincible = clocks.invincible > 0,
+        parry_time_remaining = clocks.parry,
+        cooldown_remaining = clocks.cooldown,
+        invincibility_remaining = clocks.invincible,
         parry_streak = parry_count,
         last_was_perfect = last_parry_was_perfect
     }

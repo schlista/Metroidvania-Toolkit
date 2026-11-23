@@ -5,6 +5,7 @@ local PU = require "mvtk.prefabs.prefab_utils"
 local Util = require "mvtk.core.util"
 local Bus = require "mvtk.world.trigger_bus"
 local Switch = require "mvtk.world.switch_state"
+local Timers = require "mvtk.player.timers"
 local M = {}
 
 function M.paused() return require("mvtk.core.pause").get() end
@@ -77,15 +78,31 @@ end
 function M.update(self, dt, move_to)
     if not self.vehicle_state and not M.resolve(self) then return end
     local input = require("mvtk.rooms.input_controller").get_state()
+    local pause = require "mvtk.core.pause"
+    local scale = Timers.world_scale(dt, pause)
+    local find_water
+    if self.vehicle_float then
+        local Water = require "mvtk.world.water_registry"
+        local frame = pause.gameplay_frame and pause.gameplay_frame()
+        local elapsed = Timers.world_delta(dt, scale)
+        find_water = function(x, y)
+            return Water.find_for_float(x, y, frame, elapsed, Timers.REFERENCE_STEP * scale)
+        end
+    end
     local x, y, events = Vehicle.step(self.vehicle_state, dt, {
         has_rider=M.has_rider(self), stick_x=input.move_x, stick_y=input.move_y,
         switch_on=self.vehicle_switch_on, paused=M.paused(),
-        find_water=self.vehicle_float and require("mvtk.world.water_registry").find or nil,
+        reference_scale=scale, find_water=find_water,
     })
     M.passengers_changed(self)
-    if events.hide then M.visible(self, false) end
+    local visibility = events.visibility
+    local last
+    if visibility then
+        last = visibility[#visibility]
+        for i = 1, #visibility - (last and 1 or 0) do M.visible(self, visibility[i]) end
+    end
     move_to(self, vmath.vector3(x, y, self.start.z))
-    if events.reappear then M.visible(self, true) end
+    if last then M.visible(self, true) end
 end
 
 function M.final(self)

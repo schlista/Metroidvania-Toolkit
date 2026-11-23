@@ -12,8 +12,20 @@ local Util = require("mvtk.core.util")
 local GameConfig = require("developer.config.game_config")
 local PlayerScale = require("mvtk.player.player_scale")
 local CreatorModel = require "mvtk.core.creator_settings_model"
-local ProjectSettings = CreatorModel.load_document(require "developer.config.creator_settings",
-    require "developer.config.player_settings")
+
+local function load_project_document()
+    local document = require "developer.config.creator_settings"
+    local release = CreatorModel.fields.jump_release_mode
+    local mode = CreatorModel.get(document, "overrides." .. release.path)
+    if type(mode) == "string" and not release.values[mode] then
+        -- Play with the default and leave the authored value for config validation to report.
+        document = CreatorModel.copy(document)
+        CreatorModel.put(document.overrides, release.path, release.default)
+    end
+    return CreatorModel.load_document(document, require("developer.config.player_settings"), require)
+end
+
+local ProjectSettings = load_project_document()
 -- The creator settings bundled into this build. Project > Game Settings... Save swaps
 -- ProjectSettings in memory; comparing against this shows a Build is needed.
 local CompiledProject = CreatorModel.copy(ProjectSettings)
@@ -29,8 +41,7 @@ end
 function M.revision() return revision end
 
 function M.reload()
-    ProjectSettings = CreatorModel.load_document(require "developer.config.creator_settings",
-        require "developer.config.player_settings")
+    ProjectSettings = load_project_document()
     GameConfig = require "developer.config.game_config"
     M.invalidate()
 end

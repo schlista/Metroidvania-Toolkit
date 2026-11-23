@@ -65,6 +65,12 @@
      <property name="player_hurt_decel" type="float" value="5"/>
     </properties>
    </property>
+   <property name="movement" type="class" propertytype="boss_movement">
+    <properties>
+     <property name="feet_offset" type="float" value="0"/>
+     <property name="ground_motion" propertytype="boss_ground_motion" value="type_default"/>
+    </properties>
+   </property>
    <property name="attack_tuning" type="class" propertytype="boss_attack_tuning">
     <properties>
      <property name="chase_speed" type="float" value="-1"/>
@@ -104,7 +110,7 @@
      <property name="reward_unlock_fast_travel" type="string" value=""/>
     </properties>
    </property>
-   <property name="mvtk_template_version" type="string" value="2.8.0"/>
+   <property name="mvtk_template_version" type="string" value="2.10.0"/>
   </properties>
   <point/>
  </object>

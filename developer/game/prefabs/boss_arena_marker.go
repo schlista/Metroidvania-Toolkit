@@ -1,56 +1,6 @@
 components {
   id: "script"
   component: "/mvtk/prefabs/boss_arena_marker.script"
-  properties {
-    id: "boss_type"
-    value: "default_boss"
-    type: PROPERTY_TYPE_TEXT
-  }
-  properties {
-    id: "battle_music"
-    value: ""
-    type: PROPERTY_TYPE_TEXT
-  }
-  properties {
-    id: "victory_music"
-    value: ""
-    type: PROPERTY_TYPE_TEXT
-  }
-  properties {
-    id: "is_boss_arena"
-    value: "true"
-    type: PROPERTY_TYPE_BOOLEAN
-  }
-  properties {
-    id: "lock_on_enter"
-    value: "true"
-    type: PROPERTY_TYPE_BOOLEAN
-  }
-  properties {
-    id: "unlock_on_clear"
-    value: "true"
-    type: PROPERTY_TYPE_BOOLEAN
-  }
-  properties {
-    id: "camera_lock"
-    value: "false"
-    type: PROPERTY_TYPE_BOOLEAN
-  }
-  properties {
-    id: "phases"
-    value: "1.0"
-    type: PROPERTY_TYPE_NUMBER
-  }
-  properties {
-    id: "zone_width"
-    value: "1024.0"
-    type: PROPERTY_TYPE_NUMBER
-  }
-  properties {
-    id: "zone_height"
-    value: "768.0"
-    type: PROPERTY_TYPE_NUMBER
-  }
 }
 embedded_components {
   id: "co"

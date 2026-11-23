@@ -224,6 +224,9 @@ end
 
 function M.anim_once_lock(self, state, lock_t, opts)
   M.anim_once(self, state, opts)
+  if self._movement_windows then
+    require("mvtk.player.timers").discard_window(self, "_anim_lock_t")
+  end
   self._anim_lock_t = lock_t or 0
   if opts and opts.allow_movement ~= nil then
     self._anim_lock_allow_movement = opts.allow_movement and true or false
@@ -271,6 +274,10 @@ end
 -- Ladder movement owns facing while attached. Wall/ledge contact hints may
 -- still be present from the previous frame and must not turn the climb pose.
 function M.update_facing(self, input, dt)
+  if self._wall_jump_steering then
+    self.facing = self._wall_jump_steering.direction
+    return
+  end
   local move_x = input and (input.move_x or 0) or 0
   local turn_input = math.abs(move_x) > 0.1
   if (self._in_climb or self._in_climb_zone)

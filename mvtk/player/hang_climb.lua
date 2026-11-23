@@ -1,4 +1,5 @@
 -- Pure axis policy shared by ladder payloads and player movement.
+local Timers = require "mvtk.player.timers"
 local M = {}
 
 function M.axis_for(kind)
@@ -47,6 +48,7 @@ function M.update(self, input, dt, cfg)
     if not self._in_climb then return false end
     local axis = self._climb_axis
     if axis ~= "hang" and axis ~= "mesh" then return false end
+    self._jump_cut_pending = nil
     if axis == "hang" then
         local offset = M.enter_extend(self, cfg)
         self._climb_top_pass_active = false
@@ -54,13 +56,13 @@ function M.update(self, input, dt, cfg)
         if (input.jump_down and self._climb_jump_lets_go)
             or ((input.move_y or 0) < -0.5 and self._climb_drop_on_down) then
             self._in_climb = false
-            self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.25)
+            Timers.extend_window(self, "_climb_reattach_lock_t", 0.25)
             self.vy = 0
             input.jump_down = false
             return true
         end
         local target = (self._climb_center_y or self.pos.y + offset) - offset
-        self.pos.y = self.pos.y + (target - self.pos.y) * math.min(1, 18 * dt)
+        self.pos.y = self.pos.y + (target - self.pos.y) * Timers.center_fraction(18, dt)
         self.vy = 0
         horizontal(self, input.move_x or 0, self._climb_hang_speed or 260, dt)
     else

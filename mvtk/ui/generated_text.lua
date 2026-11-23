@@ -74,6 +74,13 @@ function M.new(api, scene, position, text)
         size = vmath and vmath.vector3(x, y, size.z) or { x = x, y = y, z = size.z }
     end
     local node = api.clone(template)
+    -- gui.clone leaves the copy directly above the node it copied (gui_script.cpp LuaClone,
+    -- Defold 1.14.1), so every clone sits beside the authored template, below any node made at
+    -- run time. A box created before the text then covers it: the tutorial popup and the boss
+    -- bar's health text were drawn under their own boxes. A new text node goes on top of the
+    -- scene, which is the order every caller was written for. The nil must be passed: the
+    -- engine refuses an absent reference.
+    if api.move_above then api.move_above(node, nil) end
     api.set_enabled(node, true)
     api.set_position(node, position)
     api.set_text(node, text)

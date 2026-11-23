@@ -89,7 +89,7 @@ end
 -- Example:
 --   Hitstop.start_hitstop(0.1, "heavy", function() print("Hitstop ended!") end)
 --   Hitstop.start_hitstop(nil, "critical")  -- Use intensity-based duration
-function M.start_hitstop(duration, intensity, on_complete)
+function M.start_hitstop(duration, intensity, on_complete, after_impact)
     -- Calculate duration from intensity if not explicitly provided
     if not duration then
         if intensity == "light" then
@@ -110,7 +110,7 @@ function M.start_hitstop(duration, intensity, on_complete)
     hitstop_timer = duration
 
     -- Freeze gameplay through the shared effect clock.
-    Pause.hitstop(duration)
+    Pause.hitstop(duration, after_impact and require("mvtk.player.timers") or nil, false, after_impact)
 
     -- Register completion callback
     if on_complete then

@@ -132,7 +132,7 @@ local function sweep_horizontal(self, world_pos, delta_x)
         return delta_x, false
     end
     if not (physics and physics.raycast) then
-        return 0, true
+        return 0, true, true
     end
 
     local dir = delta_x > 0 and 1 or -1
@@ -179,7 +179,7 @@ local function sweep_horizontal(self, world_pos, delta_x)
     -- A transient raycast API failure must fail closed. Moving the full step
     -- here would reintroduce the exact dt-spike tunnelling this sweep prevents.
     if failed_cast or not successful_cast then
-        return 0, true
+        return 0, true, true
     end
     if blocked then
         return dir * math.max(0, nearest - HORIZONTAL_SWEEP_SKIN), true
@@ -721,6 +721,8 @@ local function reset_block(self)
     self.pull_active = false
     self.pull_vel_x = 0
     self.pull_max_speed = 0
+    self._dry_step_left = nil
+    self._contact_fix_x, self._contact_fix_y = nil, nil
     msg.post("#co", SET_LINEAR_VELOCITY_MSG, { linear_velocity = vmath.vector3(0, 0, 0) })
     self.prev_world_pos = go.get_world_position()
     self.estimated_vel = vmath.vector3(0, 0, 0)
@@ -744,9 +746,106 @@ local function reset_block(self)
     end
 end
 
+local function age_support(self, dt)
+    local t = math.max(0, (self.ground_contact_t or 0) - dt)
+    self.ground_contact_t, self.is_grounded = t, t > 0
+end
+
+local function steer_block(self, dt)
+    if self.pull_active then
+        self.vel_x = self.pull_vel_x
+        if self.pull_max_speed > 0 then
+            self.vel_x = clamp(self.vel_x, -self.pull_max_speed, self.pull_max_speed)
+        end
+    else
+        local target_vx = (self.push_active and self.push_vel_x or 0) * self.push_drive_scale
+        local follow_rate = self.push_active and self.push_accel or self.push_drag
+        local blend = math.min(1, follow_rate * dt)
+        self.vel_x = self.vel_x + (target_vx - self.vel_x) * blend
+        if self.push_max_speed > 0 then
+            self.vel_x = clamp(self.vel_x, -self.push_max_speed, self.push_max_speed)
+        end
+    end
+    if math.abs(self.vel_x) < 1 then self.vel_x = 0 end
+end
+
+local function dry_velocity(self, dt)
+    self.float_motion = nil
+    if self.is_grounded then
+        self.vel_y = 0
+    else
+        local gravity_y = self.base_gravity_y
+        if self.vel_y < 0 then gravity_y = gravity_y * self.fall_gravity_mult end
+        local max_fall = (self.max_fall_speed or gravity_y * 4) * self.gravity_scale
+        self.vel_y = math.max(max_fall, self.vel_y + gravity_y * self.gravity_scale * dt)
+    end
+    steer_block(self, dt)
+end
+
+local function sweep_motion(self, pos, next_pos, dt, float_dy, freeze_x)
+    local allowed_dx, hit_wall, failed = 0, true, false
+    if not freeze_x then
+        allowed_dx, hit_wall, failed = sweep_horizontal(self, pos, self.vel_x * dt)
+    end
+    next_pos.x = next_pos.x + allowed_dx
+    local dy = float_dy or self.vel_y * dt
+    if dy <= 0 then
+        local allowed_dy, landed = sweep_down(self, pos.x + allowed_dx, pos.y, dy)
+        if landed then
+            dy = allowed_dy
+            self.float_motion = nil
+            self.ground_contact_t = GROUND_STICK_TIME
+            self.is_grounded = true
+            if self.vel_y < 0 then self.vel_y = 0 end
+        end
+    end
+    next_pos.y = next_pos.y + dy
+    if hit_wall then self.vel_x = 0 end
+    return allowed_dx, dy, freeze_x or failed
+end
+
+local function move_dry(self, pos, dt, elapsed, scale, timers)
+    local step = timers.REFERENCE_STEP
+    local seconds = elapsed / scale
+    local left = self._dry_step_left or 0
+    local next_pos = go.get_position()
+    local sampled = false
+    if left == 0 and timers.reference_frame(seconds) then
+        sampled = true
+        age_support(self, dt)
+        dry_velocity(self, dt)
+        sweep_motion(self, pos, next_pos, dt)
+    else
+        local step_dt = FrameClock.snap(timers.engine_reference_step()) * scale
+        local world = vmath.vector3(pos)
+        local freeze_x
+        -- Packed short deltas can exceed a shared boundary by a few ns.
+        -- That remainder cannot open the next gravity or steering decision.
+        local epsilon = 1e-8
+        while seconds > epsilon do
+            if left == 0 then
+                sampled = true
+                age_support(self, step_dt)
+                dry_velocity(self, step_dt)
+                left = step
+            end
+            local span = math.min(seconds, left)
+            local dx, dy
+            dx, dy, freeze_x = sweep_motion(self, world, next_pos, span * scale, nil, freeze_x)
+            world.x, world.y = world.x + dx, world.y + dy
+            left, seconds = left - span, seconds - span
+            if left <= epsilon then left = 0 end
+        end
+        self._dry_step_left = left
+    end
+    go.set_position(next_pos)
+    return sampled
+end
+
 
 function init(self)
     go.update_world_transform()
+    require("mvtk.enemies.patrol_obstacles").track(msg.url(".").path, SurfaceClassifier.GROUPS.WORLD, self)
     self.block_id_str = PU.normalize_hash_string(self.block_id) or tostring(go.get_id())
     self.room_id_str = PU.normalize_hash_string(self.room_id)
     self.spawn_pos = go.get_position()
@@ -834,7 +933,9 @@ function init(self)
 end
 
 function update(self, dt)
-    if self.floats and require("mvtk.core.pause").get() then return end
+    self._contact_fix_x, self._contact_fix_y = nil, nil
+    local Pause = require "mvtk.core.pause"
+    if Pause.get() then return end
     -- A hidden room's terrain has its collision off (mvtk/map/streaming/room_sleep.lua), and a loading
     -- room's is not in place yet: the block waits there instead of falling out of the world.
     if self._room_asleep then return end
@@ -843,7 +944,9 @@ function update(self, dt)
         and not rooms.is_room_ready(self.room_id_str) then
         return
     end
-    local dt_num = FrameClock.snap(tonumber(dt) or 0)
+    local Timers = require "mvtk.player.timers"
+    local elapsed, scale, dt_num = Timers.gameplay_delta(FrameClock.snap(tonumber(dt) or 0), Pause)
+    if elapsed <= 0 then return end
     local pos = go.get_world_position()
     if dt_num > 0 and self.prev_world_pos then
         self.estimated_vel = vmath.vector3(
@@ -854,81 +957,31 @@ function update(self, dt)
     end
     self.prev_world_pos = pos
 
-    local t = (tonumber(self.ground_contact_t) or 0) - (tonumber(dt) or 0)
-    if t < 0 then t = 0 end
-    self.ground_contact_t = t
-    self.is_grounded = (t > 0)
-
-    local float_dy
-    local water = self.floats and require("mvtk.world.water_registry").find(pos.x, pos.y)
+    local water, surface
+    if self.floats then
+        local frame = Pause.gameplay_frame and Pause.gameplay_frame()
+        water, surface = require("mvtk.world.water_registry").find_for_float(pos.x, pos.y,
+            frame, elapsed, Timers.REFERENCE_STEP * scale)
+    end
     if water then
-        local target = water.surface_y - (clamp(tonumber(self.float_depth) or 0.6, 0, 1) - 0.5) * self.capture_height
-        -- Exact critically damped pull. Reuse the block's push_accel response
-        -- setting as its spring frequency; analytic integration stays stable
-        -- at low frame rates and follows registry updates on draining levels.
-        local omega = self.push_accel
-        local offset = pos.y - target
-        local drift = self.vel_y + omega * offset
-        local decay = math.exp(-omega * dt_num)
-        float_dy = target + (offset + drift * dt_num) * decay - pos.y
-        self.vel_y = (self.vel_y - omega * drift * dt_num) * decay
-        if self.is_grounded and float_dy < 0 then float_dy = 0; self.vel_y = 0 end
-    -- Kinematic gravity: accumulate vel_y when airborne, zero when grounded.
-    elseif self.is_grounded then
-        self.vel_y = 0
-    else
-        local gravity_y = self.base_gravity_y
-        if self.vel_y < 0 then
-            gravity_y = gravity_y * self.fall_gravity_mult
+        self._dry_step_left = nil
+        age_support(self, dt_num)
+        local target = (surface or water.surface_y)
+            - (clamp(tonumber(self.float_depth) or 0.6, 0, 1) - 0.5) * self.capture_height
+        local y
+        y, self.vel_y, self.float_motion = require("mvtk.world.float_motion").step(
+            self.float_motion, pos.y, self.vel_y, target, self.push_accel, dt_num, scale)
+        local float_dy = y - pos.y
+        if self.is_grounded and float_dy < 0 then
+            float_dy, self.vel_y, self.float_motion = 0, 0, nil
         end
-        self.vel_y = self.vel_y + gravity_y * self.gravity_scale * dt_num
-        local max_fall = (self.max_fall_speed or (gravity_y * 4)) * self.gravity_scale
-        if self.vel_y < max_fall then self.vel_y = max_fall end
-    end
-
-    -- Pull commands are authoritative target speeds so the block stays beside
-    -- the player. Their explicit pull-only cap is already player-scale aware;
-    -- push keeps its existing fixed force/acceleration/max-speed response.
-    if self.pull_active then
-        self.vel_x = self.pull_vel_x
-        if self.pull_max_speed > 0 then
-            self.vel_x = clamp(self.vel_x, -self.pull_max_speed, self.pull_max_speed)
-        end
-    else
-        local target_vx = (self.push_active and self.push_vel_x or 0) * self.push_drive_scale
-        local follow_rate = self.push_active and self.push_accel or self.push_drag
-        local blend = math.min(1, follow_rate * dt_num)
-        self.vel_x = self.vel_x + (target_vx - self.vel_x) * blend
-        if self.push_max_speed > 0 then
-            self.vel_x = clamp(self.vel_x, -self.push_max_speed, self.push_max_speed)
-        end
-    end
-    if math.abs(self.vel_x) < 1 then
-        self.vel_x = 0
-    end
-    self.push_active = false
-    self.pull_active = false
-
-    if dt_num > 0 then
+        steer_block(self, dt_num)
         local next_pos = go.get_position()
-        local desired_dx = self.vel_x * dt_num
-        local allowed_dx, hit_wall = sweep_horizontal(self, pos, desired_dx)
-        next_pos.x = next_pos.x + allowed_dx
-        local dy = float_dy or self.vel_y * dt_num
-        if dy <= 0 then
-            local allowed_dy, landed = sweep_down(self, pos.x + allowed_dx, pos.y, dy)
-            if landed then
-                dy = allowed_dy
-                self.ground_contact_t = GROUND_STICK_TIME
-                self.is_grounded = true
-                if self.vel_y < 0 then self.vel_y = 0 end
-            end
-        end
-        next_pos.y = next_pos.y + dy
+        sweep_motion(self, pos, next_pos, dt_num, float_dy)
         go.set_position(next_pos)
-        if hit_wall then
-            self.vel_x = 0
-        end
+        self.push_active, self.pull_active = false, false
+    elseif move_dry(self, pos, dt_num, elapsed, scale, Timers) then
+        self.push_active, self.pull_active = false, false
     end
 
     if not self.move_embedded_tiles then
@@ -962,13 +1015,20 @@ function on_message(self, message_id, message, sender)
     elseif message_id == ROOM_DISABLE_MSG or message_id == ROOM_ENABLE_MSG then
         require("mvtk.map.streaming.room_sleep").note(self, message_id)
     elseif message_id == CONTACT_POINT_RESPONSE_MSG then
+        local Pause = require "mvtk.core.pause"
+        if Pause.get() or (Pause.scale and Pause.scale() <= 0) then return end
         local player_contact = message_hits_group(message, PLAYER_GROUP)
         local dist = tonumber(message and message.distance) or 0
-        if dist > 0 and not player_contact then
-            go.set_position(go.get_position() + message.normal * dist)
-        end
         local nx = tonumber(message and message.normal and message.normal.x) or 0
         local ny = tonumber(message and message.normal and message.normal.y) or 0
+        if dist > 0 and not player_contact then
+            local ax, ay = self._contact_fix_x or 0, self._contact_fix_y or 0
+            local correction = dist - (ax * nx + ay * ny)
+            if correction > 0 then
+                go.set_position(go.get_position() + message.normal * correction)
+                self._contact_fix_x, self._contact_fix_y = ax + nx * correction, ay + ny * correction
+            end
+        end
         if player_contact and math.abs(nx) > 0.45 then
             local applied_impulse = tonumber(message and message.applied_impulse) or 0
             if applied_impulse > 0 or dist > 0.25 then

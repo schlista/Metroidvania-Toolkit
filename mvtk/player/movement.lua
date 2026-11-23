@@ -1,6 +1,7 @@
 -- mvtk/player/movement.lua
 -- Player movement helper routines that still operate on player.script state.
 
+local Timers = require "mvtk.player.timers"
 local M = {}
 local BonePhysics = require "mvtk.player.bone_physics"
 local HangClimb = require "mvtk.player.hang_climb"
@@ -370,6 +371,10 @@ function M.update_axis(self, input, dt)
   return HangClimb.update(self, input, dt, ladder_climb)
 end
 
+function M.center_on_ladder(self, center_x, dt)
+  self.pos.x = self.pos.x + (center_x - self.pos.x) * Timers.center_fraction(18, dt)
+end
+
 -- A one-way platform turns its collision off while a player passes up through
 -- it, so a ladder climbing through one cannot ray it. Stand on the platform the
 -- player last touched when the landing is over it (Stage 9 A48). An "up"
@@ -542,7 +547,7 @@ function M.detect_climb_bottom_out(self, input, prev_pos)
     local origin = vmath.vector3(sx, origin_y, self.pos.z or 0)
     local target = vmath.vector3(sx, target_y, self.pos.z or 0)
     -- pcall: same defensive wrapper as detect_climb_top_out (above).
-    local ok_rc, hit = pcall(physics.raycast, origin, target, ground_groups())
+    local ok_rc, hit = pcall(BonePhysics.raycast_without_inverted, origin, target, ground_groups())
     if ok_rc and hit and hit.position and SurfaceClassifier.is_ground_collision(hit, max_slope_angle) and (not best_hit or hit.position.y > best_hit.position.y) then
       best_hit = hit
     end
@@ -608,10 +613,72 @@ function M.limit_climb_velocity(self, dt)
   end
 end
 
+local function integrate_water_axis(pos, axis, travel, rounding)
+  local start = pos[axis]
+  local target = start + travel
+  -- A collision or teleport can replace the position written on the last frame.
+  if rounding and rounding.position == start then target = target + rounding.error end
+  pos[axis] = target
+  local written = pos[axis]
+  if written == target then return nil end
+  rounding = rounding or {}
+  rounding.position, rounding.error = written, target - written
+  return rounding
+end
+
 function M.integrate(self, dt)
-  self.pos.x = self.pos.x + (self.vx or 0) * dt
-  self.pos.y = self.pos.y + (self.vy or 0) * dt
+  local dx, dy = (self.vx or 0) * dt, (self.vy or 0) * dt
+  if self._move_dx_correction then dx = dx + self._move_dx_correction end
+  if self._move_dy_correction then dy = dy + self._move_dy_correction end
+  self._move_dx_correction, self._move_dy_correction = nil, nil
+  -- Accumulate fractions smaller than the spacing of the engine's position
+  -- vector so a weak current keeps its distance far from the world origin.
+  if dt > 0 and (self._water_x or 0) ~= 0 then
+    self._water_rounding_x = integrate_water_axis(self.pos, "x", dx, self._water_rounding_x)
+  else
+    self.pos.x = self.pos.x + dx
+    self._water_rounding_x = nil
+  end
+  if dt > 0 and (self._water_y or 0) ~= 0 then
+    self._water_rounding_y = integrate_water_axis(self.pos, "y", dy, self._water_rounding_y)
+  else
+    self.pos.y = self.pos.y + dy
+    self._water_rounding_y = nil
+  end
   sync_player_position(self)
+end
+
+function M.guard_room_move(self, prev_pos, can_move_between, ladder_exit, climb_input)
+  local allowed, room, err = can_move_between(prev_pos, self.pos,
+    self.collider_half_width or 0, self.collider_half_height or 0)
+  if allowed then return true end
+
+  if ladder_exit then
+    -- Stay on the ladder while the next room is prepared for the exit.
+    self._in_climb = true
+    self._wall_jump_steering = nil
+    self._climb_top_pass_active = (climb_input or 0) > 0.1
+    Timers.clear_window(self, "_climb_reattach_lock_t")
+    self.bypass_ground_frames = 1
+    self.bypass_ceiling_frames = self._climb_top_pass_active and 1 or 0
+  end
+  self.pos.x, self.pos.y = prev_pos.x, prev_pos.y
+  self._jump_cut_pending = nil
+  self._vertical_grid = nil
+  self.vx, self.vy = 0, 0
+  sync_player_position(self)
+  if err and self._stream_error ~= room then
+    self._stream_error = room
+    pcall(msg.post, "main:/toast_gui#toast", hash("toast"), {
+      text = {key="gameplay.room_failed"}, duration = 4,
+    })
+  end
+  return false
+end
+
+function M.resolve_room_collision(self, prev_pos, can_move_between, room_move_allowed)
+  local collision = BonePhysics.resolve(self, prev_pos, M.guard_room_move, can_move_between)
+  return collision, room_move_allowed and not collision.corner_room_refused
 end
 
 function M.apply_force_falling(self, message)
@@ -624,6 +691,8 @@ function M.apply_force_falling(self, message)
   M.one_way_log(self, "force_falling reason=%s frames=%d vy=%.1f", tostring(reason), frames, vy)
   self.grounded = false
   self._in_air = true
+  self._jump_cut_pending = nil
+  self._vertical_grid = nil
   self.vy = vy
   self._one_way = nil
   self._ground_normal = nil
@@ -634,7 +703,14 @@ function M.apply_force_falling(self, message)
     sync_player_position(self)
     rawset(_G, "PLAYER_WORLD_POS", go.get_world_position())
   end
-  self.bypass_ground_frames = math.max(self.bypass_ground_frames or 0, frames)
+  if reason == "one_way_drop" then
+    -- The old solver skipped the next N draws, including the expiry draw.
+    if Timers.window_remaining(self, "_one_way_ground_bypass_t") < frames * Timers.REFERENCE_STEP then
+      Timers.start_window(self, "_one_way_ground_bypass_t", (frames + 1) * Timers.REFERENCE_STEP, true)
+    end
+  else
+    self.bypass_ground_frames = math.max(self.bypass_ground_frames or 0, frames)
+  end
   local ctx = self._bone_physics
   if ctx then
     ctx.last_ground_y = nil

@@ -1031,6 +1031,10 @@ local function register_trigger_zone(self, registry_key, kind, zone)
 end
 
 function on_message(self, message_id, message, sender)
+    if message and message.boss_payload then
+        message = BossSetup.receive_registration(message)
+        if not message then return end
+    end
     if message_id == hash("mvtk_arrival_finished") then
         GameManager.finish_restart(message.request, message.success)
     elseif message_id == hash("player_ready") then
@@ -1337,9 +1341,8 @@ function on_message(self, message_id, message, sender)
         BossSetup.rearm(self, message.identity)
 
     elseif message_id == hash("register_boss_spawn") then
-        -- Baked markers send a compact room/object reference so the Defold
-        -- message buffer is never filled by dozens of duplicated properties.
-        -- BossSetup restores the exact flattened Tiled values on this side.
+        -- The registration is resolved before dispatch so marker text and
+        -- lists stay in Lua across the engine's compact message.
         if not self.boss_spawns then self.boss_spawns = {} end
         local registered_id, boss_data = BossSetup.build_boss_spawn_data(message)
         if registered_id and boss_data then
@@ -1363,11 +1366,17 @@ function on_message(self, message_id, message, sender)
             arena_id = normalize_hash_string(message.arena_id),
             room_id = normalize_hash_string(message.room_id),
             phase_index = tonumber(message.phase) or 1,
-            partner_defeated = message.partner_defeated == true,
-            stagger_immune = message.stagger_immune == true,
+            partner_defeated = message.partner_defeated,
+            stagger_immune = message.stagger_immune,
+            from_baked_marker = message.from_baked_marker,
             health_min = tonumber(message.health_min),
             health_max = tonumber(message.health_max),
             attacks = message.attacks,
+            moveset = message.moveset,
+            telegraph_scale = tonumber(message.telegraph_scale),
+            cooldown_scale = tonumber(message.cooldown_scale),
+            teleport_interval = tonumber(message.teleport_interval),
+            teleport_anchors = message.teleport_anchors,
             attack_interval_min = tonumber(message.attack_interval_min),
             attack_interval_max = tonumber(message.attack_interval_max),
             chase_speed = tonumber(message.chase_speed),

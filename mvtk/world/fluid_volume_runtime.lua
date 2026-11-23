@@ -76,6 +76,21 @@ function M.new(self, options)
             apply_signal(self, on, true)
         end)
     end
+    if not r.hazard then
+        r.predict_surface = function(dt)
+            local height = r.height
+            if r.rise then
+                local elapsed = r.rise.elapsed
+                if r.reset then elapsed = 0
+                elseif r.rise.running and not Pause.get() then elapsed = elapsed + dt end
+                height = Level.rise(r.baked_height, self.rise_speed, self.rise_limit,
+                    self.tile_height, self.rise_delay, elapsed)
+            elseif not Pause.get() then
+                height = Level.step(height, r.target, self.level_speed, dt)
+            end
+            return self.surface_y + height - r.height
+        end
+    end
     Art.apply(r.art, self.surface_y)
 end
 function M.on_message(self, id, message)
@@ -99,6 +114,7 @@ end
 function M.step(self, dt)
     local moved = false
     local r = self._fluid
+    local before_surface = self.surface_y
     if self.level_mode == "rise" then
         if r.reset or not Pause.get() then
             local in_room = self.rise_start == "room_enter"
@@ -113,6 +129,13 @@ function M.step(self, dt)
         moved = resize(self, Level.step(self._fluid.height, self._fluid.target, self.level_speed, dt))
     end
     Art.apply(self._fluid.art, self.surface_y)
+    local frame = Pause.gameplay_frame and Pause.gameplay_frame()
+    if frame and not r.hazard then
+        local Timers = require "mvtk.player.timers"
+        local scale = Timers.world_scale(dt, Pause)
+        Registry.record_level(go.get_id(), frame, Timers.world_delta(dt, scale),
+            Timers.REFERENCE_STEP * scale, before_surface, r.predict_surface)
+    end
     return moved
 end
 function M.final(self)

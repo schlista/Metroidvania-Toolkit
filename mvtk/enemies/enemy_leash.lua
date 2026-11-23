@@ -1,6 +1,7 @@
 -- Optional return to the original world-space post. Tuning is resolved at
 -- spawn/apply, never copied from RuntimeSettings during a frame.
 local M = {}
+local Terrain = require "mvtk.enemies.patrol_terrain"
 
 function M.configure(self)
     if self._leash_anchor then return end
@@ -37,7 +38,13 @@ function M.update(self, dt)
     -- Grounded actors walk home horizontally; gravity owns their vertical arc,
     -- so they arrive by that same distance even when the post is off their floor.
     local remaining = self._grounded_movement and math.abs(dx) or distance
-    if remaining <= cfg.leash_arrival_px then
+    local dir_x, dir_y = dx < 0 and -1 or 1, dy < 0 and -1 or 1
+    local wall_x = dx ~= 0 and Terrain.wall(self, "x", dir_x, dt)
+    local wall_y = not self._grounded_movement and dy ~= 0 and Terrain.wall(self, "y", dir_y, dt)
+    local ledge = self._grounded_movement and dx ~= 0 and self._ledge_blocked_dir == dir_x
+    local blocked = ledge or wall_x and (self._grounded_movement or math.abs(dy) <= cfg.leash_arrival_px or wall_y)
+        or wall_y and math.abs(dx) <= cfg.leash_arrival_px
+    if remaining <= cfg.leash_arrival_px or blocked then
         self._leash_returning, self._leash_elapsed = false, 0
         self._leash_cooldown = cfg.leash_cooldown
         self.vel.x = 0
@@ -46,9 +53,12 @@ function M.update(self, dt)
     end
     local speed = (self.speed or 80) * (self._speed_mult or 1) * (self._elite_speed_mult or 1)
     speed = math.min(speed, remaining/dt)
-    self.facing = dx < 0 and -1 or 1
-    if self._grounded_movement then self.vel.x = self.facing*speed
-    else self.vel.x,self.vel.y = dx/distance*speed,dy/distance*speed end
+    self.facing = dir_x
+    if self._grounded_movement then Terrain.request(self, "x", self.facing*speed)
+    else
+        Terrain.request(self, "x", dx/distance*speed)
+        Terrain.request(self, "y", dy/distance*speed)
+    end
 end
 
 return M

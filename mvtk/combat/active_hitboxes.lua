@@ -1,26 +1,27 @@
 -- Shared player swing geometry. No physics groups or engine calls.
--- Each move renews a short lease; missed final callbacks cannot leak entries.
+-- Actor-owned rectangles stay live until retirement. Other callers can use
+-- a wall-time lease, renewed on each move.
 local Time = require "mvtk.core.time"
 local M = {}
 local entries = {}
 
 local function expire(now)
     for id, rect in pairs(entries) do
-        if rect.expires_at <= now then entries[id] = nil end
+        if rect.expires_at and rect.expires_at <= now then entries[id] = nil end
     end
 end
 
 function M.register(id, rect)
     expire(Time.gettime())
     entries[id] = {x=rect.x, y=rect.y, hw=rect.hw, hh=rect.hh,
-        ttl=rect.ttl, expires_at=Time.gettime() + rect.ttl}
+        ttl=rect.ttl, expires_at=rect.ttl and Time.gettime() + rect.ttl}
 end
 
 function M.move(id, x, y)
     local rect = entries[id]
     if rect then
         rect.x, rect.y = x, y
-        rect.expires_at = Time.gettime() + rect.ttl
+        if rect.ttl then rect.expires_at = Time.gettime() + rect.ttl end
         return true
     end
     return false

@@ -108,6 +108,8 @@ local function make_object(index, room, map, file, object, layer, state)
         room = room,
         file = file,
         layer = state.path,
+        layer_offset_x = tonumber(layer.offsetx) or 0,
+        layer_offset_y = tonumber(layer.offsety) or 0,
         top_level = state.top_level,
         visible = state.visible,
         object_id = object_id,

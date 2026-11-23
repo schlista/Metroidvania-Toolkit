@@ -454,12 +454,14 @@ local function post_action(row)
   end
 end
 
+local hold_timers = require "mvtk.player.timers"
+
 local function hold_key(action_id, action)
   return tostring(action.gamepad == nil and "keyboard" or action.gamepad) .. ":" .. tostring(action_id)
 end
 
-local function dispatch_row(row, action_id, action)
-  if action.pressed then
+local function dispatch_row(row, action_id, action, owns_press)
+  if action.pressed and not owns_press then
     if row.down then set_edge_state(row.down, action) end
     if row.held then set_held_state(row.held, action_id, action, true) end
     post_action(row)
@@ -471,7 +473,10 @@ local function dispatch_row(row, action_id, action)
       if not pending[key] then
         local seconds = (Bindings.hold_seconds and Bindings.hold_seconds(row.action)) or row.hold_seconds
         assert(type(seconds) == "number" and seconds > 0, "Hold row needs a threshold: " .. row.action)
-        pending[key] = { elapsed = 0, fired = false, action = { gamepad = action.gamepad }, seconds = seconds }
+        local hold = { elapsed = 0, seconds = seconds, reference_trace = true, opening = true,
+          fired = false, action = { gamepad = action.gamepad } }
+        hold_timers.start_combat_window(hold, "remaining", seconds)
+        pending[key] = hold
       end
     end
   end
@@ -489,7 +494,9 @@ local function dispatch_row(row, action_id, action)
   end
 end
 
-function M.on_input(action_id, action)
+-- A player-owned press still passes device/UI checks. Keep its release so a
+-- button held before the player took ownership is cleared normally.
+function M.on_input(action_id, action, owned_action)
   action = action or {}
 
   -- Lifecycle events must be processed even while a UI blocks gameplay.
@@ -533,7 +540,7 @@ function M.on_input(action_id, action)
           camera_set = true
         end
       else
-        dispatch_row(row, action_id, action)
+        dispatch_row(row, action_id, action, row.action == owned_action)
       end
     end
   end
@@ -544,8 +551,22 @@ function M.end_frame(dt)
   for row, pending in pairs(pending_holds) do
     for _, hold in pairs(pending) do
       if not hold.fired then
-        hold.elapsed = hold.elapsed + math.max(0, tonumber(dt) or 0)
-        if hold.elapsed >= hold.seconds then
+        local frame = math.max(0, tonumber(dt) or 0)
+        local scale = hold_timers.combat_scale(frame)
+        local count = frame
+        if frame > 0 then
+          if not hold_timers.combat_reference_frame(frame, scale) then
+            hold.reference_trace = false
+            if hold.opening then count = math.max(frame, hold_timers.REFERENCE_STEP * scale) end
+          end
+          hold.opening = false
+        end
+        local ready = hold_timers.tick_combat_deadline(hold, "remaining", count, scale)
+        if hold.reference_trace then
+          hold.elapsed = hold.elapsed + frame
+          ready = hold.elapsed >= hold.seconds
+        end
+        if ready then
           set_edge_state(row.hold, hold.action)
           hold.fired = true
         end

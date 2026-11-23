@@ -14,6 +14,7 @@ go.property("dir_x", 0.0)
 go.property("dir_y", 0.0)
 go.property("projectile_visual", "")
 go.property("lifetime", 1.5)
+go.property("launch_age", 0) -- Time already due when a scheduled boss launch draws late.
 go.property("damage", 1.0)
 go.property("status_id", "") -- optional attack-borne status id
 go.property("status_chance", 1.0) -- probability [0,1]
@@ -68,10 +69,12 @@ local hash_to_string = Util.hash_text
 -- Live shot cap (CP04d): every shot counts from init until it is deleted.
 local SpawnBudget = require "mvtk.core.spawn_budget"
 local PLAYER_OWNER = { owner = "player" }
+local Timers = require "mvtk.player.timers"
 
 -- Delete this shot and release its slot at once, so a shot fired later in
 -- the same frame never recycles one that is already going.
-local function despawn()
+local function despawn(self)
+  if not self.player_owned then self._spent = true end
   SpawnBudget.leave("projectile", go.get_id())
   go.delete(".")
 end
@@ -82,6 +85,7 @@ local BLOCKING_GROUPS = SurfaceClassifier.RAYCAST.TERRAIN
 local GROUP_WORLD = SurfaceClassifier.GROUPS.WORLD
 
 local hit -- defined after update; forward-declared so the sweep can deliver hits
+local step
 
 -- Sweep the segment from -> to against terrain. The trigger only reports
 -- overlaps with bodies that mask "attack", and baked tile collision does not,
@@ -122,22 +126,44 @@ function init(self)
   AttackTells.projectile(self)
   apply_direction_rotation(dx, dy)
   self.t = self.lifetime or 1.5
+  if self.player_owned then
+    Timers.start_combat_window(self, "t", self.t)
+  else
+    self.t = math.max(0, self.t)
+    self._flight_time = 0
+  end
   if self.probe_origin then
     self._sweep_from = v3(self.origin_x or 0, self.origin_y or 0, 0)
   end
   self.attack_type_id = (self.attack_type and self.attack_type ~= "") and self.attack_type or nil
   self.source_attack_str = hash_to_string(self.source_attack)
   self.reaction_type_str = hash_to_string(self.reaction_type)
+  -- A delayed boss callback already owes a partial travel segment on its
+  -- launch draw. Normal factory and player shots start at the muzzle.
+  if not self.player_owned and (self.launch_age or 0) > 1e-8 then
+    step(self, self.launch_age)
+  end
 end
 
-function update(self, dt)
-  if Pause and Pause.get and Pause.get() then return end
+step = function(self, dt)
   if self._spent then return end
+  if not self.player_owned and dt <= 0 then return end
   local p = go.get_position()
   if self.deflect and self.deflect ~= "none" then
     if require("mvtk.combat.projectile_counterplay").cut(self, p) then return end
   end
-  local to = v3(p.x + self.vel.x * dt, p.y + self.vel.y * dt, p.z)
+  local expired, travel
+  local origin = p
+  if self.player_owned then
+    expired, travel = Timers.tick_combat_deadline(self, "t", dt)
+  else
+    self._flight_origin = self._flight_origin or p
+    origin = self._flight_origin
+    self._flight_time = math.min(self.t, self._flight_time + dt)
+    expired = self._flight_time + 1e-8 >= self.t
+    travel = expired and self.t or self._flight_time
+  end
+  local to = v3(origin.x + self.vel.x * travel, origin.y + self.vel.y * travel, origin.z)
   local from = self._sweep_from or p
   self._sweep_from = nil
   local blocked = terrain_hit(from, to)
@@ -148,13 +174,27 @@ function update(self, dt)
     if blocked.group == GROUP_WORLD and blocked.id then
       hit(self, blocked.id)
     else
-      despawn()
+      despawn(self)
     end
     return
   end
   go.set_position(to)
-  self.t = self.t - dt
-  if self.t <= 0 then despawn() end
+  if expired then
+    self.t = 0
+    despawn(self)
+  end
+end
+
+function update(self, dt)
+  if Pause and Pause.get and Pause.get() then return end
+  local game_dt = self.player_owned and dt or dt * (Pause.dt_scale and Pause.dt_scale() or 1)
+  if game_dt > 0 and self._held_impact ~= nil then
+    local target = self._held_impact
+    self._held_impact = nil
+    if target then hit(self, target) else despawn(self) end
+    return
+  end
+  step(self, game_dt)
 end
 
 function hit(self, other)
@@ -189,8 +229,10 @@ function hit(self, other)
     payload.attack_type = self.attack_type_id
   end
   pcall(msg.post, target, hash("mvtk_apply_damage"), payload)
-  CombatFeedback.attack_impact("projectile", dmg, self.boss_id, other, { sfx = "hit_projectile" })
-  despawn()
+  CombatFeedback.attack_impact("projectile", dmg, self.boss_id, other, {
+    sfx = "hit_projectile", player_combat = self.player_owned == true,
+  })
+  despawn(self)
 end
 
 function final(self)
@@ -198,9 +240,17 @@ function final(self)
 end
 
 function on_message(self, message_id, message, sender)
-  if message_id == hash("trigger_response") then
-    if message.enter and message.other_id then hit(self, message.other_id) end
-  elseif message_id == hash("contact_point_response") then
-    despawn()
+  if not self.player_owned and (self._spent or self._held_impact ~= nil) then return end
+  local target = message_id == hash("trigger_response") and message.enter and message.other_id
+  local blocked = message_id == hash("contact_point_response")
+  if not target and not blocked then return end
+  if not self.player_owned and (Pause.get() or Pause.is_hitstopped and Pause.is_hitstopped()) then
+    -- The engine can deliver the contact after a menu or freeze begins.
+    -- Keep the first impact so a one-shot trigger is paid on resume.
+    self._held_impact = target or false
+  elseif target then
+    hit(self, target)
+  else
+    despawn(self)
   end
 end

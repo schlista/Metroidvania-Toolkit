@@ -1,4 +1,5 @@
 -- PlayerHost owns the carry relationship; only PlayerStats owns its slowdown.
+local Timers = require "mvtk.player.timers"
 local M = {}
 
 local function state(self) return self._host.features.carry end
@@ -59,14 +60,14 @@ function M.begin(self, request)
     require("mvtk.player.player_combat").clear_all_movement_contact_hitboxes(self)
     require("mvtk.player.player_state").end_dash_slide(self)
     require("mvtk.player.player_state").cancel_ground_pound(self)
-    self._backdash_t, self._roll_t = 0, 0
+    self._backdash_t = 0
     self._teleport_request = nil
     s.object, s.room_id = request.object, request.room_id
     s.half_w, s.half_h = request.half_w, request.half_h
     s.throw_speed = request.throw_speed
     s.impact_damage, s.bomb_damage = kind.impact_damage or 0, kind.damage or 0
     self._carry_active, self._carry_blocks_jump = true, request.blocks_jump == true
-    if self._carry_blocks_jump then self._jump_buffer_t = 0 end
+    if self._carry_blocks_jump then Timers.clear_window(self, "_jump_buffer_t") end
     suppress(self)
     require("mvtk.player.player_stats").set_source("carry",
         {speed_mult=math.max(0.25, math.min(1, request.move_speed_mult))}, {layer="temporary"})

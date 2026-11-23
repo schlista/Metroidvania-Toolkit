@@ -192,24 +192,50 @@ function M.require_exports(opts)
     for _,d in ipairs(M.provenance(opts)) do assert(d.status~="export_needed",d.path..": "..d.message) end
     return true
 end
+local function boss_edit_signatures(opts,inputs)
+    local boss_edit_inputs={}
+    for path in pairs(inputs) do
+        if path:match("^developer/rooms/collections/.+%.collection$") then
+            local text=get(opts,path)
+            if text then boss_edit_inputs[path]=Collection.boss_edit_fingerprint(text) end
+        end
+    end
+    return boss_edit_inputs
+end
+
+local function without_boss_edits(opts,changes,signatures)
+    if not signatures then return changes end
+    local remaining={}
+    for _,path in ipairs(changes) do
+        local expected=signatures[path]
+        local text=expected and get(opts,path)
+        if not text or Collection.boss_edit_fingerprint(text)~=expected then
+            remaining[#remaining+1]=path
+        end
+    end
+    return remaining
+end
+
 function M.publication(opts,files,layout)
     local outputs={}
     for _,f in ipairs(files) do outputs["developer/"..f.path]=M.content_fingerprint(f.path,f.content) end
-    return {version=M.version,inputs=M.snapshot(opts,"publication"),outputs=outputs,layout=layout,
+    local inputs=M.snapshot(opts,"publication")
+    return {version=M.version,inputs=inputs,outputs=outputs,layout=layout,boss_edit_inputs=boss_edit_signatures(opts,inputs),
         draft=get(opts,"developer/runtime/layout/draft_revision.lua")}
 end
-function M.publication_changes(opts,base)
+function M.publication_changes(opts,base,allow_boss_edits)
     local manifest=M.load(opts,M.manifest)
     if not manifest or manifest.version~=M.version then return {"developer/"..M.manifest} end
     local changes=M.diff(manifest.inputs,base or M.snapshot(opts,"publication_changes"))
+    if allow_boss_edits then changes=without_boss_edits(opts,changes,manifest.boss_edit_inputs) end
     if manifest.draft~=get(opts,"developer/runtime/layout/draft_revision.lua") then changes[#changes+1]="Layout Editor draft placements" end
     for p,signature in pairs(manifest.outputs or {}) do local s=get(opts,p)
         if not s or M.content_fingerprint(p,s)~=signature then changes[#changes+1]=p end
     end
     return changes
 end
-function M.require_published(opts)
-    local changes=M.publication_changes(opts)
+function M.require_published(opts,allow_boss_edits)
+    local changes=M.publication_changes(opts,nil,allow_boss_edits)
     assert(#changes==0,"Layout publication is stale. For Tiled World run Prepare & Check. For manual placement, prepare/rebuild then Layout Export. Changed: "..table.concat(changes,", "))
     for _,d in ipairs(M.provenance(opts)) do
         assert(d.status~="export_needed","Tiled export is stale: "..d.path)

@@ -69,6 +69,8 @@ function M.impact(kind, amount, overrides)
     if Gamefeel and Gamefeel.impact then
         pcall(Gamefeel.impact, amount or 0, {
             kind = (kind == "perfect_parry") and "parry" or kind,
+            player_combat = kind == "perfect_parry" or kind == "parry" or kind == "hurt"
+                or cfg.player_combat == true,
             shake = cfg.shake,
             hitstop = cfg.hitstop,
             rumble = cfg.rumble,

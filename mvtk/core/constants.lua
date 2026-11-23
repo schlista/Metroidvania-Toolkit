@@ -141,7 +141,6 @@ return (function()
     RESTORE_HEALTH   = hash("mvtk_restore_health"),
 
     SET_POSITION     = hash("mvtk_set_position"),
-    ROLL_STATE       = hash("mvtk_roll_state"),
     HUD_CURRENCY     = hash("hud_currency"),
     TOAST            = hash("toast"),
     TAKE_DAMAGE      = hash("take_damage"),

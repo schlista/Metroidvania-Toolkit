@@ -6,6 +6,8 @@ local PU = require "mvtk.prefabs.prefab_utils"
 local Util = require "mvtk.core.util"
 local Flags = require "mvtk.core.flags"
 local SwitchState = require "mvtk.world.switch_state"
+local Timers = require "mvtk.player.timers"
+local Pause = require "mvtk.core.pause"
 local ok_debug, Debug = pcall(require, "developer.config.debug_config")
 if not ok_debug or type(Debug) ~= "table" then
     Debug = { global = {}, rooms = {} }
@@ -76,7 +78,7 @@ local close_after
 local function open(self, reason, persist)
     local hold_open = persist == true or self.stays_open or reason == "restore"
     if hold_open and self._close_timer then
-        timer.cancel(self._close_timer)
+        Timers.cancel_native(self, self._close_timer)
         self._close_timer = nil
     end
     if self.stays_open then
@@ -119,7 +121,7 @@ local function close(self, reason)
     door_log(string.format("close: id=%s reason=%s close_on_release=%s",
         tostring(self.door_id_key), tostring(reason), tostring(self.close_on_release)))
     if self._close_timer then
-        timer.cancel(self._close_timer)
+        Timers.cancel_native(self, self._close_timer)
         self._close_timer = nil
     end
     set_collision_enabled(true)
@@ -147,11 +149,11 @@ end
 
 close_after = function(self, duration)
     if self._close_timer then
-        timer.cancel(self._close_timer)
+        Timers.cancel_native(self, self._close_timer)
         self._close_timer = nil
     end
     if duration <= 0 then return end
-    self._close_timer = timer.delay(duration, false, function()
+    self._close_timer = Timers.schedule_native(self, duration, function()
         self._close_timer = nil
         close(self, "timer")
     end)
@@ -229,9 +231,13 @@ end
 function final(self)
     TriggerBus.unregister(self.door_id_key, msg.url())
     if self._close_timer then
-        timer.cancel(self._close_timer)
+        Timers.cancel_native(self, self._close_timer)
         self._close_timer = nil
     end
+end
+
+function update(self, dt)
+    if self._close_timer then Timers.tick_native(self, dt, Timers.world_scale(dt, Pause)) end
 end
 
 function on_message(self, message_id, message, sender)

@@ -1,7 +1,7 @@
 -- Pure authoring contract shared by Game Settings, project writer and runtime.
 -- Keys are editor control names; paths are the only persisted representation.
 local Product = require "mvtk.core.product"
-local M = { VERSION = 1, fields = {} }
+local M = { VERSION = 1, ATTACK_RECOVERY_VERSION = 2, fields = {} }
 -- Identity is edited alongside creator settings, but project_identity owns its
 -- files. Keeping these controls separate prevents creator overrides from
 -- accidentally acquiring game.project or persistence-settings fields.
@@ -56,6 +56,7 @@ end
 -- another timing value, while the final combination is valid.
 function M.attack_document(document, values, baseline, operations)
     local out = M.copy(document)
+    out.attack_recovery_version = M.ATTACK_RECOVERY_VERSION
     local defaults, before = M.controls({}, baseline), M.controls(document.overrides, baseline)
     for key, spec in pairs(attack_fields) do
         if values[key] ~= nil then
@@ -68,7 +69,8 @@ function M.attack_document(document, values, baseline, operations)
             end
         end
     end
-    return M.validate(out)
+    local attacks = baseline and baseline.combat and baseline.combat.attacks
+    return M.validate(out, attacks and {attacks=attacks})
 end
 
 function M.copy(value)
@@ -498,11 +500,64 @@ for _, key in ipairs({ "heal_charges", "heal_amount" }) do
     M.fields[key].applies_when = { "healing_model=flask" }
 end
 number("air_accel_mult", "player.air_accel_mult", "Air control", 0, 2, "Air steering multiplier.")
+number("ground_accel", "player.accel", "Ground acceleration", 1, 1000,
+    "Higher reaches walking speed sooner, lower builds up speed more gradually.")
+number("run_accel", "player.run_accel", "Run build-up", 0, 120,
+    "How quickly a run reaches top speed once you reach walking speed. 0 uses Ground acceleration. "
+    .. "When entering a run from a slide, it only matters if Slide speed is lower than Run speed. A faster slide starts the run above its top speed. "
+    .. "It also applies if you slow down while still holding Dash and build up speed again.")
+number("ground_decel", "player.decel", "Ground braking", 1, 1000,
+    "Higher stops the player sooner after you let go, lower lets the player coast farther.")
+number("turn_brake", "player.turn_brake_mult", "Turn braking", 0, 10,
+    "Higher lets the player reverse direction sooner, lower makes the player skid longer.")
+number("air_decel_mult", "player.air_decel_mult", "Air braking", 0, 10,
+    "Higher slows sideways motion sooner in the air, lower carries more speed through a jump.")
+number("fall_gravity_mult", "player.fall_gravity_mult", "Fall gravity (x)", 0, 10,
+    "Higher pulls the player down harder when falling, lower gives a slower descent.")
+field("jump_release_mode", "player.variable_jump_mode", "string", "Jump release",
+    "Stronger gravity pulls the player down harder after release. Cut speed removes some upward speed once, when you release Jump.")
+M.fields.jump_release_mode.choices = { "gravity_scale", "cut" }
+M.fields.jump_release_mode.values = { gravity_scale = true, cut = true }
+M.fields.jump_release_mode.choice_labels = { gravity_scale = "Stronger gravity", cut = "Cut speed" }
+number("jump_release_gravity_mult", "player.jump_release_gravity_mult", "Short hop gravity (x)", 0, 20,
+    "Higher pulls down harder after releasing Jump and makes short hops lower.")
+number("jump_cut_speed_mult", "player.jump_cut_speed_mult", "Speed kept on release", 0, 1,
+    "The share of upward speed kept when you release Jump. Zero ends the rise and one keeps all of the speed.")
+number("speed_jump_bonus", "player.speed_jump_bonus", "Running jump bonus", 0, 0.5,
+    "How much higher a ground jump goes at full running speed. 0.2 is 20% higher. 0 turns the bonus off.")
+M.fields.speed_jump_bonus.units = ""
+M.fields.jump_release_gravity_mult.applies_when = { "jump_release_mode=gravity_scale" }
+M.fields.jump_cut_speed_mult.applies_when = { "jump_release_mode=cut" }
+M.fields.jump_cut_speed_mult.hide_when_inapplicable = true
+number("jump_min_hold_time", "player.jump_min_hold_time", "Shortest jump (seconds)", 0, 2,
+    "Higher gives a taller hop from a quick tap, lower lets the jump end sooner. An exact 60 FPS frame multiple uses the start of that frame. For example, 0.05 seconds uses the start of the third frame.")
+number("jump_buffer", "player.jump_buffer", "Jump buffer (seconds)", 0, 2,
+    "Higher lets you press Jump earlier before landing, lower needs closer timing.")
+number("corner_correction", "player.corner_correction_px", "Corner correction (px)", 0, 64 / 1.75,
+    "When a jump hits the corner of a ceiling with up to this many pixels of the body under it, the player slips sideways past it instead of stopping. Overlaps under about a tenth of the body's width already pass without it. The default is 24 px at Player Size 1.00. 0 turns it off. Not used with the Spine add-on's bone-driven collision.")
+M.fields.corner_correction.units = "base px"
+number("apex_threshold", "player.apex_hang_speed", "Apex hang speed (px/s)", 0, 10000 / 1.75,
+    "The apex is the top of a jump. Higher values start the hang farther from the apex, lower values narrow it, and this speed follows Player Size when movement scaling is enabled.")
+number("apex_gravity_mult", "player.apex_gravity_mult", "Apex hang gravity (x)", 0.05, 10,
+    "Higher gives a shorter hang at the top of a jump, lower keeps the player there longer when Apex hang speed is set.")
+number("fast_fall_mult", "player.fast_fall_mult", "Fast fall gravity (x)", 0, 10,
+    "Higher pulls the player down harder while holding Down during a fall, lower makes that pull gentler.")
+number("fast_fall_max_mult", "player.fast_fall_max_mult", "Fast fall top speed (x)", 1, 3,
+    "Multiplies the falling speed limit while you hold Down during a fall. One keeps the usual limit. Releasing Down restores it.")
+number("max_fall_speed", "player.max_fall_speed_px", "Top falling speed (px/s)", 0, 100000 / 1.75,
+    "Higher allows a faster fall up to the engine limit, lower slows the fall, and zero uses the engine limit alone. This speed follows Player Size when movement scaling is enabled.")
 number("coyote_time", "player.coyote_time", "Coyote time (seconds)", 0, 1, "Seconds after leaving a ledge during which jumping is allowed.")
-number("attack_buffer", "player.attack_buffer", "Attack buffer (seconds)", 0, 1, "Seconds to retain a buffered attack input.")
 number("air_jumps", "player.air_jumps", "Air jumps", 0, 10, "Extra mid-air jumps once Double Jump is unlocked.")
 number("slide_speed", "player.slide.speed", "Slide speed (px/s)", 0, 5000, "Slide speed in base pixels per second.")
+number("slide_duration", "player.slide.duration", "Slide time (seconds)", 0.01, 10,
+    "Higher keeps the slide going longer, lower ends it sooner.")
 number("air_dash_speed", "player.air_dash.speed", "Air dash speed (px/s)", 0, 5000, "Air dash speed in base pixels per second.")
+number("air_dash_duration", "player.air_dash.duration", "Air dash time (seconds)", 0.01, 5,
+    "Higher makes each air dash last longer, lower ends it sooner.")
+number("air_dash_cooldown", "player.air_dash.cooldown", "Air dash cooldown (seconds)", 0, 10,
+    "Higher makes the wait after a dash longer, lower lets the player use another available dash sooner.")
+number("air_dash_end_lift", "player.air_dash.end_vertical_speed_mult", "Vertical speed kept after a dash", 0, 2,
+    "Higher keeps more upward or downward speed after an eight-direction dash, lower sheds more of that speed.")
 number("air_dash_count", "player.air_dash.max_air_dashes", "Air dash count", 0, 10, "Air dashes available before landing.")
 field("air_dash_directions", "player.air_dash.directions", "string", "Air dash directions", "Eight follows the stick; horizontal preserves X-only dashes and vertical momentum.")
 M.fields.air_dash_directions.values = { horizontal = true, eight = true }
@@ -510,8 +565,37 @@ M.fields.air_dash_directions.choices = { "horizontal", "eight" }
 boolean("air_dash_suspend_gravity", "player.air_dash.suspend_gravity", "Pause gravity while dashing", "Hold vertical speed during an eight-direction dash; a sideways dash flies flat.")
 number("extra_air_dash_bonus", "player.extra_air_dash.bonus_dashes", "Extra dashes per upgrade", 1, 5, "Charges added before landing whenever Extra Air Dash is unlocked, at the start or by pickup.")
 M.fields.extra_air_dash_bonus.step, M.fields.extra_air_dash_bonus.editor_integer = 1, true
+number("wall_slide_speed", "player.wall_climb.wall_jump.slide_fall_speed", "Wall slide speed (px/s)", 0, 20000 / 1.75,
+    "Higher allows faster wall slides, lower caps them sooner, and zero removes the cap. This speed follows Player Size when movement scaling is enabled.")
+number("wall_jump_grace", "player.wall_climb.wall_jump.slide_coyote_time", "Wall jump grace (seconds)", 0, 2,
+    "Higher gives you longer to jump after letting go of a wall slide, lower needs closer timing.")
+number("wall_jump_push", "player.wall_climb.wall_jump.push_h", "Wall jump push (px/s)", 0, 20000,
+    "Higher pushes farther from an ordinary wall, lower keeps the player closer. This speed does not follow Player Size.")
+number("steer_lock", "player.wall_climb.wall_jump.steer_lock", "Wall jump steering lock (seconds)", 0, 0.5,
+    "How long the player steers and faces away after a wall jump. 0 gives the player control immediately.")
 number("wall_climb_speed", "player.wall_climb.climb_speed", "Wall climb speed (px/s)", 0, 5000, "Wall climb speed in base pixels per second.")
 number("wall_cling_fall_speed", "player.wall_climb.stick_speed", "Cling fall speed (px/s)", 0, 5000, "Downward speed while clinging; zero stays still.")
+number("glide_gravity_mult", "player.glide.gravity_mult", "Glide gravity (x)", 0, 10,
+    "Higher makes the player gain falling speed sooner while gliding, lower makes the descent floatier.")
+number("glide_fall_speed", "player.glide.max_fall_speed", "Glide falling speed (px/s)", 0, 20000 / 1.75,
+    "Higher allows a faster glide descent, lower slows it, and zero removes the cap. This speed follows Player Size when movement scaling is enabled.")
+M.fields.ground_accel.units, M.fields.ground_decel.units = "1/s", "1/s"
+M.fields.run_accel.units = M.fields.ground_accel.units
+M.fields.apex_threshold.units, M.fields.wall_jump_push.units = "base px/s", "px/s"
+for _, key in ipairs({"wall_jump_grace", "steer_lock", "air_dash_duration", "slide_duration"}) do
+    M.fields[key].units = "seconds"
+end
+-- These settings were previously accepted in documents without authoring bounds.
+-- Keep the stored value and apply the bounds when a creator edits the field.
+for _, key in ipairs({
+    "ground_accel", "ground_decel", "turn_brake", "air_decel_mult",
+    "fall_gravity_mult", "jump_release_gravity_mult", "jump_min_hold_time", "jump_buffer",
+    "apex_threshold", "apex_gravity_mult", "fast_fall_mult", "max_fall_speed",
+    "wall_slide_speed", "wall_jump_grace", "wall_jump_push", "air_dash_duration",
+    "air_dash_cooldown", "air_dash_end_lift", "slide_duration", "glide_gravity_mult", "glide_fall_speed",
+}) do
+    M.fields[key].allow_saved_out_of_range = true
+end
 number("high_jump_height_mult", "player.high_jump.height_mult", "High jump height (x normal)", 1, 4,
     "Multiplies ground jump height. Player Size also applies; air jumps keep their normal height by default.")
 number("super_jump_charge_time", "player.super_jump.charge_time", "Charge time (seconds)", 0.1, 3,
@@ -837,15 +921,21 @@ end
 -- the source for every other ability, including future configured abilities.
 M.fields.air_dash_iframes_enabled.title = "Dash invincibility"
 M.fields.slide_iframes_enabled.title = "Slide invincibility"
-for key, name in pairs({ air_jumps = "Double Jump", slide_speed = "Slide", air_dash_speed = "Air Dash",
+for key, name in pairs({ air_jumps = "Double Jump", slide_speed = "Slide", slide_duration = "Slide", air_dash_speed = "Air Dash",
+    air_dash_duration = "Air Dash", air_dash_cooldown = "Air Dash", air_dash_end_lift = "Air Dash",
     air_dash_directions = "Air Dash", air_dash_suspend_gravity = "Air Dash",
     air_dash_count = "Air Dash", wall_climb_speed = "Wall Climb", wall_cling_fall_speed = "Wall Climb",
+    wall_slide_speed = "Wall Jump", wall_jump_grace = "Wall Jump", wall_jump_push = "Wall Jump",
+    steer_lock = "Wall Jump",
+    glide_gravity_mult = "Glide", glide_fall_speed = "Glide",
     high_jump_height_mult = "High Jump", super_jump_charge_time = "Super Jump", super_jump_height_mult = "Super Jump",
     blink_distance = "Blink", blink_chain_grace = "Blink" }) do
     M.fields[key].help = M.fields[key].help .. " Applies whenever " .. name .. " is unlocked — at the start or by pickup."
 end
 
--- Numeric presentation metadata is shared with editor controls.
+-- Step metadata is converted with movement fields into current player units.
+-- Content checks use the Player Size step to round suggested values. The
+-- Game Settings number fields do not use steps.
 for key, step in pairs({
     player_scale = 0.05,
     walk_speed = 25,
@@ -856,14 +946,40 @@ for key, step in pairs({
     max_energy = 1,
     max_stamina = 10,
     air_accel_mult = 0.05,
+    ground_accel = 1,
+    run_accel = 0.5,
+    ground_decel = 1,
+    turn_brake = 0.05,
+    air_decel_mult = 0.05,
+    fall_gravity_mult = 0.05,
+    jump_release_gravity_mult = 0.1,
+    jump_cut_speed_mult = 0.05,
+    speed_jump_bonus = 0.05,
+    jump_min_hold_time = 0.01,
+    jump_buffer = 0.01,
+    corner_correction = 1 / 1.75,
+    apex_threshold = 25 / 1.75,
+    apex_gravity_mult = 0.05,
+    fast_fall_mult = 0.1,
+    fast_fall_max_mult = 0.1,
+    max_fall_speed = 50 / 1.75,
     coyote_time = 0.02,
-    attack_buffer = 0.01,
     air_jumps = 1,
     slide_speed = 100,
+    slide_duration = 0.01,
     air_dash_speed = 100,
+    air_dash_duration = 0.01,
+    air_dash_cooldown = 0.05,
+    air_dash_end_lift = 0.05,
     air_dash_count = 1,
     wall_climb_speed = 50,
     wall_cling_fall_speed = 25,
+    wall_slide_speed = 25 / 1.75,
+    wall_jump_grace = 0.01,
+    steer_lock = 0.01,
+    wall_jump_push = 50,
+    glide_gravity_mult = 0.01,
+    glide_fall_speed = 25 / 1.75,
     high_jump_height_mult = 0.05,
     super_jump_charge_time = 0.05,
     super_jump_height_mult = 0.1,
@@ -931,7 +1047,15 @@ local defaults = {
     energy_on_perfect_parry=1, energy_on_defeat=0.25,
     player_scale=1, scale_movement=true, walk_speed=1200, run_speed=2000,
     jump_height=256, gravity=-2400, max_health=5, max_energy=3, max_stamina=100,
-    air_accel_mult=0.8, coyote_time=0.12, attack_buffer=0.15, air_jumps=1,
+    ground_accel=18, run_accel=0, ground_decel=26, turn_brake=1, air_decel_mult=1,
+    fall_gravity_mult=1.5, jump_release_gravity_mult=2.5, jump_min_hold_time=0.06, jump_buffer=0.12,
+    jump_release_mode="gravity_scale", jump_cut_speed_mult=0.4, speed_jump_bonus=0, corner_correction=24 / 1.75,
+    apex_threshold=0, apex_gravity_mult=1, fast_fall_mult=1, fast_fall_max_mult=1,
+    max_fall_speed=0,
+    wall_slide_speed=200, wall_jump_grace=0.12, wall_jump_push=1400, steer_lock=0,
+    air_dash_duration=0.18, air_dash_cooldown=0.20, air_dash_end_lift=0.35, slide_duration=0.35,
+    glide_gravity_mult=0.22, glide_fall_speed=900,
+    air_accel_mult=0.8, coyote_time=0.12, air_jumps=1,
     slide_speed=2200, air_dash_speed=1800, air_dash_count=1, wall_climb_speed=600,
     air_dash_directions="eight", air_dash_suspend_gravity=true, extra_air_dash_bonus=1,
     wall_cling_fall_speed=0, high_jump_height_mult=1.5, super_jump_charge_time=0.6, super_jump_height_mult=3,
@@ -1034,11 +1158,11 @@ end
 for _,spec in ipairs(require("developer.tools.designer_fields").fields) do M.fields[spec.key]=spec end
 M.fields.hud_currency_format.check = require("mvtk.core.currency_format").valid
 
-local function validate_value(key, value, spec)
+local function validate_value(key, value, spec, allow_out_of_range)
     assert(type(value) == spec.type, key .. " must be a " .. spec.type)
     if spec.type == "number" then
         assert(value == value and value > -math.huge and value < math.huge, key .. " must be finite")
-        assert(value >= spec.min and value <= spec.max, key .. " is outside its supported range")
+        assert(allow_out_of_range or (value >= spec.min and value <= spec.max), key .. " is outside its supported range")
         assert(not spec.integer or value==math.floor(value),key.." must be a whole number")
     elseif spec.values then assert(spec.values[value], key .. " has an unsupported value") end
     if spec.check then
@@ -1087,10 +1211,12 @@ function M.encode(value, comments)
     return encode(value, "", {}, type(comments) == "table" and comments or nil, "")
 end
 
-function M.validate(doc)
+function M.validate(doc, attack_config)
     assert(type(doc) == "table" and doc.version == M.VERSION, "Unsupported creator settings version")
     assert(doc.player_units == nil or doc.player_units == 1 or doc.player_units == 2,
         "player_units must be 1 or 2 (absent means 1)")
+    assert(doc.attack_recovery_version == nil or doc.attack_recovery_version == M.ATTACK_RECOVERY_VERSION,
+        "Unsupported attack recovery version")
     assert(type(doc.overrides) == "table", "Creator settings overrides must be a table")
     assert(doc.published == nil or type(doc.published) == "boolean", "published must be a boolean")
     M.encode(doc)
@@ -1104,9 +1230,9 @@ function M.validate(doc)
         end
         assert(parent == nil or type(parent) == "table", "Invalid settings section for " .. spec.path)
         local value = get(doc.overrides, spec.path)
-        if value ~= nil then validate_value(key, value, spec) end
+        if value ~= nil then validate_value(key, value, spec, spec.allow_saved_out_of_range) end
     end
-    AttackSettings.resolve(AttackConfig, (doc.overrides.combat or {}).attacks, DamageTypes)
+    AttackSettings.resolve(attack_config or AttackConfig, (doc.overrides.combat or {}).attacks, DamageTypes)
     return doc
 end
 
@@ -1121,8 +1247,8 @@ function M.needs_player_units_migration(doc, baseline_player)
     return (doc.player_units or 1) == 1 and M.baseline_units(baseline_player) == 2
 end
 
-function M.migrate(doc, baseline_player)
-    M.validate(doc)
+function M.migrate(doc, baseline_player, attack_config)
+    M.validate(doc, attack_config)
     if not M.needs_player_units_migration(doc, baseline_player) then return doc, false end
     local converted = M.copy(doc)
     local old_player = doc.overrides.player or {}
@@ -1164,26 +1290,63 @@ function M.migrate(doc, baseline_player)
         end
     end
     converted.player_units = 2
-    return M.validate(converted), true
+    return M.validate(converted, attack_config), true
 end
 
--- Pure loader: no disk access, and no mutation when units already agree.
-function M.load_document(doc, baseline_player)
-    M.validate(doc)
+local function effective_attack_config(load_config)
+    local config = load_config and load_config("developer.config.combat_config") or AttackConfig
+    local ok, authored = pcall(load_config or require, "developer.config.combat_overrides")
+    local attacks = ok and type(authored) == "table" and (authored.combat or {}).attacks
+    if not attacks then return config end
+    return { attacks = AttackSettings.resolve(config, attacks, DamageTypes) }, attacks
+end
+
+local function migrate_attack_recovery(doc, config, inherited_attacks)
+    local saved = (doc.overrides.combat or {}).attacks
+    if doc.attack_recovery_version or not saved then return doc, false end
+    local recoveries = AttackSettings.recovery_migration(config, inherited_attacks, saved)
+    if not next(recoveries) then return doc, false end
+    local converted = M.copy(doc)
+    converted.attack_recovery_version = M.ATTACK_RECOVERY_VERSION
+    for id, timing in pairs(recoveries) do
+        local attack = converted.overrides.combat.attacks[id]
+        attack.timeline.recovery = timing.recovery
+        if timing.combo_start ~= nil then put(attack, "combo_window.start", timing.combo_start) end
+    end
+    return M.validate(converted, config), true
+end
+
+-- Pure loader: migrate the sparse overrides without modifying the saved table.
+function M.load_document(doc, baseline_player, load_config)
+    local attack_config, inherited_attacks
+    if type(doc) == "table" and get(doc, "overrides.combat.attacks") then
+        attack_config, inherited_attacks = effective_attack_config(load_config)
+    end
+    M.validate(doc, attack_config)
+    if get(doc.overrides, "player.attack_buffer") ~= nil then
+        doc = M.copy(doc)
+        remove(doc.overrides, "player.attack_buffer")
+        print("[CREATOR_SETTINGS] Ignored retired setting player.attack_buffer.")
+    end
     local baseline_units = M.baseline_units(baseline_player)
-    if (doc.player_units or 1) == baseline_units then return doc, false end
     assert(not (doc.player_units == 2 and baseline_units == 1),
         "creator_settings.lua was saved for the new player units, but developer/config/player_settings.lua is from an older toolkit. Replace it with the toolkit's player_settings.lua (it has units_version = 2).")
-    return M.migrate(doc, baseline_player)
+    local units_migrated, recovery_migrated
+    if (doc.player_units or 1) ~= baseline_units then
+        doc, units_migrated = M.migrate(doc, baseline_player, attack_config)
+    end
+    doc, recovery_migrated = migrate_attack_recovery(doc, attack_config, inherited_attacks)
+    return doc, units_migrated == true or recovery_migrated
 end
 
-function M.from_controls(values, previous, baseline_player)
+function M.from_controls(values, previous, baseline_player, load_config)
     values = values or {}
     baseline_player = baseline_player or require "developer.config.player_settings"
     local doc = M.copy(M.load_document(previous or {
         version = M.VERSION, player_units = M.baseline_units(baseline_player), overrides = {},
-    }, baseline_player))
+    }, baseline_player, load_config))
     doc.player_units = M.baseline_units(baseline_player)
+    doc.attack_recovery_version = M.ATTACK_RECOVERY_VERSION
     doc.published = true
     for key, spec in pairs(M.fields) do
         local value = values[key]
@@ -1196,17 +1359,26 @@ function M.from_controls(values, previous, baseline_player)
     if values.wall_climb_speed ~= nil then put(doc.overrides, "player.wall_climb.speed", values.wall_climb_speed) end
     -- Starting availability is separate from the count used after acquisition.
     -- The player already gates extra jumps through AbilityManager.
-    return M.validate(M.prune_legacy(doc))
+    local attack_config = get(doc, "overrides.combat.attacks") and effective_attack_config(load_config)
+    return M.validate(M.prune_legacy(doc), attack_config)
 end
 
-function M.serialize(doc, baseline_player)
+function M.serialize(doc, baseline_player, load_config)
     baseline_player = baseline_player or require "developer.config.player_settings"
-    doc = M.copy(M.load_document(doc, baseline_player))
+    doc = M.copy(M.load_document(doc, baseline_player, load_config))
     doc.player_units = M.baseline_units(baseline_player)
+    doc.attack_recovery_version = M.ATTACK_RECOVERY_VERSION
     local comments = {
         player_units = "Pixel-unit generation for player, combat and imported-art overrides (unitless): 1 = old base pixels, 2 = in-game-size base pixels; safe values 1 or 2.",
+        attack_recovery_version = "Attack recovery timing (unitless, keep 2): recovery is the wait after the last hit window, or after startup when there are no hit windows.",
     }
     for _, spec in pairs(M.fields) do comments["overrides." .. spec.path] = spec.help end
+    for id, attack in pairs((doc.overrides.combat or {}).attacks or {}) do
+        if attack.combo_window then
+            comments["overrides.combat.attacks." .. id .. ".combo_window.start"] =
+                "Combo input opening time in seconds from attack start, carried over from the prior attack timing."
+        end
+    end
     return "-- Project-owned settings. Saved by Project > Game Settings...\n"
         .. "-- Overrides are merged over the commented baseline configuration files.\n"
         .. "-- Remove a field to inherit its baseline value; preserve version.\n"

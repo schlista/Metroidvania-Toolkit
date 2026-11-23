@@ -302,7 +302,6 @@ local function can_consume_ability(id)
   return ability_unlocked(id)
 end
 
-local sum_conveyor_forces = PlayerSurfaceEffects.sum_conveyor_forces
 
 -- Animation control helpers (animation/animation_controller.script on this GO)
 local MSG_ANIM_DONE = PlayerRuntimeAnimation.MSG_ANIM_DONE
@@ -533,6 +532,7 @@ local function apply_block_grab_motion(self, input)
     -- Defold dispatches the pull message after this update callback; without
     -- this hand-off frame both actors can retain a permanent one-frame gap.
     self.vx = was_pulling and (move_dir * speed) or 0
+    self._move_dx_correction = nil
     msg.post(grab.block_id, BLOCK_PULL_MSG, {
       dir = move_dir,
       speed = speed,
@@ -544,18 +544,23 @@ local function apply_block_grab_motion(self, input)
   end
 end
 
+local finalize_water_exit
+
 local function reset_motion_state(self, reason)
   self._block_probe = {}
   clear_all_movement_contact_hitboxes(self)
   AttackExecutor.cancel(self)
+  self._jump_cut_pending = nil
+  self._wall_jump_steering = nil
   self.vx, self.vy = 0, 0
   self.pos = go.get_position()
   ensure_player_render_z(self)
   self.grounded = false
   self._ground_normal = nil
   self._ground_is_platform = false
-  self._coyote_t = 0
-  self._jump_buffer_t = 0
+  local timers = require "mvtk.player.timers"
+  timers.clear_window(self, "_coyote_t")
+  timers.clear_window(self, "_jump_buffer_t")
   self._jump_hold_t = 0
   self._run_gate = false
   self._slide_t, self._slide_cool, self._slide_recovery_t = 0, 0, 0
@@ -571,30 +576,35 @@ local function reset_motion_state(self, reason)
   clear_block_grab(self)
   self._air_dashes_left = (self._cfg and self._cfg.air_dash and self._cfg.air_dash.max_air_dashes) or 1
   self._on_wall, self._wall_side = false, 0
-  self._wall_time, self._wall_contact_timer = 0, 0
-  self._wall_coyote_t, self._wall_reattach_lock_t = 0, 0
+  self._wall_time = 0
+  timers.clear_window(self, "_wall_contact_timer")
+  timers.clear_window(self, "_wall_coyote_t")
+  timers.clear_window(self, "_wall_reattach_lock_t")
   self._wall_last_side = 0
   self._extended_jump_active = false
   self._extended_jump_hold_time = 0
   self._extended_jump_hang_time = 0
   self._extended_jump_bonus_applied = false
-  self._invulnerable = false
-  self._parry_iframes_t = 0
+  self._invulnerable, self._movement_iframes = false, false
+  timers.clear_window(self, "_parry_iframes_t")
   self._stun_t = 0
   if reason ~= "teleport" then
-    self._in_water = false
+    if self._in_water or self._water_wading then finalize_water_exit(self) end
+    SwimState.reset_dash()
+    self._water_sources = nil
+    if self._water_currents then PlayerSurfaceEffects.clear_water(self) end
+    require("mvtk.world.water_registry").begin_player_life()
     self._gravity_mult = 1.0
   end
   self._backdash_t, self._backdash_cool = 0, 0
   self._backdash_prev = 0
-  self._roll_t, self._roll_cool = 0, 0
-  -- Reset bypasses the roll timer's normal collider restoration message.
   self.collider_half_width = self._base_collider_half_width or self.collider_half_width
   self.collider_half_height = self._base_collider_half_height or self.collider_half_height
   self._wall_half_width = self.collider_half_width
   self._pound_active, self._pound_recovery_t = false, 0
   self._pound_prev = 0
-  self._platform_drop_t = 0
+  timers.clear_window(self, "_platform_drop_t")
+  timers.clear_window(self, "_one_way_ground_bypass_t")
   self._grapple_active = false
   self._grapple_anchor = nil
   self._anim_lock_t = 0
@@ -603,7 +613,7 @@ local function reset_motion_state(self, reason)
   self._atk_recovery_t = 0
   self._cd_light, self._cd_heavy, self._cd_ranged = 0, 0, 0
   self._cd_potion = 0
-  self._damage_iframes_t = 0
+  timers.clear_window(self, "_damage_iframes_t")
   if reason ~= "teleport" then
     self._is_dead = false
     self._death_settled = false
@@ -707,14 +717,14 @@ function init(self)
 
   -- Initialize swimming state
   SwimState.init()
+  require("mvtk.world.water_registry").begin_player_life()
   self._in_water = false
-  self._water_sources = {}
+  self._water_sources = nil
   self._water_surface_y = nil
   self._oxygen_enabled = nil
   self._swim_gate_ok = nil
   self._in_climb = false
   self._in_climb_zone = false
-  self._climb_reattach_lock_t = 0
   self._climb_speed = 400
   self._climb_can_jump = true
   self._climb_snap_to_center = true
@@ -940,7 +950,6 @@ function init(self)
   -- PSTATE preserves an externally supplied false and otherwise starts
   -- optimistic for the bundled renderers. animation_controller revokes the
   -- capability if hang or ledge_grab_climb fails to play.
-  self._roll_prev = 0
   self._dash_prev = 0
   self._slide_prev = 0
   self._backdash_prev = 0
@@ -998,6 +1007,7 @@ function init(self)
 end
 
 function final(self)
+  require("mvtk.world.water_registry").set_player_alive(false)
   PlayerResources.unbind_stat_bonuses(self)
   PlayerHost.reset(self, "final")
   if RoomManager then RoomArrival.cancel(self, RoomManager, true) end
@@ -1028,7 +1038,7 @@ function on_input(self, action_id, action)
 
   -- The controller owns UI blocking and active-gamepad selection. Do not let
   -- player-side shortcuts bypass either decision.
-  if not input_controller.on_input(action_id, action) then
+  if not input_controller.on_input(action_id, action, self._in_water and "SLIDE" or nil) then
     self._interact_held = input_controller.get_state().interact_held == true
     return
   end
@@ -1043,11 +1053,13 @@ function on_input(self, action_id, action)
       climb_log(self, "jump_dismount")
       self._in_climb = false
       self.bypass_ceiling_frames = 0
-      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.25)
-      self._jump_buffer_t = 0
-      self._coyote_t = 0
+      local timers = require "mvtk.player.timers"
+      timers.extend_window(self, "_climb_reattach_lock_t", 0.25)
+      timers.clear_window(self, "_jump_buffer_t")
+      timers.clear_window(self, "_coyote_t")
       self._jump_hold_t = (self._cfg and self._cfg.jump_min_hold_time) or 0
       self.vy = self._jump_speed or self.vy
+      self._jump_cut_pending = nil
       self.grounded = false
       anim_once(self, "jump")
       if _Audio and _Audio.sfx then _Audio.sfx("jump") end
@@ -1064,9 +1076,10 @@ function on_input(self, action_id, action)
     local down_pressed = S and (S.move_y or 0) < -0.5
     one_way_log(self, "JUMP pressed down=%s one_way=%s", tostring(down_pressed), tostring(self._one_way))
     if down_pressed and self.grounded and not self._super_jump_ready then
+      local timers = require "mvtk.player.timers"
       local dropped = false
       if self._ground_is_platform then
-        self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.35)
+        timers.extend_window(self, "_platform_drop_t", 0.35)
         PSTATE.set_grounded(self, false)
         self.grounded = false
         self.vy = math.min(self.vy or 0, -60)
@@ -1101,7 +1114,7 @@ function on_input(self, action_id, action)
           drop_pos = vmath.vector3(self.pos.x, target_y, self.pos.z or 0)
           one_way_log(self, "manual drop teleport bounds_bottom=%.1f target_y=%.1f", bounds_bottom, target_y)
         end
-        self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.5)
+        timers.extend_window(self, "_platform_drop_t", 0.5)
         apply_force_falling(self, {
           reason = "one_way_drop",
           frames = ONE_WAY_DROP_BYPASS_FRAMES,
@@ -1142,7 +1155,7 @@ function on_input(self, action_id, action)
   if (Bindings.is("SLIDE", action_id)) and not self._ledge_kinematic then
     if action.pressed then 
       local S = input_controller and input_controller.get_state and input_controller.get_state() or nil
-      local handled = PSTATE.request_slide_press(self, S)
+      local handled = PSTATE.request_slide_press(self, S, SwimState.request_dash)
       local overrides = self._overrides or {}
       local air_dash_enabled = overrides.air_dash and overrides.air_dash.enabled
       local slide_enabled = overrides.slide and overrides.slide.enabled
@@ -1159,41 +1172,59 @@ end
 
 local integrate = PlayerMovement.integrate
 
--- Seconds swim state survives a trigger exit before tearing down (see
--- exit_water_state for why the surface chatters).
-local WATER_EXIT_GRACE = 0.12
-
-local finalize_water_exit  -- forward declaration; defined below exit_water_state
+local WATER_EXIT_GRACE = require("mvtk.player.environment_clock").water_exit_grace
 
 -- Water can be reported by a baked water_volume, a legacy water_zone, or a
 -- bare collision trigger. Keep the player state and SwimState armed together,
 -- and count sources so overlapping volumes do not cancel each other early.
 local function enter_water_state(self, source_id, opts)
-  opts = opts or {}
+  if self._is_dead then return end
   self._water_sources = self._water_sources or {}
-  local source_key = tostring(source_id or "unknown")
-  self._water_sources[source_key] = true
+  local source_key = source_id or "unknown"
+  local previous = self._water_sources[source_key]
+  if previous and not opts.reported and opts ~= previous then return end
+  local active = self._water_sources[self._water_contact_key]
+  if not previous then
+    opts.order = (active and active.order or 0) + 1
+  else
+    opts.order = previous.order
+  end
+  opts.source = source_id
+  self._water_sources[source_key] = opts
   -- Coming straight back in cancels a pending exit; swim state never dropped.
   self._water_exit_grace_t = nil
 
-  if self._in_water then
-    -- A second source can arrive with better information than the first. The
-    -- bare trigger path has no surface at all and falls back to the entry Y,
-    -- so a later water_volume message must correct BOTH the player copy and
-    -- SwimState's -- the latter drives is_underwater, oxygen and buoyancy.
-    if opts.surface_y ~= nil then
-      self._water_surface_y = opts.surface_y
-      SwimState.set_surface_y(opts.surface_y)
+  -- A level refresh can update a source in the background. Only actual
+  -- entries change precedence, so the last-entered pool governs an overlap.
+  if active and opts.order < active.order then return end
+  local prior_key = self._water_contact_key
+  self._water_contact_key = source_key
+  local wading = opts.swim_enabled == false
+  if self._in_water or self._water_wading then
+    local surface_y = opts.surface_y or (previous and previous.surface_y)
+      or go.get_world_position().y
+    opts.surface_y = surface_y
+    self._water_surface_y = surface_y
+    self._oxygen_enabled = opts.oxygen_enabled == true
+    if source_key ~= prior_key then
+      SwimState.use_source(source_id, surface_y, opts.swim_params)
+    else
+      SwimState.set_surface_y(surface_y)
+      if opts.swim_params then SwimState.set_params(opts.swim_params) end
     end
-    if opts.oxygen_enabled ~= nil then self._oxygen_enabled = opts.oxygen_enabled == true end
-    if opts.swim_params then SwimState.set_params(opts.swim_params) end
+    if wading ~= (self._water_wading == true) then
+      SwimState.stop_propulsion()
+      self._water_wading = wading
+      PSTATE.set_water(self, not wading)
+    end
     return
   end
 
   local player_pos = go.get_world_position()
   local surface_y = opts.surface_y or player_pos.y
+  opts.surface_y = surface_y
   self._swim_gate_ok = swim_gate_ok()
-  self._swim_gate_recheck_t = SWIM_GATE_RECHECK_INTERVAL
+  require("mvtk.player.timers").start_window(self, "_swim_gate_recheck_t", SWIM_GATE_RECHECK_INTERVAL)
   self._drown_tick_t = 0
   self._water_surface_y = surface_y
   self._oxygen_enabled = opts.oxygen_enabled == true
@@ -1203,9 +1234,10 @@ local function enter_water_state(self, source_id, opts)
   SwimState.enter_water(surface_y, player_pos.y, {
     source = source_id,
     surface_known = opts.surface_y ~= nil,
+    oxygen_enabled = self._oxygen_enabled,
   })
-  self._in_water = true
-  PSTATE.set_water(self, true)
+  self._water_wading = wading
+  if not wading then PSTATE.set_water(self, true) end
   pcall(msg.post, msg.url("main:/underwater_overlay#underwater_overlay"), hash("underwater_set"), { enabled = true })
 
   -- Successful arming is routine and repeats every time the player crosses the
@@ -1226,14 +1258,25 @@ local function enter_water_state(self, source_id, opts)
 end
 
 local function exit_water_state(self, source_id, force)
-  self._water_sources = self._water_sources or {}
   if force then
-    self._water_sources = {}
+    self._water_sources = nil
   else
-    self._water_sources[tostring(source_id or "unknown")] = nil
+    local sources = self._water_sources
+    local key = source_id or "unknown"
+    if not sources or not sources[key] then return end
+    sources[key] = nil
+    if key ~= self._water_contact_key then return end
+    local remaining
+    for _, contact in pairs(sources) do
+      if not remaining or contact.order > remaining.order then remaining = contact end
+    end
+    if remaining then
+      enter_water_state(self, remaining.source, remaining)
+      return
+    end
   end
-  if next(self._water_sources) ~= nil then return end
-  if not self._in_water and not SwimState.is_swimming() then return end
+  if not self._in_water and not self._water_wading and not SwimState.is_swimming() then return end
+  SwimState.stop_dash()
 
   -- A player floating at the surface straddles the trigger's top edge and
   -- chatters enter/exit several times a second. Tearing swim state down on the
@@ -1243,7 +1286,7 @@ local function exit_water_state(self, source_id, force)
   -- `force` (death, surface jump-out) means we left under our own power and
   -- must tear down now.
   if not force then
-    self._water_exit_grace_t = WATER_EXIT_GRACE
+    require("mvtk.player.timers").start_window(self, "_water_exit_grace_t", WATER_EXIT_GRACE)
     return
   end
 
@@ -1252,12 +1295,14 @@ end
 
 finalize_water_exit = function(self, source_id)
   self._water_exit_grace_t = nil
-  if not self._in_water and not SwimState.is_swimming() then return end
+  self._water_contact_key = nil
+  if not self._in_water and not self._water_wading and not SwimState.is_swimming() then return end
 
   local exit_velocity = vmath.vector3(self.vx or 0, self.vy or 0, 0)
   SwimState.exit_water(exit_velocity)
   SwimState.reset_params()
   self._in_water = false
+  self._water_wading = nil
   self._water_surface_y = nil
   self._oxygen_enabled = nil
   self._swim_gate_ok = nil
@@ -1294,11 +1339,15 @@ end
 
 function update(self, dt)
   self._contact_fix_x = 0
-  if RoomArrival.update(self, RoomManager, nil, dt) then
+  self._water_grace_spent = nil
+  self._compact_roll_exit, self._slide_exit_elapsed, self._dash_exit_elapsed = nil, nil, nil
+  PlayerSurfaceEffects.advance(self, dt, Pause)
+  if RoomArrival.update(self, RoomManager, nil, dt) or (Pause and Pause.get and Pause.get()) then
+    self._vertical_grid = nil
+    if self._movement_windows then PSTATE.interrupt_window_handoffs(self) end
     input_controller.begin_frame()
     return
   end
-  if Pause and Pause.get and Pause.get() then input_controller.begin_frame(); return end
   local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
   -- Snap the raw engine dt to the display interval (mvtk/core/frame_clock.lua)
   -- before scaling: vsync jitter otherwise becomes uneven per-frame steps.
@@ -1327,13 +1376,16 @@ function update(self, dt)
   end
   
   -- Tick respawn grace period timer
-  if self._respawn_grace_timer and self._respawn_grace_timer > 0 then
-    self._respawn_grace_timer = self._respawn_grace_timer - dt
+  local climb_timers = require "mvtk.player.timers"
+  if (self._respawn_grace_timer or 0) > 0 then
+    local expired, spent = climb_timers.tick_combat_deadline(self, "_respawn_grace_timer", dt)
+    if expired and dt > 0 then self._water_grace_spent = math.min(1, spent / dt) end
   end
   -- Damage iFrames timer is now ticked centrally in player_state.lua update
   
-  self._platform_drop_t = math.max(0, (self._platform_drop_t or 0) - dt)
-  self._climb_reattach_lock_t = math.max(0, (self._climb_reattach_lock_t or 0) - dt)
+  climb_timers.tick_drop_through(self, dt)
+  climb_timers.tick_window(self, "_climb_reattach_lock_t", dt)
+  PlayerSurfaceEffects.advance_player_grace(self)
   self._frame_counter = (self._frame_counter or 0) + 1
   local prev_pos = self._previous_frame_position
   if not prev_pos then
@@ -1388,16 +1440,19 @@ function update(self, dt)
   if self._attack and input then
     -- During attacks: block dashes/slides/parry but allow movement
     -- and let attack presses through (they are buffered above).
-    if not AttackExecutor.can_cancel_to(self, "dash") then
-      input.dash_down, input.dash_pressed = false, false
+    if self._in_water then
+      local opening = SwimState.dash_press_offset(dt)
+      if opening and not AttackExecutor.can_cancel_to(self, "dash", dt, opening) then
+        SwimState.discard_dash_press()
+      end
     end
-    if not AttackExecutor.can_cancel_to(self, "slide") then
+    if not AttackExecutor.can_cancel_to(self, "slide", dt) then
       input.slide_down, input.slide_held, input.slide_up = false, false, false
     end
-    if not AttackExecutor.can_cancel_to(self, "backdash") then
+    if not AttackExecutor.can_cancel_to(self, "backdash", dt) then
       input.backdash_down = false
     end
-    if not AttackExecutor.can_cancel_to(self, "parry") then
+    if not AttackExecutor.can_cancel_to(self, "parry", dt) then
       input.parry_down = false
     end
     input.grapple_down = false
@@ -1407,7 +1462,6 @@ function update(self, dt)
     input.light_down, input.light_held, input.light_up = false, false, false
     input.heavy_down, input.ranged_down = false, false
     input.parry_down, input.grapple_down = false, false
-    input.dash_down, input.dash_pressed = false, false
     input.slide_down, input.slide_held, input.slide_up = false, false, false
     input.backdash_down = false
     input.ground_pound_down = false
@@ -1415,9 +1469,9 @@ function update(self, dt)
     self._light_buffer_count, self._heavy_buffer_count, self._ranged_buffer_count = 0, 0, 0
     self._light_hold_t = 0
   end
-  -- General animation lock countdown (dash, land, roll — NOT attacks)
+  -- General animation lock countdown for movement and landing.
   if (self._anim_lock_t or 0) > 0 then
-    self._anim_lock_t = math.max(0, (self._anim_lock_t or 0) - dt)
+    PSTATE.tick_animation_lock(self, dt)
     if self._anim_lock_t <= 0 then
       self._anim_lock_allow_movement = true
     end
@@ -1441,16 +1495,20 @@ function update(self, dt)
 
   if self._is_dead then
     -- Dead bodies should keep falling until ground contact, even inside water.
+    self._vertical_grid = nil
     self._in_climb = false
     if PSTATE.clear_ledge_state then PSTATE.clear_ledge_state(self) end
     self.vx = 0
     self._light_hold_t = 0
     self._light_buffer_count, self._heavy_buffer_count, self._ranged_buffer_count = 0, 0, 0
     self._ext_fx, self._ext_fy = 0, 0
+    PlayerSurfaceEffects.discard_water(self)
+    if self._water_currents then PlayerSurfaceEffects.clear_water(self) end
 
-    if self._in_water then
+    if self._in_water or self._water_wading then
       exit_water_state(self, nil, true)
     end
+    SwimState.reset_dash()
 
     local g = (PS.gravity or -1200) * (self._gravity_mult or 1.0)
     if (self.vy or 0) < 0 then
@@ -1490,7 +1548,8 @@ function update(self, dt)
   end
 
   PlayerHost.pre_physics(self, dt, input)
-  local conveyor_vx, conveyor_vy = sum_conveyor_forces(self)
+  PlayerSurfaceEffects.prepare(self, dt)
+  local conveyor_vx, conveyor_vy = PlayerSurfaceEffects.sum_conveyor_forces(self)
   local ext_bias_x = (self._ext_fx or 0) + (conveyor_vx or 0)
   local ext_bias_y = (self._ext_fy or 0) + (conveyor_vy or 0)
   if self._ledge_kinematic then
@@ -1500,6 +1559,7 @@ function update(self, dt)
   -- Clear one-shot external forces after capturing them for this frame
   self._ext_fx, self._ext_fy = 0, 0
   if ext_bias_x ~= 0 or ext_bias_y ~= 0 then
+    if ext_bias_y ~= 0 then self._jump_cut_pending = nil end
     self.vx = (self.vx or 0) - ext_bias_x
     self.vy = (self.vy or 0) - ext_bias_y
   end
@@ -1519,6 +1579,7 @@ function update(self, dt)
     local my = input.move_y or 0
     if LadderClimb.can_enter_climb(self, input) then
       self._in_climb = true
+      self._wall_jump_steering = nil
       LadderClimb.climb_log(self, "climb_start ladder=%s center=(%.1f,%.1f) offset=%.1f h=%.1f move_y=%.2f pass_top=%s",
         tostring(self._climb_ladder_id),
         tonumber(self._climb_center_x) or 0,
@@ -1549,6 +1610,7 @@ function update(self, dt)
   end
   if in_climb then
     -- Disable ground snapping while climbing so you can descend from the top platform.
+    self._jump_cut_pending = nil
     self.bypass_ground_frames = math.max(self.bypass_ground_frames or 0, 1)
     LadderClimb.update_ladder_top_pass_through(self, input)
     if input.jump_down and self._climb_can_jump then
@@ -1563,9 +1625,7 @@ function update(self, dt)
       if self._climb_snap_to_center then
         local cx = LadderClimb.climb_snap_x(self)
         if cx then
-          local snap_rate = 18
-          local t = math.min(1, snap_rate * dt)
-          self.pos.x = self.pos.x + (cx - self.pos.x) * t
+          LadderClimb.center_on_ladder(self, cx, dt)
         end
         self.vx = 0
       else
@@ -1579,8 +1639,7 @@ function update(self, dt)
 
   -- Settle a pending water exit (see exit_water_state's surface-chatter note).
   if self._water_exit_grace_t then
-    self._water_exit_grace_t = self._water_exit_grace_t - dt
-    if self._water_exit_grace_t <= 0 then
+    if climb_timers.tick_deadline(self, "_water_exit_grace_t", dt) then
       if next(self._water_sources or {}) == nil then
         finalize_water_exit(self, nil)
       else
@@ -1589,31 +1648,36 @@ function update(self, dt)
     end
   end
 
-  if self._in_water then
+  local swimming = self._in_water
+  local swim_dash_sound
+  if swimming or self._water_wading then
+    if swimming then
+      self._jump_cut_pending = nil
+    end
     -- Re-resolve the gate periodically instead of latching it at entry: an
     -- unlock (or a repair of a wiped registry) that lands while the player is
     -- already submerged must take effect without making them leave the water
     -- first. Throttled so the lookup does not allocate every frame.
-    self._swim_gate_recheck_t = (self._swim_gate_recheck_t or 0) - dt
-    if self._swim_gate_recheck_t <= 0 then
-      self._swim_gate_recheck_t = SWIM_GATE_RECHECK_INTERVAL
+    local recheck, checked_dt = climb_timers.tick_deadline(self, "_swim_gate_recheck_t", dt)
+    if recheck then
+      climb_timers.start_window(self, "_swim_gate_recheck_t", SWIM_GATE_RECHECK_INTERVAL, false, dt - checked_dt)
       local gate_now = swim_gate_ok()
       if gate_now ~= self._swim_gate_ok then
         self._swim_gate_ok = gate_now
+        if not gate_now then SwimState.stop_dash() end
         print(string.format("[SWIM] ability gate changed to %s while in water", tostring(gate_now)))
       end
     end
-    local has_swim = self._swim_gate_ok == true
+    local has_swim = swimming and self._swim_gate_ok == true
     local swim_input
     if has_swim then
       swim_input = vmath.vector3(input.move_x or 0, input.move_y or 0, 0)
-    else
+    elseif swimming then
       -- No swim ability: lock directional movement while submerged.
       local horizontal_mult = (SWIM_CFG.no_swim_horizontal_mult or 0)
       input.move_x = (input.move_x or 0) * horizontal_mult
       input.move_y = 0
       input.jump_down, input.jump_held = false, false
-      input.dash_down, input.dash_pressed = false, false
       input.slide_down, input.slide_held, input.slide_up = false, false, false
       input.backdash_down = false
       input.ground_pound_down = false
@@ -1621,21 +1685,35 @@ function update(self, dt)
     end
 
     local player_pos = go.get_world_position()
-    -- Non-swimmers always consume oxygen and eventually drown in water.
+    -- The ability lock retains its progression rule; authored wading
+    -- follows the volume's independent oxygen switch.
     local oxygen_enabled
-    if has_swim then oxygen_enabled = self._oxygen_enabled == true else oxygen_enabled = true end
+    if has_swim or self._water_wading then
+      oxygen_enabled = self._oxygen_enabled == true
+    else
+      oxygen_enabled = true
+    end
 
-    local swim_velocity, event = SwimState.update(dt, player_pos, swim_input, oxygen_enabled)
+    local sj = SWIM_CFG
+    local surface_jump = has_swim and sj.surface_jump_out ~= false and input.jump_down
+      and player_pos.y >= (self._water_surface_y or player_pos.y) - (sj.surface_jump_band or 24)
+    if surface_jump then SwimState.stop_dash() end
+    local swim_velocity, event, swim_dx, swim_dy, event_elapsed, dash_sound =
+      SwimState.update(dt, player_pos, swim_input, oxygen_enabled, self._water_wading)
+    swim_dash_sound = dash_sound
 
     if swim_velocity then
       -- Override velocity with swimming physics. Non-swimmers use the
       -- configurable horizontal struggle multiplier (0 by default).
       self.vx = swim_velocity.x
       self.vy = swim_velocity.y
+      self._move_dx_correction, self._move_dy_correction = swim_dx, swim_dy
     end
-    if not has_swim then
+    if swimming and not has_swim then
       local sink_speed = math.abs((SWIM_CFG and SWIM_CFG.no_swim_sink_speed) or 220)
-      self.vy = math.min(self.vy or 0, -sink_speed)
+      if (self.vy or 0) > -sink_speed then
+        self.vy, self._move_dy_correction = -sink_speed, nil
+      end
     end
 
     -- Handle drowning. The damage pipeline plays a hurt SFX and spawns a
@@ -1643,11 +1721,11 @@ function update(self, dt)
     -- fractional `0.5 * dt` every frame turns drowning into a 60 Hz stream of
     -- hit sounds ("pinging") and popups instead of a readable drown.
     if event == "drowning" then
-      self._drown_tick_t = (self._drown_tick_t or 0) - dt
-      if self._drown_tick_t <= 0 then
-        self._drown_tick_t = math.max(0.1, tonumber(SWIM_CFG.drown_damage_interval) or 1.0)
+      local due = dt > 0 and SwimState.drowning_ticks(self, event_elapsed or dt,
+        math.max(0.1, tonumber(SWIM_CFG.drown_damage_interval) or 1.0)) or 0
+      if due > 0 then
         msg.post(".", DAMAGE_MSG, {
-          amount = math.max(0, tonumber(SWIM_CFG.drown_damage) or 1),
+          amount = due * math.max(0, tonumber(SWIM_CFG.drown_damage) or 1),
           dtype = "drowning",
           -- damage_over_time: no knockback, no parry attempt, not cancelled by the
           -- slide/dash invulnerability. ignore_iframes: the tick interval is
@@ -1666,31 +1744,26 @@ function update(self, dt)
       SwimState.publish_oxygen_hud(SwimState.get_oxygen())
     end
 
-    local sj = SWIM_CFG
-    if has_swim and sj.surface_jump_out ~= false and input.jump_down
-      and player_pos.y >= (self._water_surface_y or player_pos.y) - (sj.surface_jump_band or 24) then
+    if surface_jump then
       self.vy = (self._jump_speed or 600) * (sj.surface_jump_boost or 1.0)
+      self._move_dy_correction = nil
       self.vx = swim_velocity and swim_velocity.x or self.vx
       exit_water_state(self, nil, true)
       SwimState.reset_velocity()
     end
 
-    -- Handle swim dash input
-    if has_swim and input.dash_pressed and SwimState.can_dash() then
-      local dash_dir = vmath.vector3(input.move_x or 0, input.move_y or 0, 0)
-      if vmath.length(dash_dir) > 0.1 then
-        SwimState.dash(dash_dir)
-        player_log('[PLAYER] Swim dash')
-      end
-    end
-  elseif in_climb then
-    -- Climb movement is handled above; skip normal physics while on ladder.
-  elseif PlayerHost.owns_motion(self, dt, input) then
-    -- Feature velocity still passes through integration, room limits and collision.
   else
-    -- Normal ground/air physics
-    PSTATE.update(self, dt, input)
+    SwimState.tick_dash_cooldown(dt)
   end
+  local traversal = swimming or in_climb
+  local owned, ordinary_motion
+  if not traversal then owned, ordinary_motion = PlayerHost.owns_motion(self, dt, input) end
+  if traversal or owned then
+    PSTATE.update_motion_takeover(self, dt, traversal, ordinary_motion)
+  else
+    PSTATE.update(self, dt, input, ext_bias_x, ext_bias_y)
+  end
+  if swim_dash_sound then play_sfx(swim_dash_sound, { cooldown = 0 }) end
 
   if self._ledge_climb_started then
     local duration = math.max(0.001, tonumber(self._ledge_climb_duration) or 0.45)
@@ -1719,8 +1792,9 @@ function update(self, dt)
     clear_block_grab(self)
   end
 
-  -- Apply any external forces (from conveyors/wind/water currents)
+  -- Apply any external forces (from conveyors, wind and one-shot pushes).
   if (not ledge_controls_locked) and (ext_bias_x ~= 0 or ext_bias_y ~= 0) then
+    if ext_bias_y ~= 0 then self._jump_cut_pending = nil end
     self.vx = (self.vx or 0) + ext_bias_x
     self.vy = (self.vy or 0) + ext_bias_y
   end
@@ -1742,9 +1816,10 @@ function update(self, dt)
   -- unscaled real time so authored durations remain stable under slow-mo.
   if self._parry_timeslow_pending and Pause and Pause.is_hitstopped and (not Pause.is_hitstopped()) then
     local p = self._parry_timeslow_pending
-    self._parry_timeslow_pending = nil
-    if Pause.start_slowmo then
-      Pause.start_slowmo(p.factor, p.duration)
+    p.normal_time = (p.normal_time or 0) + dt / climb_timers.combat_scale(dt)
+    if p.normal_time + 1e-10 >= climb_timers.REFERENCE_STEP then
+      self._parry_timeslow_pending = nil
+      if Pause.start_slowmo then Pause.start_slowmo(p.factor, p.duration, climb_timers) end
     end
   end
   local dash_now = (self._dash_t or 0)
@@ -1754,22 +1829,24 @@ function update(self, dt)
   if dash_now > 0 and (self._dash_prev or 0) <= 0 then
     local dash_dir = self._last_dash_dir or ((self.vx or 0) >= 0 and 1 or -1)
     local dash_state = PlayerRuntimeAnimation.dash_state(self, dash_dir, self._last_dash_dir_y)
+    local duration = PSTATE.reference_window_remaining(self, "_dash_t")
     -- Like double_jump, the dash clip is a full-body base-track animation.
     -- Re-playing it as an additive overlay doubles its bone/mesh timelines
     -- and can stretch attachments on rigs with keyed scale or deformation.
-    PlayerRuntimeAnimation.anim_once_lock(self, dash_state, math.min(dash_now, 0.35), {
+    PlayerRuntimeAnimation.anim_once_lock(self, dash_state, math.min(duration, 0.35), {
       allow_movement = true,
       blend = 0,
     })
+    PSTATE.start_dash_animation_lock(self)
     -- Disable bone-driven dash motion: rely on velocity set in player_state
     self._dash_anim_motion = nil
-    PlayerCombatActions.spawn_movement_contact_hitbox(self, "air_dash", dash_now)
+    PlayerCombatActions.spawn_movement_contact_hitbox(self, "air_dash", duration)
   elseif dash_now <= 0 and (self._dash_prev or 0) > 0 then
     PlayerCombatActions.clear_movement_contact_hitbox(self, "air_dash")
   end
 
   if slide_now > 0 and (self._slide_prev or 0) <= 0 then
-    PlayerCombatActions.spawn_movement_contact_hitbox(self, "slide", slide_now)
+    PlayerCombatActions.spawn_movement_contact_hitbox(self, "slide", PSTATE.reference_window_remaining(self, "_slide_t"))
   elseif slide_now <= 0 and (self._slide_prev or 0) > 0 then
     PlayerCombatActions.clear_movement_contact_hitbox(self, "slide")
   end
@@ -1802,12 +1879,6 @@ function update(self, dt)
   PlayerRuntimeAnimation.update_facing(self, input, dt)
   -- Animation: facing
   PlayerRuntimeAnimation.anim_face(self, self.facing or 1)
-  -- Detect roll start (transition 0 -> >0)
-  local roll_now = (self._roll_t or 0)
-  if roll_now > 0 and (self._roll_prev or 0) <= 0 then
-    PlayerRuntimeAnimation.anim_once_lock(self, "roll", math.min(roll_now, 0.30), { allow_movement = false })
-  end
-  self._roll_prev = roll_now
   self._dash_prev = dash_now
   self._slide_prev = slide_now
   self._backdash_prev = backdash_now
@@ -1817,6 +1888,12 @@ function update(self, dt)
     self._dash_anim_motion = nil
   end
 
+  if not ledge_controls_locked then
+    PlayerSurfaceEffects.push_travel(self, dt, conveyor_vx, conveyor_vy)
+    PlayerSurfaceEffects.water_travel(self, dt)
+  else
+    PlayerSurfaceEffects.discard_water(self)
+  end
   integrate(self, dt)
   local ladder_top_out_collision
   do
@@ -1825,7 +1902,7 @@ function update(self, dt)
       local landing_y = support.position.y
       self._in_climb = false
       self._climb_top_pass_active = false
-      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.2)
+      climb_timers.extend_window(self, "_climb_reattach_lock_t", 0.2)
       self.bypass_ground_frames = 0
       self.bypass_ceiling_frames = 0
       self.vy = 0
@@ -1845,7 +1922,7 @@ function update(self, dt)
       local landing_y = (surface_y or self.pos.y) + (self.collider_half_height or 60)
       self._in_climb = false
       self._climb_top_pass_active = false
-      self._climb_reattach_lock_t = math.max(self._climb_reattach_lock_t or 0, 0.2)
+      climb_timers.extend_window(self, "_climb_reattach_lock_t", 0.2)
       self.bypass_ground_frames = 0
       self.bypass_ceiling_frames = 0
       self.vy = 0
@@ -1877,32 +1954,17 @@ function update(self, dt)
     end
   end
   local ledge_climb_motion = self._ledge_climbing == true
-  if RoomManager and RoomManager.can_move_between then
-    local allowed, room, err = RoomManager.can_move_between(prev_pos, self.pos,
-      self.collider_half_width or 0, self.collider_half_height or 0)
-    if not allowed then
-      if ladder_top_out_collision then
-        -- Keep holding the ladder while streaming catches up to a sideways
-        -- exit. Rejecting the destination must not turn the pull-up into a fall.
-        self._in_climb = true
-        self._climb_top_pass_active = (input.move_y or 0) > 0.1
-        self._climb_reattach_lock_t = 0
-        self.bypass_ground_frames = 1
-        self.bypass_ceiling_frames = self._climb_top_pass_active and 1 or 0
-      end
-      ladder_top_out_collision = nil
-      self.pos.x, self.pos.y = prev_pos.x, prev_pos.y
-      self.vx, self.vy = 0, 0
-      sync_player_position(self)
-      if err and self._stream_error ~= room then
-        self._stream_error = room
-        pcall(msg.post, "main:/toast_gui#toast", hash("toast"), {
-          text = {key="gameplay.room_failed"}, duration = 4,
-        })
-      end
+  local room_check = RoomManager and RoomManager.can_move_between
+  local room_move_allowed
+  if room_check then
+    local path = self._grapple_swing_path
+    if path and self.pos.x == path.x and self.pos.y == path.y then
+      -- The collision resolver checks each swing segment against the room.
+      room_move_allowed = true
     else
-      self._stream_error = nil
+      room_move_allowed = LadderClimb.guard_room_move(self, prev_pos, room_check, ladder_top_out_collision, input.move_y)
     end
+    if not room_move_allowed then ladder_top_out_collision = nil end
   end
   local ledge_completed_this_frame = self._ledge_climb_completed == true
   local collision
@@ -1928,9 +1990,13 @@ function update(self, dt)
       grounded = false,
       wall_contact = 0,
     }
+  elseif room_check then
+    collision, room_move_allowed = LadderClimb.resolve_room_collision(self, prev_pos, room_check, room_move_allowed)
   else
     collision = BonePhysics.resolve(self, prev_pos)
   end
+  PlayerSurfaceEffects.discard_water(self)
+  if room_move_allowed then self._stream_error = nil end
   if collision and collision.ceiling_contact and (self._dash_vy or 0) > 0 then
     self._dash_vy = nil
   end
@@ -2061,7 +2127,7 @@ function update(self, dt)
     state = PlayerRuntimeAnimation.dash_state(self, dash_dir, self._last_dash_dir_y)
   elseif (self._backdash_t or 0) > 0 then
     state = "slide"
-  elseif (self._roll_t or 0) > 0 or (self._slide_t or 0) > 0 then
+  elseif (self._slide_t or 0) > 0 then
     state = "slide"
   elseif self._on_wall then
     state = (abs(vy) <= 40) and "wall_cling" or "wall_slide"
@@ -2108,7 +2174,7 @@ function update(self, dt)
     or state == "crouch_idle" or state == "crouch_walk"
     or state == "push" or state == "pushpull_idle_state" or state == "pull" or state == "pull_idle"
     or PlayerHost.is_movement_anim(state))
-  -- General anim lock (dash/land/roll) can allow or block movement via its own flag.
+  -- A general animation lock can allow or block movement via its own flag.
   local general_lock_allows = (self._anim_lock_t or 0) <= 0
     or (self._anim_lock_allow_movement ~= false and is_movement_anim)
   -- Sprite attacks play on the single base track (no overlay), so the movement
@@ -2191,7 +2257,7 @@ function update(self, dt)
   self._cd_light  = math.max(0, (self._cd_light or 0) - dt)
   self._cd_heavy  = math.max(0, (self._cd_heavy or 0) - dt)
   self._cd_ranged = math.max(0, (self._cd_ranged or 0) - dt)
-  self._cd_potion = math.max(0, (self._cd_potion or 0) - dt)
+  climb_timers.tick_combat_window(self, "_cd_potion", dt)
   self._atk_recovery_t = math.max(0, (self._atk_recovery_t or 0) - dt)
 
   -- The bridge checks the debug build, tool config and overlay presence.
@@ -2207,6 +2273,7 @@ function on_message(self, message_id, message, sender)
   if RoomArrival.intercept(self, RoomManager, message_id, message or {}, sender) then return end
   if (self._room_arrival or not RoomManager.is_startup_ready()) and (message_id == DAMAGE_MSG or message_id == hash("take_damage")
       or message_id == CONTACT_POINT_RESPONSE_MSG or message_id == hash("platform_delta")) then
+    if message and message.water_target then require("mvtk.world.water_registry").reject_timed_damage(message) end
     return
   end
 
@@ -2227,11 +2294,16 @@ function on_message(self, message_id, message, sender)
       return
     end
     local og = message and message.other_group
+    if og and og == SurfaceClassifier.GROUPS.PLATFORM
+      and require("mvtk.core.one_way_platform_registry").is_inverted(message.other_id) then
+      return
+    end
     local climb_contact_trace =
       self._in_climb or
       (self._climb_top_pass_active == true) or
       ((self.bypass_ceiling_frames or 0) > 0) or
-      ((self.bypass_ground_frames or 0) > 0)
+      ((self.bypass_ground_frames or 0) > 0) or
+      ((self._one_way_ground_bypass_t or 0) > 0)
     if climb_contact_trace then
       climb_log(self,
         "contact other=%s group=%s dist=%.3f normal=(%.2f,%.2f)",
@@ -2243,7 +2315,7 @@ function on_message(self, message_id, message, sender)
     end
     -- BYPASS: When bypassing ground for crumble platform, ignore all ground/tile contacts
     -- This prevents physics from pushing the player back up onto baked tilemap collision
-    if (self.bypass_ground_frames or 0) > 0 then
+    if (self.bypass_ground_frames or 0) > 0 or (self._one_way_ground_bypass_t or 0) > 0 then
       -- Only allow wall contacts during bypass, skip ground/tile
       if SurfaceClassifier.is_terrain_group(og) then
         if climb_contact_trace then
@@ -2276,6 +2348,7 @@ function on_message(self, message_id, message, sender)
       if ceiling_correction then
         self.pos.y = self.pos.y + ceiling_correction.delta_y
         if ceiling_correction.stop_upward_velocity then
+          self._jump_cut_pending = nil
           self.vy = 0
           self._dash_vy = nil
         end
@@ -2385,6 +2458,7 @@ function on_message(self, message_id, message, sender)
         end
         if dot < 0 then
           self.vx = (self.vx or 0) - dot * nx
+          if ny ~= 0 then self._jump_cut_pending = nil end
           self.vy = (self.vy or 0) - dot * ny
           if climb_contact_trace then
             climb_log(self, "contact_block_velocity dot=%.2f new_v=(%.1f,%.1f) normal=(%.2f,%.2f)",
@@ -2421,7 +2495,9 @@ function on_message(self, message_id, message, sender)
         tostring(message and message.other_id)))
     end
     local trigger_water = message and ((message.group == hash("water")) or (message.other_group == hash("water")))
-    if trigger_water then
+    -- Baked volumes send an authoritative entry/exit with their own rules.
+    -- Standalone water colliders still use their bare trigger.
+    if trigger_water and not require("mvtk.world.water_registry").has(message.other_id) then
       if message.enter then
         enter_water_state(self, message.other_id, {})
       else
@@ -2452,7 +2528,7 @@ function on_message(self, message_id, message, sender)
     PlayerRuntimeAnimation.on_animation_done(self, message)
     -- Attack animation finished: clear attack state so movement resumes
     -- and the next queued attack can fire.  Does NOT touch the general
-    -- _anim_lock_t used by dash/land/roll.
+    -- _anim_lock_t is also used by movement and landing.
     AttackExecutor.on_animation_done(self)
   elseif message_id == DAMAGE_MSG then
     -- Ignore damage completely when dead or during post-respawn grace period
@@ -2462,6 +2538,7 @@ function on_message(self, message_id, message, sender)
     end
     if self._respawn_grace_timer and self._respawn_grace_timer > 0 then
       player_log('[PLAYER] damage blocked by respawn grace period')
+      if message and message.water_target then require("mvtk.world.water_registry").reject_timed_damage(message) end
       return
     end
     local bypass_iframes = (message and message.ignore_iframes) and true or false
@@ -2541,6 +2618,7 @@ function on_message(self, message_id, message, sender)
     self.health = (self.health or self.max_health) - amt
     clamp_health(self)
     if amt > 0 then
+      self._wall_jump_steering = nil
       require("mvtk.bosses.boss_manager").on_player_damaged()
       require("mvtk.core.game_events").emit("player_damaged", {
         amount=amt, damage_type=incoming.damage_type or incoming.dtype or "physical",
@@ -2553,7 +2631,7 @@ function on_message(self, message_id, message, sender)
     -- Grant damage iFrames so rapid hits cannot stun-lock or cancel animations.
     -- With iFrames active, this cancel only fires once per hit window (not every frame).
     if not bypass_iframes then
-      self._damage_iframes_t = self._damage_iframes_duration or 0.8
+      PSTATE.add_damage_iframes(self)
     end
     local hurt_feedback, boss_feedback_override = CombatFeedback.player_profile(incoming)
     -- Direct hits interrupt the swing once per invulnerability window.
@@ -2667,9 +2745,12 @@ function on_message(self, message_id, message, sender)
     local before = self.health or self.max_health
     self.health = self.max_health
     self._is_dead = false  -- Reset death state on full restore
+    require("mvtk.world.water_registry").set_player_alive(true)
     self._control_locked = false  -- Unlock player controls
     self._death_settled = false  -- Clear death settlement flag
-    self._respawn_grace_timer = (message and tonumber(message.respawn_grace)) or 0.5
+    require("mvtk.player.timers").start_combat_window(self, "_respawn_grace_timer",
+      (message and tonumber(message.respawn_grace)) or 0.5)
+    if self._respawn_grace_timer > 0 then require("mvtk.world.water_registry").retire_player_damage() end
     
     -- CRITICAL: Use respawn position from message if provided
     -- This avoids race condition where update() overwrites go.set_position before this message arrives
@@ -2684,6 +2765,7 @@ function on_message(self, message_id, message, sender)
     ensure_player_render_z(self)
 
     -- CRITICAL: Also reset motion state along with health restore
+    self._jump_cut_pending = nil
     self.vx = 0
     self.vy = 0
     
@@ -2718,26 +2800,20 @@ function on_message(self, message_id, message, sender)
     end
     local bounce = (ACTIONS.down_strike and ACTIONS.down_strike.bounce_speed) or 1000
     -- Bounce upward and reset some aerial resources if desired
+    self._vertical_grid = nil
+    self._jump_cut_pending = nil
     self.vy = math.max(self.vy or 0, bounce)
     -- Optional: clear slide/dash if hitting during pogo handled in state
     player_log('[PLAYER] Pogo bounce!')
-  elseif message_id == hash('mvtk_roll_state') then
-    local active = message and message.active
-    local roll = PS.roll or {}
-    if active then
-      self.collider_half_width  = roll.small_half_width or self._base_collider_half_width or self.collider_half_width
-      self.collider_half_height = roll.small_half_height or self._base_collider_half_height or self.collider_half_height
-    else
-      self.collider_half_width  = self._base_collider_half_width or self.collider_half_width
-      self.collider_half_height = self._base_collider_half_height or self.collider_half_height
-    end
-    self._wall_half_width = self.collider_half_width
   elseif message_id == hash('set_gravity_mult') then
     local k = message and message.k or nil
     if PSTATE and PSTATE.set_gravity_mult then PSTATE.set_gravity_mult(self, k) end
   elseif message_id == hash('clear_gravity_mult') then
     if PSTATE and PSTATE.clear_gravity_mult then PSTATE.clear_gravity_mult(self) end
   elseif message_id == hash('one_way_contact') then
+    -- An inverted platform's underside is handled by the ceiling sweep.
+    -- Its top is never support or a target for manual drop-through.
+    if message and message.direction == "up" then return end
     local previous = self._one_way
     if message and message.url then self._one_way = message.url end
     if message and message.bounds_bottom then self._one_way_bounds_bottom = message.bounds_bottom end
@@ -2746,34 +2822,6 @@ function on_message(self, message_id, message, sender)
     if message and message.bounds_right then self._one_way_bounds_right = message.bounds_right end
     if message and message.direction then self._one_way_direction = message.direction end -- movement.lua (A48)
     one_way_log(self, "one_way_contact prev=%s url=%s direction=%s sender=%s", tostring(previous), tostring(message and message.url), tostring(message and message.direction), tostring(sender))
-    -- Auto-drop for "up" direction platforms: the player should fall through
-    -- from above without needing to press down+jump.
-    -- Teleport the player below the platform bounds to clear any overlapping tilemap collision.
-    -- Triggers when grounded OR when falling through (vy <= 0) to prevent the player
-    -- from being caught by tilemap solid tiles under the platform.
-    if message and message.direction == "up" and (self.grounded or (self.vy or 0) <= 0) then
-      one_way_log(self, "auto-drop for direction=up platform %s grounded=%s", tostring(message.url), tostring(self.grounded))
-      if message.url then
-        pcall(msg.post, message.url, hash("drop_through"), {
-          other_id = go.get_id(),
-        })
-      end
-      local drop_pos = nil
-      local bounds_bottom = message.bounds_bottom
-      if bounds_bottom then
-        local half_h = self.collider_half_height or 60
-        local target_y = bounds_bottom - half_h - 8
-        drop_pos = vmath.vector3(self.pos.x, target_y, self.pos.z or 0)
-        one_way_log(self, "auto-drop teleport bounds_bottom=%.1f target_y=%.1f", bounds_bottom, target_y)
-      end
-      self._platform_drop_t = math.max(self._platform_drop_t or 0, 0.5)
-      apply_force_falling(self, {
-        reason = "one_way_up_auto",
-        frames = ONE_WAY_DROP_BYPASS_FRAMES,
-        vy = math.min(self.vy or 0, -200),
-        pos = drop_pos,
-      })
-    end
   elseif message_id == hash('set_biome') then
     self._biome_id = message and (message.id or message.biome)
   elseif PlayerMessaging.handle_environment_message(
@@ -2876,23 +2924,30 @@ function on_message(self, message_id, message, sender)
       end
     end
   elseif message_id == hash('enter_water') then
-    enter_water_state(self, sender, {
+    sender = message and message.original_sender or sender
+    local source = type(sender) == "userdata" and sender.path or sender
+    enter_water_state(self, message and message.water_source or source, {
+      reported = true,
+      swim_enabled = message and message.swim_enabled,
       surface_y = message and message.surface_y,
       oxygen_enabled = message and message.oxygen_enabled,
       swim_params = message and message.swim_params,
     })
 
   elseif message_id == hash('exit_water') then
-    exit_water_state(self, sender)
+    sender = message and message.original_sender or sender
+    local source = type(sender) == "userdata" and sender.path or sender
+    exit_water_state(self, message and message.water_source or source)
 
   elseif message_id == hash('apply_force') then
-    -- Water current or other external force
+    -- Legacy external force.
     if message and message.force then
       self._ext_fx = (self._ext_fx or 0) + (message.force.x or 0)
       self._ext_fy = (self._ext_fy or 0) + (message.force.y or 0)
     end
 
   elseif message_id == hash("mvtk_set_position") then
+    SwimState.reset_dash()
     if message and message.reset_motion and not self._is_dead then
       reset_motion_state(self, "teleport")
     else
@@ -2913,6 +2968,9 @@ function on_message(self, message_id, message, sender)
     -- Clear transient movement state that can "stick" across teleports.
     PSTATE.cancel_grapple(self)
     self.bypass_ground_frames = 0
+    local timers = require "mvtk.player.timers"
+    timers.clear_window(self, "_one_way_ground_bypass_t")
+    timers.clear_window(self, "_platform_drop_t")
     self.bypass_ceiling_frames = 0
     self.grounded = false
     if PSTATE and PSTATE.set_grounded then
@@ -2949,6 +3007,8 @@ function on_message(self, message_id, message, sender)
     end
   elseif message_id == hash("mvtk_bounce") then
     local speed = tonumber(message and (message.speed or message.vy)) or 900
+    self._vertical_grid = nil
+    self._jump_cut_pending = nil
     self.vy = math.max(self.vy or 0, speed)
     self.grounded = false
     if PSTATE and PSTATE.set_grounded then
@@ -2971,13 +3031,15 @@ function on_message(self, message_id, message, sender)
     local amt = (message and (message.amount or message.damage)) or 0
     -- Check immunity
     if self._is_dead then return end
-    if self._respawn_grace_timer and self._respawn_grace_timer > 0 then return end
-    local direct_hit_blocked = PSTATE.is_invulnerable(self, message) and true or false
-
-    if amt <= 0 then return end
-    if direct_hit_blocked then return end
-
-    if PSTATE.is_invulnerable(self, message) then return end
+    if self._respawn_grace_timer and self._respawn_grace_timer > 0 then
+      if message and message.water_target then require("mvtk.world.water_registry").reject_timed_damage(message) end
+      return
+    end
+    if message and message.water_target and self._water_grace_spent then
+      amt = require("mvtk.world.water_registry").resume_timed_damage(message, self._water_grace_spent)
+    end
+    local over_time = message and message.damage_over_time
+    if amt <= 0 or (not over_time and PSTATE.is_invulnerable(self, message)) then return end
     -- Apply damage through the normal damage pipeline
     msg.post(".", DAMAGE_MSG, {
       amount = amt,
@@ -2987,7 +3049,11 @@ function on_message(self, message_id, message, sender)
       -- Preserve inheritance and explicit zero through the legacy message.
       stun_t = message and message.stun_t,
       lethal = message and message.lethal,
+      ignore_iframes = message and message.ignore_iframes,
+      damage_over_time = over_time,
       source = message and message.source or sender,
+      water_source = message and message.water_source,
+      water_target = message and message.water_target,
       knockback = message and message.knockback,
       dir = message and message.dir,
     })

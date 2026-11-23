@@ -22,10 +22,29 @@ local function inherited(value)
     return value == nil or value == "" or value == "type_default"
 end
 
+local function tile_height()
+    return tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
+end
+
+-- Terrain queries and tuning shared by actors with different body shapes.
+function M.cast(x1, y1, x2, y2, z, raycast, options)
+    local from, to = vmath.vector3(x1, y1, z), vmath.vector3(x2, y2, z)
+    raycast = raycast or physics.raycast
+    if options then return raycast(from, to, SurfaceClassifier.RAYCAST.GROUND, options) end
+    return raycast(from, to, SurfaceClassifier.RAYCAST.GROUND)
+end
+
+function M.terrain_limits(defaults)
+    defaults = defaults or frame_config()
+    local tile_h = tile_height()
+    return defaults.ground_skin_px or 1, (defaults.step_up_tiles or 0.125) * tile_h,
+        (defaults.step_down_tiles or 0.25) * tile_h, (defaults.max_fall_speed_tiles or 16) * tile_h,
+        tile_h, defaults.spawn_settle_depth_tiles or 8
+end
+
 -- Shared acceleration for explicit launches and the falling integrator.
 function M.gravity()
-    local tile_h = tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
-    return (frame_config().fall_gravity_tiles or 20) * tile_h
+    return (frame_config().fall_gravity_tiles or 20) * tile_height()
 end
 
 function M.can_fall(self)
@@ -58,19 +77,14 @@ function M.apply(self, dt, raycast)
     if not self._forced_airborne and not (self._grounded_movement and
         (self._airborne or M.can_fall(self))) then return end
     local defaults = frame_config()
-    local tile_h = tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
     local skin = Skins.skins[self.skin] or Skins.skins.default or {}
     local feet = (skin.feet or 40) * (self._body_scale or 1)
-    local clearance = defaults.ground_skin_px or 1
-    local step_up = (defaults.step_up_tiles or 0.125) * tile_h
-    local step_down = (defaults.step_down_tiles or 0.25) * tile_h
+    local clearance, step_up, step_down, max_fall_speed = M.terrain_limits(defaults)
     local pos, vel = self.pos, self.vel
     local floor_y = pos.y - feet - clearance
     local z = pos.z or 0
-    raycast = raycast or physics.raycast
     local function cast(x1, y1, x2, y2)
-        return raycast(vmath.vector3(x1, y1, z), vmath.vector3(x2, y2, z),
-            SurfaceClassifier.RAYCAST.GROUND)
+        return M.cast(x1, y1, x2, y2, z, raycast)
     end
     self._ledge_blocked_dir = nil
     if not self._airborne and (vel.y or 0) > 0 then M.launch(self, vel.y) end
@@ -112,7 +126,7 @@ function M.apply(self, dt, raycast)
         self._airborne, self._vy = true, 0
     end
     self._vy = math.max((self._vy or 0) - M.gravity() * dt,
-        -(defaults.max_fall_speed_tiles or 16) * tile_h)
+        -max_fall_speed)
     vel.y = self._vy
     local next_floor = floor_y + vel.y * dt
     -- Upward travel passes through one-way platforms. All landings sweep down
@@ -132,15 +146,93 @@ function M.apply(self, dt, raycast)
     return true
 end
 
+-- Follow the floor between two endpoints already accepted by the ground
+-- step. A missing floor or an intervening riser must not reject horizontal
+-- travel or enter the falling state sooner than the full step does.
+function M.follow_support(self, raycast)
+    local defaults = frame_config()
+    local tile_h = tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
+    local skin = Skins.skins[self.skin] or Skins.skins.default or {}
+    local gap = (skin.feet or 40) * (self._body_scale or 1) + (defaults.ground_skin_px or 1)
+    local pos = self.pos
+    local floor_y = pos.y - gap
+    local step_up = (defaults.step_up_tiles or 0.125) * tile_h
+    local step_down = (defaults.step_down_tiles or 0.25) * tile_h
+    raycast = raycast or physics.raycast
+    local hit = raycast(vmath.vector3(pos.x, floor_y + step_up, pos.z),
+        vmath.vector3(pos.x, floor_y - step_down, pos.z), SurfaceClassifier.RAYCAST.GROUND)
+    if SurfaceClassifier.is_ground_collision(hit)
+        and (hit.group ~= SurfaceClassifier.GROUPS.PLATFORM or hit.position.y <= floor_y) then
+        local correction = hit.position.y - floor_y
+        pos.y = pos.y + correction
+        return correction
+    end
+    return 0
+end
+
+-- A collider can enter the fall path after the reference probe. Moving
+-- carriers are identifiable even if they share the solid terrain group. For
+-- other support, require a hit on the previously clear reference ray too.
+-- An unchanged narrow surface along only the shorter path cannot alter the
+-- reference landing this way.
+function M.land_live(self, dt, reference_x, reference_y, reference_drop, raycast)
+    if dt <= 0 or not self._airborne or self._ignores_terrain or self._surface_crawling or self.vel.y > 0 then
+        return false
+    end
+    local defaults = frame_config()
+    local skin = Skins.skins[self.skin] or Skins.skins.default or {}
+    local clearance = defaults.ground_skin_px or 1
+    local gap = (skin.feet or 40) * (self._body_scale or 1) + clearance
+    local pos, vel = self.pos, self.vel
+    local bounds = self._room_bounds
+    local x = pos.x + vel.x * dt
+    if bounds and bounds.min_x and bounds.max_x then
+        x = math.max(bounds.min_x + 16, math.min(bounds.max_x - 16, x))
+        reference_x = math.max(bounds.min_x + 16, math.min(bounds.max_x - 16, reference_x))
+    end
+    raycast = raycast or physics.raycast
+    local function cast(at_x, from_y, to_y)
+        return raycast(vmath.vector3(at_x, from_y, pos.z),
+            vmath.vector3(at_x, to_y, pos.z), SurfaceClassifier.RAYCAST.GROUND)
+    end
+    local floor_y = pos.y - gap
+    local hit = cast(x, floor_y + clearance, floor_y + vel.y * dt)
+    if not SurfaceClassifier.is_ground_collision(hit) or hit.position.y > floor_y + clearance then return false end
+    if not require("mvtk.prefabs.passenger_carrier").is_moving_body(hit.id) then
+        local reference_floor = reference_y - gap
+        local future = cast(reference_x, reference_floor + clearance, reference_floor + reference_drop)
+        if not SurfaceClassifier.is_ground_collision(future) or future.id ~= hit.id
+            or future.group ~= hit.group or future.position.y ~= hit.position.y then return false end
+    end
+    vel.y = (hit.position.y - floor_y) / dt
+    self._vy, self._airborne, self._forced_airborne = 0, false, false
+    return true
+end
+
+-- A planned pit exit still needs to see the actor's real endpoint. A live
+-- platform can arrive under it between the prediction and the end of travel.
+function M.confirm_fall_out(self, raycast)
+    local bounds = self._room_bounds
+    if not bounds then return false end
+    local defaults = frame_config()
+    local tile_h = tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
+    local skin = Skins.skins[self.skin] or Skins.skins.default or {}
+    local pos = self.pos
+    local foot_y = pos.y - (skin.feet or 40) * (self._body_scale or 1)
+    if foot_y > bounds.min_y + 16 then return false end
+    local depth = (defaults.step_down_tiles or 0.25) * tile_h + (defaults.ground_skin_px or 1)
+    raycast = raycast or physics.raycast
+    local hit = raycast(vmath.vector3(pos.x, foot_y, pos.z),
+        vmath.vector3(pos.x, foot_y - depth, pos.z), SurfaceClassifier.RAYCAST.GROUND)
+    return not SurfaceClassifier.is_ground_collision(hit)
+end
+
 function M.settle(self, raycast)
     if not self._grounded_movement or self._ignores_terrain then return end
     local defaults = RuntimeSettings.section("enemy_defaults", require "developer.config.enemy_defaults")
-    local tile_h = tonumber(TileSettings.height or TileSettings.tile_height or TileSettings.size) or 64
     local pos = self.pos
-    raycast = raycast or physics.raycast
-    local hit = raycast(vmath.vector3(pos.x, pos.y, pos.z),
-        vmath.vector3(pos.x, pos.y - (defaults.spawn_settle_depth_tiles or 8) * tile_h, pos.z),
-        SurfaceClassifier.RAYCAST.GROUND)
+    local hit = M.cast(pos.x, pos.y, pos.x,
+        pos.y - (defaults.spawn_settle_depth_tiles or 8) * tile_height(), pos.z, raycast)
     if not hit then return end
     local skin = Skins.skins[self.skin] or Skins.skins.default or {}
     pos.y = hit.position.y + (skin.feet or 40) * (self._body_scale or 1)

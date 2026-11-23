@@ -3,6 +3,9 @@ go.property("delay_s", 0.35)
 go.property("fall_speed", 400.0)
 go.property("lifetime_s", 2.0)
 
+local Timers = require "mvtk.player.timers"
+local Pause = require "mvtk.core.pause"
+
 function init(self)
   self._armed = false
   self._fall = false
@@ -10,12 +13,16 @@ function init(self)
 end
 
 function update(self, dt)
+  local scale = Timers.world_scale(dt, Pause)
+  Timers.tick_native(self, dt, scale)
   if self._fall then
-    self._t = self._t + dt
+    local travel = dt > 0 and (self._first_fall_travel or Timers.world_delta(dt, scale)) or 0
+    self._first_fall_travel = nil
+    self._t = self._t + travel
     local p = go.get_position()
-    p.y = p.y - (self.fall_speed or 400) * dt
+    p.y = p.y - (self.fall_speed or 400) * travel
     go.set_position(p)
-    if self._t >= (self.lifetime_s or 2.0) then go.delete('.') end
+    if self._t + 1e-12 >= Timers.reference_duration(self.lifetime_s or 2.0, scale) then go.delete('.') end
   end
 end
 
@@ -23,8 +30,9 @@ function on_message(self, message_id, message, sender)
   if message_id == hash('contact_point_response') then
     if message.group == hash('player') and not self._armed and not self._fall then
       self._armed = true
-      timer.delay(self.delay_s or 0.35, false, function()
-        if self then self._fall = true end
+      Timers.schedule_native(self, self.delay_s or 0.35, function(overrun, scale)
+        self._fall = true
+        self._first_fall_travel = Timers.REFERENCE_STEP * scale + overrun
       end)
     end
   end

@@ -1,4 +1,5 @@
 -- Velocity-owned ride: normal integration, streaming and terrain resolution run.
+local Timers = require "mvtk.player.timers"
 local M = {}
 local function state(self)
     return self._host and self._host.features.zipline
@@ -23,9 +24,11 @@ function M.stop(self, reason)
     self._control_locked = false
     if reason == "end" or reason == "jump" then
         local _, _, tangent = point(s, s.progress)
+        self._jump_cut_pending = nil
         self.vx, self.vy = tangent.tx*s.exit_boost, tangent.ty*s.exit_boost
         if reason == "jump" then self.vy = cfg(self).release_jump_speed or 900 end
         s.release_frame = reason == "jump"
+        s.release_t = s.release_frame and Timers.REFERENCE_STEP or nil
     end
     s.reason = reason
 end
@@ -36,7 +39,7 @@ function M.start(self, message)
     if not s or s.active or require("mvtk.core.pause").get() or self._is_dead
         or self._in_water or self._in_climb or self._ledge_kinematic or self._ledge_hanging
         or self._block_grab or (self._stun_t or 0)>0 or self._room_arrival
-        or (self._dash_t or 0)>0 or (self._slide_t or 0)>0 or (self._roll_t or 0)>0
+        or (self._dash_t or 0)>0 or (self._slide_t or 0)>0
         or (self._backdash_t or 0)>0
         or self._super_jump_rising or self._pound_active or (compact and (compact.roll or 0)>0)
         then return false end
@@ -57,8 +60,11 @@ function M.start(self, message)
     if #segments==0 or (tonumber(message.speed) or 0)<=0 then return false end
     require("mvtk.player.player_grapple").clear(self)
     self._grapple_recast_t, self._anim_lock_t = 0, 0
+    self._jump_cut_pending = nil
     self.vx, self.vy = 0, 0
-    s.segments,s.length,s.progress,s.stalled=segments,length,0,0
+    s.segments,s.length,s.progress=segments,length,0
+    s.elapsed, s.end_at, s.release_t = 0, nil, nil
+    Timers.clear_window(s, "stall_t")
     s.speed,s.exit_boost=message.speed,tonumber(message.exit_boost) or 0
     s.hang,s.animation=cfg(self).hang_offset_px or 70,cfg(self).animation or "grapple"
     s.health=self.health
@@ -72,7 +78,7 @@ end
 local function clear_input(self, input)
     for _, key in ipairs({"light_down","light_held","light_up","heavy_down","heavy_held","heavy_up",
         "ranged_down","ranged_held","ranged_up","parry_down","grapple_down","grapple_held",
-        "slide_down","slide_held","slide_up","dash_down","dash_pressed","backdash_down",
+        "slide_down","slide_held","slide_up","backdash_down",
         "ground_pound_down","interact_down","potion_down","marker_down","morph_toggle_down"}) do
         input[key]=false
     end
@@ -80,8 +86,9 @@ local function clear_input(self, input)
     self._light_buffer_count,self._heavy_buffer_count,self._ranged_buffer_count=0,0,0
     self._conveyor_contacts=nil
     self._ext_fx,self._ext_fy=0,0
+    require("mvtk.player.surface_effects").suppress_push(self)
     if self._env_contacts then self._env_contacts.push=nil end
-    self._climb_reattach_lock_t=math.max(self._climb_reattach_lock_t or 0,0.2)
+    Timers.extend_window(self, "_climb_reattach_lock_t", 0.2)
 end
 
 function M.pre_physics(self, dt, input)
@@ -103,7 +110,19 @@ end
 function M.owns_motion(self, dt)
     local s=state(self)
     if not s or require("mvtk.core.pause").get() then return false end
-    if s.release_frame then return true end
+    if s.release_frame then
+        local travel = s.release_t
+        if Timers.reference_frame(dt) and math.abs(travel - dt) <= 1e-8 then
+            s.release_t = 0
+        else
+            s.release_t = math.max(0, travel - dt)
+            if travel < dt - 1e-12 then
+                self._zipline_release_travel = travel
+                return false
+            end
+        end
+        return true
+    end
     if not s.active or dt<=0 then return s.active == true end
     s.step_x,s.step_y=self.pos.x,self.pos.y
     s.pending=math.min(s.length,s.progress+s.speed*dt)
@@ -123,6 +142,7 @@ function M.owns_motion(self, dt)
             end
         end
     end
+    self._jump_cut_pending = nil
     self.vx,self.vy=(x-self.pos.x)/dt,(y-s.hang-self.pos.y)/dt
     if tangent.tx~=0 then self.facing=tangent.tx>0 and 1 or -1 end
     return true
@@ -131,7 +151,7 @@ end
 function M.post_physics(self, dt)
     local s=state(self)
     if not s or require("mvtk.core.pause").get() then return end
-    s.release_frame=false
+    if not s.release_t or s.release_t <= 1e-12 then s.release_frame, s.release_t = false, nil end
     if not s.active or not s.pending or dt<=0 then return end
     -- Only search the requested interval. Never advance from an attempted move
     -- that the seam guard or collision solver refused.
@@ -154,15 +174,29 @@ function M.post_physics(self, dt)
             end
         end
     end
-    if best-s.progress>0.0001 then s.stalled=0 else s.stalled=s.stalled+1 end
+    local blocked = false
+    if best - s.progress > 0.0001 then
+        Timers.clear_window(s, "stall_t")
+    elseif best < s.length - 0.0001 then
+        if not Timers.is_active(s, "stall_t") then
+            Timers.start_window(s, "stall_t", 4 * Timers.REFERENCE_STEP)
+        end
+        blocked = Timers.tick_deadline(s, "stall_t", dt)
+    end
+    if best >= s.length - 0.0001 and not s.end_at then
+        local crossed = s.elapsed + math.max(0, s.length - s.progress) / s.speed
+        s.end_at = Timers.reference_duration(crossed)
+    end
     s.progress=best
-    if s.progress>=s.length-0.0001 then M.stop(self,"end")
-    elseif s.stalled>=4 then M.stop(self,"blocked") end
+    s.elapsed = s.elapsed + dt
+    if s.end_at and s.elapsed + 1e-12 >= s.end_at then M.stop(self,"end")
+    elseif blocked then M.stop(self,"blocked") end
 end
 
 function M.reset(self, reason)
     M.stop(self,reason)
     local s=state(self)
-    if s then s.active,s.release_frame,s.pending=false,false,nil end
+    if s then s.active,s.release_frame,s.pending,s.release_t=false,false,nil,nil end
+    self._zipline_release_travel = nil
 end
 return M

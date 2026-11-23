@@ -24,4 +24,5 @@ return {
     require "mvtk.player.features.healing_feature",
     require "mvtk.player.features.air_pocket_feature",
     require "mvtk.player.features.vehicle_ride_feature",
+    require "mvtk.player.features.hurtbox_feature",
 }

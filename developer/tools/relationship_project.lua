@@ -188,7 +188,8 @@ function M.check(opts)
     end
     local Checks=require "developer.tools.content_checks"
     local boss_patterns=optional_table("mvtk/bosses/patterns/attack_patterns.lua") or {}
-    for name,pattern in pairs(optional_table("developer/config/attack_patterns.lua") or {}) do
+    local creator_boss_patterns=optional_table("developer/config/attack_patterns.lua") or {}
+    for name,pattern in pairs(creator_boss_patterns) do
         boss_patterns[name]=pattern
     end
     local CatalogEnums=require "mvtk.tiled.catalog_enums"
@@ -342,6 +343,11 @@ function M.check(opts)
         extras=extras,extras_gallery=extras_gallery,countdowns=countdowns,achievements=achievements,game_completion=loaded and ending or nil,
         ambience_tracks=optional_table("developer/config/ambience_tracks.lua"),
         boss_types=bosses,boss_arenas=arenas,boss_attack_patterns=boss_patterns,
+        creator_boss_patterns=creator_boss_patterns,
+        boss_movesets=optional_table("developer/config/boss_movesets.lua") or {},
+        boss_behaviors=optional_table("developer/config/boss_behaviors.lua"),
+        boss_defaults=optional_table("developer/config/boss_defaults.lua") or {},
+        status_effects=optional_table("developer/config/status_effects.lua"),
         boss_ui=optional_table("developer/config/boss_ui.lua"),
         cutscene_settings=cutscene_settings,cutscenes=cutscenes,default_bindings=default_bindings,dialogues=dialogues,
         videos=videos,languages=(optional_table("developer/config/localization.lua") or {}).languages,

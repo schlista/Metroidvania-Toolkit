@@ -83,8 +83,12 @@ return {
     run_after_slide_when_held = true,-- Hold Slide through its finish to use run_speed.
     clear_run_on_release = true,     -- Releasing Slide returns to walking speed.
   },
-  accel = 18,
-  decel = 26,
+  accel = 18, -- Speed build-up per second: higher reaches walking speed sooner, lower builds it gradually. Player Size does not scale it.
+  -- How quickly a run reaches top speed once you reach walking speed. 0 uses Ground acceleration.
+  run_accel = 0,
+  decel = 26, -- Slowdown per second: higher stops sooner, lower coasts farther. Player Size does not scale it.
+  -- Unitless turn factor: higher reverses sooner, lower skids longer. Player Size does not scale it.
+  turn_brake_mult = 1,
   -- Horizontal recoil damping during hit-stun (per second). Lower values
   -- preserve more knockback; ordinary movement deceleration is independent.
   hurt_decel = 5,
@@ -93,6 +97,8 @@ return {
   -- hardware deadzone is configured once in game.project.
   walk_stop_deadzone = 0.20,
   air_accel_mult = 0.80,  -- Air control multiplier (1.0 = full control, 0.3 = floaty)
+  -- Unitless air braking factor: higher sheds speed sooner, lower carries momentum longer. Player Size does not scale it.
+  air_decel_mult = 1,
 
   -- WALK/RUN ANIMATION PACE (sprite and Spine)
   -- Playback follows horizontal movement relative to full walking speed.
@@ -122,18 +128,38 @@ return {
   gravity = -4200,
   jump_height = 448,
   extended_jump_height = 112,
+  -- "gravity_scale" pulls harder while rising after release. "cut" sheds upward speed once on release.
   variable_jump_mode = "gravity_scale",
-  jump_release_gravity_mult = 2.5,
-  fall_gravity_mult = 1.5,  -- Extra gravity when falling for snappier descent
-  jump_min_hold_time = 0.06,
+  jump_release_gravity_mult = 2.5, -- Stronger gravity mode: higher pulls down harder and makes short hops lower.
+  jump_cut_speed_mult = 0.4, -- Cut speed mode: the share of upward speed kept on release. 0 ends the rise, 1 keeps all speed.
+  -- How much higher a ground jump goes at full running speed. 0.2 is 20% higher. 0 turns the bonus off.
+  speed_jump_bonus = 0,
+  fall_gravity_mult = 1.5, -- Gravity factor during descent: higher makes the descent quicker, lower makes it floatier.
+  jump_min_hold_time = 0.06, -- Seconds before releasing Jump can shorten it: higher raises the shortest hop, lower lets it end sooner.
   coyote_time = 0.12,
-  jump_buffer = 0.12,
+  jump_buffer = 0.12, -- Seconds a Jump press can wait for a landing: higher accepts earlier presses, lower needs closer timing.
+  -- When a jump hits the corner of a ceiling with up to this many pixels of the body under it,
+  -- the player slips sideways past it instead of stopping. Overlaps under about a tenth of the
+  -- body's width already pass without it. The default is 24 px. 0 turns it off.
+  -- In pixels at Player Size 1.00, and follows Player Size even when movement scaling is off.
+  -- Very thin solids, a few pixels wide, are not guaranteed to block it.
+  -- Not used with the Spine add-on's bone-driven collision.
+  corner_correction_px = 24,
+  -- Speed in px/s at Player Size 1.00. A higher value starts the hang farther from the top of the jump.
+  -- A lower value narrows it, and 0 turns it off. Follows Player Size when movement scaling is enabled.
+  -- An older apex_threshold_vy in this file still works when this is 0 and does not follow Player Size.
+  apex_hang_speed = 0,
+  -- Unitless gravity factor near the top of a jump: higher shortens the hang, lower lengthens it. Player Size does not scale it.
+  -- Use at least 0.05. Zero can leave the player hanging indefinitely.
+  apex_gravity_mult = 1,
+  -- Gravity factor while holding Down during descent. Higher pulls down harder. Player Size does not scale it.
+  fast_fall_mult = 1,
+  -- Falling speed limit factor while holding Down during descent. 1 keeps the usual limit, 3 allows three times the speed.
+  fast_fall_max_mult = 1,
+  -- Falling cap in px/s at Player Size 1.00. Higher allows a faster fall up to the engine cap, lower slows it.
+  -- 0 uses the engine cap alone. Follows Player Size when movement scaling is enabled.
+  max_fall_speed_px = 0,
   air_jumps = 1,
-
-  -- INPUT BUFFERING
-  -- Stores button presses for this duration so they execute when available.
-  -- Prevents missed inputs during cooldowns/animations (standard for action games).
-  attack_buffer = 0.15,
 
   -- STATS
   max_health = 5,
@@ -193,7 +219,7 @@ return {
   slide = {
     enabled = true,
     speed = 3850,
-    duration = 0.35,
+    duration = 0.35, -- Seconds a slide lasts. Higher carries it longer, lower ends it sooner.
     -- Used only when abilities.lua has no slide_iframes ability; normally
     -- the Slide Invincibility unlock decides.
     iframes = false,
@@ -214,6 +240,8 @@ return {
     enabled = true, -- The Air Dash unlock decides availability at runtime.
     speed = 3150, -- Dash speed in base pixels per second.
     duration = 0.18, -- Seconds each air dash lasts.
+    -- Seconds after an air dash before another can start. Higher waits longer, lower allows it sooner. Player Size does not scale it.
+    cooldown = 0.20,
     max_air_dashes = 1, -- Base charges restored on landing, before the upgrade.
     directions = "eight", -- "eight" follows the stick; "horizontal" keeps legacy X-only movement.
     allow_down = true, -- Allow down and down-diagonal directions in eight mode.
@@ -269,10 +297,15 @@ return {
     -- Wall jump without wall climb (wall slide). Only used when the player has
     -- the wall_jump ability but not wall_climb.
     wall_jump = {
-      -- Max fall speed (base px/s, scaled by player_scale) while holding toward a wall.
+      -- Falling cap in base px/s while holding toward a wall. Higher allows faster slides, lower caps them sooner. 0 removes this cap.
+      -- Follows Player Size when movement scaling is enabled.
       slide_fall_speed = 350,
-      -- Seconds after leaving the wall during which a wall jump still works.
+      -- Seconds to jump after leaving a wall slide. Higher leaves more time, lower needs closer timing.
       slide_coyote_time = 0.12,
+      -- Horizontal kick in px/s on an ordinary wall jump. Higher pushes farther out, lower keeps you closer. Player Size does not scale it.
+      push_h = 1400,
+      -- Seconds of full steering away after a wall jump. 0 gives the player control immediately.
+      steer_lock = 0,
     },
     ledge_climb = {
       enabled = true,
@@ -332,8 +365,8 @@ return {
   glide = {
     enabled = true,
     require_jump_held = true,
-    gravity_mult = 0.22,
-    max_fall_speed = 1575,
+    gravity_mult = 0.22, -- Gravity factor when gliding. Higher gains falling speed faster, lower makes descent floatier.
+    max_fall_speed = 1575, -- Falling cap in base px/s when gliding, scaled with movement. Higher permits a faster fall, lower slows it. 0 removes this cap.
   },
 
   -- Ground Pound: in the air, hold Down and press Heavy Attack (or the

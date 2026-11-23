@@ -7,7 +7,8 @@ local Spawn = require "mvtk.enemies.enemy_spawn_service"
 
 local M = {}
 
-function M.execute(boss, pattern)
+function M.execute(boss, pattern, instance)
+    instance = C.instance(boss, pattern, instance)
     local summon = pattern.summon or {}
     local defaults = require("developer.config.runtime_settings").section("enemy_defaults", require "developer.config.enemy_defaults")
     local owner = "boss:" .. boss.boss_id

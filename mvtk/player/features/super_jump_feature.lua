@@ -29,7 +29,7 @@ function M.pre_physics(self, dt, input)
         return
     end
     if not self.grounded or taken_over(self) or self._attack or (self._combat and self._combat.current)
-        or self._block_grab or self._room_arrival or (self._backdash_t or 0) > 0 or (self._roll_t or 0) > 0
+        or self._block_grab or self._room_arrival or (self._backdash_t or 0) > 0
         or math.abs(input.move_x or 0) >= (cfg.still_threshold or 0.25)
         or not self._ability_can_use or not self._ability_can_use("super_jump") then
         clear_charge(self, state)
@@ -51,7 +51,11 @@ function M.post_physics(self)
     local interrupted = taken_over(self)
     local started = self._super_jump_started == true and not interrupted
     self._super_jump_started = nil
-    if self._super_jump_rising and (self.vy <= 0 or interrupted) then
+    -- Ordinary gravity ends the rise on a reference boundary. A contact or
+    -- takeover can still end it immediately after physics.
+    local grid = self._vertical_grid
+    local stopped = self.vy <= 0 and (not grid or grid.left == 0 or self.vy ~= grid.last_vy)
+    if self._super_jump_rising and (stopped or interrupted) then
         self._super_jump_rising = false
     end
     local rising = self._super_jump_rising == true

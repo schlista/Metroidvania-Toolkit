@@ -12,6 +12,7 @@ local peak = 0
 local WINDOW = 5
 local ACTOR_INTERVAL = 0.1
 local ACTOR_EXPIRY = 0.5
+local schedule_results
 
 local function prune(now)
     while window[1] and window[1].time <= now - WINDOW do table.remove(window, 1) end
@@ -91,17 +92,53 @@ local function enemy_probe(actor, id, pos)
     M.record_actor(id, pos, label, actor.health, actor.max_health)
 end
 
-local function boss_probe(id, pos, state, phase, hp, max_hp)
+local RESULT_LABELS = {
+    range = "out of range", height = "height", cooldown = "cooldown", conditions = "condition",
+    floor = "no floor",
+    not_engaged = "not engaged", sequence_wait = "sequence wait",
+    no_entries = "no attacks", no_usable_entries = "no usable attack",
+    arena_missing = "no arena bounds", arena_gap = "safe gap too wide", arena_anchor = "anchor too small",
+}
+
+local function observe_pick(actor, schedule, entry, status, reasons)
+    local height
+    for index, reason in pairs(reasons or {}) do
+        if type(index) == "number" and reason == "height" then height = true; break end
+    end
+    schedule_results[actor] = {schedule = schedule, attack = entry and entry.attack, status = status,
+        height = height, arena_rejection = reasons and reasons.arena_rejection}
+end
+
+local function boss_probe(id, pos, state, phase, hp, max_hp, actor)
     if not pos or hp <= 0 then actors[id] = nil; return end
     if not due(id, Time.gettime()) then return end
-    M.record_actor(id, pos, "boss " .. tostring(state) .. " / phase " .. tostring(phase), hp, max_hp)
+    local label = "boss " .. tostring(state) .. " / phase " .. tostring(phase)
+    if actor then
+        local schedule = actor._attack_schedule
+        local active = actor.state_machine and actor.state_machine.state_data
+        local attack = active and active.attack
+        local kind = active and active.pattern and active.pattern.type
+        local result = schedule_results[actor]
+        local choice = "waiting"
+        if result and result.schedule == schedule then
+            choice = result.attack and ("picked " .. result.attack) or (RESULT_LABELS[result.status] or "no usable attack")
+            if result.height and result.status ~= "height" then choice = choice .. " / height" end
+            if result.arena_rejection then choice = choice .. " / " .. RESULT_LABELS[result.arena_rejection] end
+        end
+        label = label .. "\nattack " .. (attack or "none") .. (kind and (" (" .. kind .. ")") or "")
+            .. "\nmoveset " .. (schedule and (schedule.moveset_name or "attacks list") or "waiting")
+            .. "\n" .. choice
+    end
+    M.record_actor(id, pos, label, hp, max_hp)
 end
 
 function M.set_labels(enabled)
     M.labels_enabled = enabled == true
     actors = {}
+    schedule_results = M.labels_enabled and setmetatable({}, {__mode = "k"}) or nil
     Util.actor_probe = M.labels_enabled and enemy_probe or nil
     BossManager.actor_probe = M.labels_enabled and boss_probe or nil
+    BossManager.schedule_probe = M.labels_enabled and observe_pick or nil
     M.enabled = M.labels_enabled or M.dps_enabled
 end
 

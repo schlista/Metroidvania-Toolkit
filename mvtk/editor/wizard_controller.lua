@@ -5,10 +5,15 @@ local M = {}
 local Session = {}
 Session.__index = Session
 
-function M.new(baseline, document, legacy)
-    document = Model.copy(Model.validate(document))
+local function combat_baseline(baseline)
+    local attacks = Model.get(baseline, "combat.attacks")
+    return attacks and {attacks=attacks}
+end
+
+function M.new(baseline, document, legacy, load_config)
+    document = Model.copy(Model.validate(document, combat_baseline(baseline)))
     return setmetatable({ baseline = Model.copy(baseline), original = document,
-        draft = Model.copy(document), legacy = Model.copy(legacy) }, Session)
+        draft = Model.copy(document), legacy = Model.copy(legacy), load_config = load_config }, Session)
 end
 
 function Session:values() return Model.controls(self.draft.overrides, self.baseline) end
@@ -16,13 +21,13 @@ function Session:values() return Model.controls(self.draft.overrides, self.basel
 function Session:set(key, value)
     assert(Model.fields[key], "Unknown creator setting: " .. tostring(key))
     self.draft = Model.from_controls({ [key] = value }, self.draft,
-        self.baseline.player or { units_version = self.draft.player_units or 1 })
+        self.baseline.player or { units_version = self.draft.player_units or 1 }, self.load_config)
     self.review = nil
 end
 
 function Session:preset(values)
     self.draft = Model.from_controls(values, self.draft,
-        self.baseline.player or { units_version = self.draft.player_units or 1 })
+        self.baseline.player or { units_version = self.draft.player_units or 1 }, self.load_config)
     self.review = nil
 end
 
@@ -108,7 +113,7 @@ function Session:review_legacy()
     local candidate = Model.copy(self.draft)
     candidate.published = true
     Model.merge(candidate.overrides, self.legacy)
-    Model.validate(candidate)
+    Model.validate(candidate, combat_baseline(self.baseline))
     local rows = {}
     diff(Model.merge(Model.copy(self.baseline), self.draft.overrides),
         Model.merge(Model.copy(self.baseline), candidate.overrides), "", rows)

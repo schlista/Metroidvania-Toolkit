@@ -47,6 +47,7 @@ function Champion:reset(actor, reason)
     actor.health = actor.max_health
     actor.stunned_t, actor.poise = 0, 0
     if actor.vel then actor.vel.x, actor.vel.y = 0, 0 end
+    require("mvtk.enemies.decision_clock").reset(actor)
     for i=#(actor.patterns or {}),1,-1 do
         if actor.patterns[i] == self.enrage_pattern then table.remove(actor.patterns, i) end
     end
@@ -54,7 +55,7 @@ function Champion:reset(actor, reason)
     self.state = "idle"
 end
 
-function Champion:update(actor, dt)
+function Champion:update(actor, dt, opening_position)
     if actor._dormant or actor._dying or actor.health <= 0 then return end
     local Rooms = require "mvtk.map.streaming.room_manager"
     if Rooms.get_current_room() ~= self.room_id then
@@ -65,7 +66,9 @@ function Champion:update(actor, dt)
     local player = require("mvtk.prefabs.prefab_utils").get_player_url()
     if not player or not go.exists(player) then return end
     local pos = go.get_world_position(player)
-    local origin = go.get_world_position()
+    -- The native callback reads the cached position from before movement.
+    -- On a frame containing several decisions, use each step's own opening.
+    local origin = opening_position or go.get_world_position()
     local dx, dy = pos.x-origin.x, pos.y-origin.y
     if self.range > 0 and dx*dx + dy*dy > self.range*self.range then return end
     local Settings = require "developer.config.runtime_settings"

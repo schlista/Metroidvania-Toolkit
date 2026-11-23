@@ -1,7 +1,7 @@
 -- Pure ceiling probe/clamp math. The caller supplies raycast_fn so this module
 -- can be tested outside Defold and the runtime adapter can reuse scratch vectors.
 
-local M = {}
+local M = { SHOULDER_FRACTION = 0.8 }
 
 function M.evaluate(opts)
     opts = opts or {}
@@ -26,7 +26,8 @@ function M.evaluate(opts)
     -- A compact fixture can sit wholly below the root. Starting in its live
     -- body avoids starting inside the ceiling (which Box2D raycasts ignore).
     local origin_y = pos_y + (bottom and (bottom + effective_head) * 0.5 or 0)
-    local samples = { pos_x - half_width * 0.8, pos_x, pos_x + half_width * 0.8 }
+    local shoulder = half_width * M.SHOULDER_FRACTION
+    local samples = { pos_x - shoulder, pos_x, pos_x + shoulder }
     local hits = {}
     local min_ceiling_y
 

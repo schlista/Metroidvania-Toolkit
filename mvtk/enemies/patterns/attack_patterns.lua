@@ -134,12 +134,13 @@ end
 
 function M.patrol_horizontal()
   local dir = 1
+  local Terrain = require "mvtk.enemies.patrol_terrain"
   return {
     update = function(self, dt)
-      if self._ledge_blocked_dir == dir then dir = -dir end
+      if self._ledge_blocked_dir == dir or Terrain.wall(self, "x", dir, dt) then dir = -dir end
       local patrol_distance = self.patrol_distance or self.patrol_width
       local span = patrol_distance and patrol_distance * 0.5 or self.patrol_width or 64
-      self.vel.x = dir * movement_speed(self, 80)
+      Terrain.request(self, "x", dir * movement_speed(self, 80))
       if self.pos.x > self.start_pos.x + span then dir = -1 elseif self.pos.x < self.start_pos.x - span then dir = 1 end
     end
   }
@@ -147,10 +148,12 @@ end
 
 function M.patrol_vertical()
   local dir = 1
+  local Terrain = require "mvtk.enemies.patrol_terrain"
   return {
     update = function(self, dt)
       local height = self.hover_height or self.patrol_height or 48
-      self.vel.y = dir * movement_speed(self, 80)
+      if Terrain.wall(self, "y", dir, dt) then dir = -dir end
+      Terrain.request(self, "y", dir * movement_speed(self, 80))
       if self.pos.y > self.start_pos.y + height then dir = -1 elseif self.pos.y < self.start_pos.y - height then dir = 1 end
     end
   }
@@ -213,6 +216,8 @@ end
 function M.ground_patrol_chase()
   local state = "patrol"
   local patrol_dir = 1
+  local patrol_origin
+  local Terrain = require "mvtk.enemies.patrol_terrain"
 
   local function set_state(self, next_state)
     state = next_state
@@ -254,20 +259,27 @@ function M.ground_patrol_chase()
           patrol_dir = patrol_dir < 0 and -1 or 1
         else
           local return_dir = dx > 0 and 1 or -1
-          if self._ledge_blocked_dir == return_dir then
+          local wall = Terrain.wall(self, "x", return_dir, dt)
+          if self._ledge_blocked_dir == return_dir or wall then
             set_state(self, "patrol")
             patrol_dir = -return_dir
+            if wall or math.abs(self.pos.x - (patrol_origin or start_x)) > span then
+              patrol_origin = self.pos.x
+            end
           else
-            self.vel.x = return_dir * movement_speed(self, 80)
+            Terrain.request(self, "x", return_dir * movement_speed(self, 80))
             self.vel.y = 0
             return
           end
         end
       end
 
-      if self._ledge_blocked_dir == patrol_dir then patrol_dir = -patrol_dir end
-      self.vel.x = patrol_dir * movement_speed(self, 80)
+      if self._ledge_blocked_dir == patrol_dir or Terrain.wall(self, "x", patrol_dir, dt) then
+        patrol_dir = -patrol_dir
+      end
+      Terrain.request(self, "x", patrol_dir * movement_speed(self, 80))
       self.vel.y = 0
+      start_x = patrol_origin or start_x
       if self.pos.x > start_x + span then
         patrol_dir = -1
       elseif self.pos.x < start_x - span then
@@ -281,6 +293,7 @@ end
 function M.ghost_float()
   local patrol_dir = 1
   local triggered = false
+  local Terrain = require "mvtk.enemies.patrol_terrain"
   return {
     update = function(self, dt)
       local detection_range = self._detection_range or 200
@@ -298,7 +311,9 @@ function M.ghost_float()
         triggered = true
       end
 
-      if triggered and target then
+      local chasing = triggered and target
+      local target_y
+      if chasing then
         -- Chase: float toward player
         if player_dist > 0 then
           local aim = Geometry.aim_vector(self.pos, target)
@@ -315,6 +330,7 @@ function M.ghost_float()
         -- once it is there, stop adding upward velocity instead of climbing
         -- forever toward the room ceiling.
         local rise_range = enemy_tuning(self, "rise_range", "evade_range") or 72
+        target_y = target.y
         if player_dist <= rise_range then
           local rise_height = enemy_tuning(self, "rise_height", "evade_height") or 64
           local rise_speed = scaled_movement_tuning(self, "rise_speed", "evade_speed")
@@ -322,15 +338,40 @@ function M.ghost_float()
           local desired_y = (target.y or 0) + rise_height
           local rise_delta = desired_y - (self.pos.y or 0)
           if rise_delta > 1 then
+            target_y = desired_y
             local safe_dt = math.max(tonumber(dt) or 0, 0.000001)
             self.vel.y = math.min(rise_speed, rise_delta / safe_dt)
           elseif math.abs(rise_delta) <= 1 then
             self.vel.y = 0
           end
         end
-      else
+      end
+
+      local blocked = self._ghost_room_block
+      if dt > 0 then
+        if blocked then
+          local edge = Terrain.room_edge(self, blocked.axis, blocked.direction)
+          local destination = chasing and (blocked.axis == "x" and target.x or target_y)
+          if not edge or not destination or (destination - edge) * blocked.direction <= 0 then blocked = nil end
+        end
+        if chasing and not blocked then
+          if Terrain.at_room_edge(self, "x", self.vel.x) then
+            local dir = self.vel.x > 0 and 1 or -1
+            blocked, patrol_dir = {axis = "x", direction = dir}, -dir
+          elseif math.abs(target.x - self.pos.x) <= 1
+              and Terrain.at_room_edge(self, "y", self.vel.y) then
+            -- An open horizontal pursuit can slide along the vertical edge.
+            local dir = self.vel.y > 0 and 1 or -1
+            blocked = {axis = "y", direction = dir}
+          end
+        end
+        self._ghost_room_block = blocked
+      end
+
+      if not chasing or blocked then
         -- Patrol: horizontal float with gentle sine bob
         local span = self.patrol_width or 64
+        if dt > 0 and Terrain.at_room_edge(self, "x", patrol_dir) then patrol_dir = -patrol_dir end
         self.vel.x = patrol_dir * speed * 0.6
         self.vel.y = math.sin((self.pos.x - self.start_pos.x) * 0.04) * speed * 0.3
 
@@ -363,12 +404,14 @@ function M.swoop_attack()
   local dart_vertical_speed = 0
 
   local function apply_swoop_velocity(self)
+    self._patrol_vx, self._patrol_vy = nil, nil
     self.vel.x = swoop_dir.x * swoop_speed
     self.vel.y = swoop_dir.y * swoop_speed
     face_direction(self, swoop_dir)
   end
 
   local function apply_dart_velocity(self, target)
+    self._patrol_vx, self._patrol_vy = nil, nil
     self.vel.x = dart_dir * dart_speed
     if target then
       local dy = (target.y or 0) - (self.pos.y or 0)
@@ -758,6 +801,7 @@ function M.dash_attack()
       -- Movement patterns run before attack patterns and may replace velocity
       -- every frame. Reapply the locked dash vector for its full duration.
       if dash_time > 0 then
+        self._patrol_vx = nil
         self.vel.x = dash_dir * dash_speed
         if self._grounded_movement then
           self.vel.y = 0
@@ -787,6 +831,7 @@ function M.dash_attack()
         dash_duration = dash_distance / dash_speed
       end
 
+      self._patrol_vx = nil
       self.vel.x = dash_dir * dash_speed
       if self._grounded_movement then
         self.vel.y = 0
@@ -819,6 +864,7 @@ function M.jump_attack()
             self.launch_ground_jump(self, movement_speed(self, 100) * 3)
           end
         else
+          self._patrol_vy = nil
           self.vel.y = movement_speed(self, 100) * 3
         end
         cd = 2.5
@@ -1028,12 +1074,18 @@ end
 
 function M.zigzag_move()
   local dir = 1
+  local Terrain = require "mvtk.enemies.patrol_terrain"
   return {
     update = function(self, dt)
-      if self._ledge_blocked_dir == dir then dir = -dir end
-      self.vel.x = dir * movement_speed(self, 80)
+      local wall = Terrain.wall(self, "x", dir, dt)
+      if self._ledge_blocked_dir == dir or wall then dir = -dir end
+      Terrain.request(self, "x", dir * movement_speed(self, 80))
       self.vel.y = math.sin(self.pos.x * 0.1) * 40
-      if math.abs(self.pos.x - self.start_pos.x) > 96 then dir = -dir end
+      self._patrol_sway_y = self.vel.y
+      local offset = self.pos.x - self.start_pos.x
+      -- Crossing the bound reverses outward travel. The next inward step
+      -- can still begin outside the span.
+      if not wall and offset * dir > 96 then dir = -dir end
     end
   }
 end
@@ -1075,6 +1127,7 @@ function M.charge_shoot()
         local direction = target.x < self.pos.x and -1 or 1
         local charge_speed = scaled_movement_tuning(self, "charge_speed")
           or (movement_speed(self, 100) * 3)
+        self._patrol_vx = nil
         self.vel.x = direction * charge_speed
         self.spawn_projectile(self, direction, projectile_speed(self, 300))
         cd = 2.0

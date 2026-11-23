@@ -97,10 +97,12 @@ function M.pre_physics(self, dt, input)
     for _, hook in ipairs(self._host.hooks.pre_physics) do hook(self, dt, input) end
 end
 
+-- A motion hook can also report that it ran ordinary player physics.
 function M.owns_motion(self, dt, input)
     if not self._host then return false end
     for _, hook in ipairs(self._host.hooks.owns_motion) do
-        if hook(self, dt, input) then return true end
+        local owned, ordinary_motion = hook(self, dt, input)
+        if owned then return true, ordinary_motion end
     end
     return false
 end

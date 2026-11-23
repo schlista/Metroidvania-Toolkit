@@ -54,6 +54,7 @@ local PlayerStats = require "mvtk.player.player_stats"
 local RunStats = require "mvtk.game.run_stats"
 local Countdown = require "mvtk.game.countdown"
 local StatusEffects = require "mvtk.combat.status_effects"
+local BossArena = require "mvtk.bosses.boss_arena"
 
 -- ============================================================================
 -- GAME STATES
@@ -399,7 +400,10 @@ function M.update(dt)
     PlayerStats.tick(dt, current_state == M.STATE.PLAYING and not Pause.get())
     RunStats.tick(dt, current_state == M.STATE.PLAYING and not Pause.get())
     Countdown.tick(dt, current_state == M.STATE.PLAYING and not Pause.get())
-    if current_state == M.STATE.PLAYING and not Pause.get() then StatusEffects.update(dt) end
+    if current_state == M.STATE.PLAYING and not Pause.get() then
+        StatusEffects.update(dt)
+        BossArena.update(dt)
+    end
     if current_state == M.STATE.LOADING and loading_started_at and not loading_warned then
         local now = (socket and socket.gettime and socket.gettime()) or os.clock()
         if (now - loading_started_at) >= LOAD_TIMEOUT_S then

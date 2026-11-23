@@ -46,10 +46,22 @@ end
 M.tabs = {
     { title = "Player", sections = {
         { title = "Size", fields = { "player_scale", "scale_movement" } },
-        { title = "Movement", fields = { "walk_speed", "run_speed", "jump_height", "gravity" } },
         { title = "Health and resources", fields = { "max_health", "max_energy", "max_stamina", "health_fragment_pieces", "energy_fragment_pieces" } },
         { title = "Healing", fields = { "healing_model", "heal_charges", "heal_amount",
             "heal_channel_amount", "heal_cost", "heal_channel_time" } },
+    } },
+    { title = "Movement feel", sections = {
+        { title = "Ground", fields = { "walk_speed", "run_speed", "ground_accel", "run_accel", "ground_decel", "turn_brake" } },
+        { title = "Jump", fields = { "jump_height", "speed_jump_bonus", "gravity", "jump_release_mode", "jump_release_gravity_mult",
+            "jump_cut_speed_mult", "jump_min_hold_time",
+            "coyote_time", "jump_buffer", "corner_correction", "air_jumps" } },
+        { title = "In the air", fields = { "air_accel_mult", "air_decel_mult", "apex_threshold", "apex_gravity_mult" } },
+        { title = "Falling", fields = { "fall_gravity_mult", "fast_fall_mult", "fast_fall_max_mult", "max_fall_speed" } },
+        { title = "Walls", fields = { "wall_slide_speed", "wall_jump_grace", "wall_jump_push", "steer_lock",
+            "wall_climb_speed", "wall_cling_fall_speed" } },
+        { title = "Dash and slide", fields = { "air_dash_speed", "air_dash_duration", "air_dash_cooldown", "air_dash_count",
+            "air_dash_directions", "air_dash_suspend_gravity", "air_dash_end_lift", "extra_air_dash_bonus", "slide_speed", "slide_duration" } },
+        { title = "Glide", fields = { "glide_gravity_mult", "glide_fall_speed" } },
     } },
     { title = "Player art", sections = {
         { title = "Source and frames", fields = { "art_source", "art_mode", "art_frame_width", "art_frame_height",
@@ -59,10 +71,6 @@ M.tabs = {
     } },
     { title = "Abilities", sections = ability_sections() },
     { title = "Advanced", sections = {
-        { title = "Movement and input", fields = { "air_accel_mult", "coyote_time", "attack_buffer" } },
-        { title = "Double Jump and Slide", fields = { "air_jumps", "slide_speed" } },
-        { title = "Air Dash", fields = { "air_dash_speed", "air_dash_count", "air_dash_directions", "air_dash_suspend_gravity", "extra_air_dash_bonus" } },
-        { title = "Wall Climb", fields = { "wall_climb_speed", "wall_cling_fall_speed" } },
         { title = "High Jump", fields = { "high_jump_height_mult" } },
         { title = "Super Jump", fields = { "super_jump_charge_time", "super_jump_height_mult" } },
         { title = "Blink", fields = { "blink_distance", "blink_chain_grace" } },

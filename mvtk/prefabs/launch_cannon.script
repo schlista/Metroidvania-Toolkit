@@ -2,6 +2,7 @@
 local PU = require "mvtk.prefabs.prefab_utils"
 local LaunchMath = require "mvtk.world.launch_math"
 local Pause = require "mvtk.core.pause"
+local Timers = require "mvtk.player.timers"
 
 go.property("cannon_id", "")
 go.property("room_id", "")
@@ -31,7 +32,7 @@ end
 
 function update(self, dt)
     if Pause.get() then return end
-    self._cooldown = math.max(0, self._cooldown - dt)
+    Timers.tick_window(self, "_cooldown", dt)
     if self._loaded then
         self._elapsed = self._elapsed + dt
         rotate(self.aim_mode == "sweep" and LaunchMath.sweep_angle(self.angle, self.sweep_range, self.sweep_speed, self._elapsed) or self.angle)
@@ -55,7 +56,8 @@ function on_message(self, message_id, message)
             fire_on=self.fire_on, auto_delay=self.auto_delay, speed=self.launch_speed,
             lock_t=self.control_lock_time, keep_momentum=self.keep_momentum, breaks_action=self.breaks_action})
     elseif message_id == hash("cannon_fired") and self._loaded then
-        self._loaded, self._cooldown = false, math.max(0, self.cooldown)
+        self._loaded = false
+        Timers.start_window(self, "_cooldown", math.max(0, self.cooldown))
         rotate(message.angle)
         if self.sound_id ~= "" and self.sound_id ~= "none" then require("mvtk.audio.audio").sfx(self.sound_id) end
     elseif message_id == hash("cannon_cancelled") then

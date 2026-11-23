@@ -9,6 +9,8 @@ local Presets = require "developer.tools.game_settings_presets"
 local Identity = require "developer.tools.project_identity"
 local Context = require "mvtk.editor.game_settings_context"
 local Number = require "mvtk.editor.settings_number"
+local Reach = require "mvtk.editor.movement_reach"
+local PlayerScale = require "mvtk.player.player_scale"
 local M = { TITLE = "Game Settings" }
 
 M.CONFIG = {
@@ -42,6 +44,14 @@ local function color_data(r, g, b, a)
     return { x = r, y = g, z = b, w = a }
 end
 
+local function reach_inputs(tiles, game)
+    local physics = game.physics
+    return {
+        tile_height = tiles.height or tiles.tile_height or tiles.size,
+        physics_fall_cap = type(physics) == "table" and physics.max_fall_speed or nil,
+    }
+end
+
 -- Each opening resolves the authored settings with its own disk dependency cache.
 function M.load(deps)
     local fresh = require("mvtk.editor.fresh_config").new({
@@ -56,8 +66,16 @@ function M.load(deps)
         end,
     })
     local runtime = fresh.require("developer.config.runtime_settings")
-    local session = Wizard.new(runtime.authored_snapshot(), runtime.project_document())
+    local session = Wizard.new(runtime.authored_snapshot(), runtime.project_document(), nil, fresh.require)
+    local saved = fresh.require("developer.config.creator_settings")
+    -- Save the converted attack timings without requiring a dummy field edit.
+    -- An untouched shipped project can also publish the new timing marker.
+    session.attack_recovery_save_pending = not saved.attack_recovery_version
+        and (session.original.attack_recovery_version ~= nil
+            or (saved.published == true and next(saved.overrides) == nil))
     session.identity = Identity.inspect(root_path(deps), {read=deps.read})
+    session.reach = reach_inputs(fresh.require("developer.config.tile_settings"),
+        fresh.require("developer.config.game_config"))
     return session
 end
 
@@ -107,10 +125,24 @@ function M.range_issue(ui, key, value)
     return message and { severity = ui.ISSUE_SEVERITY.ERROR, message = message } or false
 end
 
+local function stored_apex_zero(key, value, document)
+    return key == "apex_gravity_mult" and value == 0 and document
+        and Model.get(document.overrides, Model.fields[key].path) == 0
+end
+
 local function each_field(fn)
     for _, tab in ipairs(Layout.tabs) do
         for _, section in ipairs(tab.sections) do
             for _, key in ipairs(section.fields) do if Model.fields[key] then fn(key) end end
+        end
+    end
+end
+
+local movement_fields = {}
+for _, tab in ipairs(Layout.tabs) do
+    if tab.title == "Movement feel" then
+        for _, section in ipairs(tab.sections) do
+            for _, key in ipairs(section.fields) do movement_fields[key] = true end
         end
     end
 end
@@ -164,26 +196,36 @@ function M.unsaved_count(session, values, document, art_import)
             local was_set = Model.get(session.original.overrides, spec.path) ~= nil
             local is_set = Model.get(document.overrides, spec.path) ~= nil
             if was_set ~= is_set then extra = extra + 1 end
+        elseif movement_fields[key] and same(saved[key], draft[key]) then
+            -- Applying Toolkit default can clean up an explicit baseline value.
+            local function cleared(path)
+                return Model.get(session.original.overrides, path) ~= nil and Model.get(document.overrides, path) == nil
+            end
+            local reset = cleared(spec.path)
+            for _, path in ipairs(Model.mirrors[key] or {}) do reset = reset or cleared(path) end
+            if reset then extra = extra + 1 end
         end
     end)
     return count(draft, saved) + extra
 end
 
-function M.has_errors(values)
+function M.has_errors(values, document)
     local invalid = false
-    each_field(function(key) if problem(key, values[key]) then invalid = true end end)
+    each_field(function(key)
+        if not stored_apex_zero(key, values[key], document) and problem(key, values[key]) then invalid = true end
+    end)
     return invalid or next(Model.attack_issues(values)) ~= nil
 end
 
 -- Construct a separate session: failed saves and cancel confirmation must never
 -- consume the open window's draft. Reset goes through the session's reset API.
 function M.draft_session(session, values, skip_invalid, document, art_import)
-    local draft = Wizard.new(session.baseline, session.original)
+    local draft = Wizard.new(session.baseline, session.original, nil, session.load_config)
     draft.draft = Model.copy(document or session.draft)
     draft.identity, draft.project_name = session.identity, values.project_name or session.project_name
     if art_import ~= false then draft.art_import = art_import or session.art_import end
     if document then
-        assert(skip_invalid or not M.has_errors(values), "Correct the field errors before saving.")
+        assert(skip_invalid or not M.has_errors(values, document), "Correct the field errors before saving.")
         return draft
     end
     local before, defaults = session:values(), Model.controls({}, session.baseline)
@@ -219,14 +261,75 @@ function M.apply_preset(session, values, key, document)
     return out, draft.draft
 end
 
+local feel_metadata = { name = true, description = true, tuned_for = true }
+
+function M.apply_feel_template(session, values, key, document)
+    local template = Presets.feel[key]
+    if not template then return nil, nil, "Unknown feel template: " .. tostring(key) end
+    local changes = {}
+    for field, value in pairs(template) do
+        if not feel_metadata[field] then
+            if not movement_fields[field] then
+                return nil, nil, tostring(field) .. " is not a Movement feel field."
+            end
+            local issue = problem(field, value)
+            if issue then return nil, nil, field .. ": " .. issue end
+            changes[field] = value
+        end
+    end
+    local draft = M.draft_session(session, values, true, document)
+    for field in pairs(movement_fields) do draft:reset(field) end
+    if key ~= "default" then
+        local published = draft.draft.published
+        draft:preset(changes)
+        draft.draft.published = published
+    end
+    local out = initial_values(draft)
+    out.project_name = values.project_name
+    local invalid_attacks = next(Model.attack_issues(values)) ~= nil
+    each_field(function(field)
+        if not movement_fields[field]
+            and (problem(field, values[field]) or (Model.fields[field].attack_id and invalid_attacks)) then
+            out[field] = values[field]
+        end
+    end)
+    return out, draft.draft
+end
+
+local function reach_line(session, values, document)
+    local function invalid(key)
+        return not stored_apex_zero(key, values[key], document) and problem(key, values[key])
+    end
+    local correction = "Reach is unavailable until the highlighted field is corrected."
+    if invalid("player_scale") or invalid("scale_movement") then return correction end
+    local player = Model.merge(Model.copy(session.baseline.player or {}), document.overrides.player or {})
+    for key in pairs(movement_fields) do
+        if invalid(key) then return correction end
+        Model.put(player, Model.fields[key].path:sub(8), values[key])
+    end
+    player.player_scale, player.scale_movement = values.player_scale, values.scale_movement
+    local inputs = session.reach or reach_inputs(require("developer.config.tile_settings"),
+        require("developer.config.game_config"))
+    local result = Reach.measure(PlayerScale.apply(player), inputs.tile_height, inputs.physics_fall_cap)
+    if not result then return "Reach is unavailable with these settings." end
+    return string.format("Full jump %s px (%s tiles), short hop %s px (%s tiles), %s s in the air. "
+        .. "A jump covers %s px (%s tiles) at walking speed and %s px (%s tiles) at running speed.",
+        Number.fixed(result.full_height, 0), Number.fixed(result.full_tiles, 1),
+        Number.fixed(result.short_height, 0), Number.fixed(result.short_tiles, 1),
+        Number.fixed(result.air_time, 2), Number.fixed(result.walk_distance, 0), Number.fixed(result.walk_tiles, 1),
+        Number.fixed(result.run_distance, 0), Number.fixed(result.run_tiles, 1))
+end
+
 local function dependency(spec, values)
     for _, condition in ipairs(spec.applies_when or {}) do
         local key, expected = condition:match("^([^=]+)=(.+)$")
         key = key or condition
         local enabled = expected and tostring(values[key]) == expected or (not expected and values[key] == true)
         if not enabled then
-            local title = Model.fields[key] and Model.fields[key].title or pretty(key)
-            return false, expected and ("Available when " .. title .. " is " .. pretty(expected) .. ".")
+            local field = Model.fields[key]
+            local title = field and field.title or pretty(key)
+            local choice_label = expected and field and field.choice_labels and field.choice_labels[expected]
+            return false, expected and ("Available when " .. title .. " is " .. (choice_label or pretty(expected)) .. ".")
                 or ("Available when " .. title .. " is on.")
         end
     end
@@ -282,9 +385,16 @@ local function binding_issues(ui, session, values, config, issues)
     end
 end
 
-function M.field_issues(ui, session, values, context)
+function M.field_issues(ui, session, values, context, document)
     local issues = {}
-    each_field(function(key) issues[key] = M.range_issue(ui, key, values[key]) end)
+    each_field(function(key)
+        if stored_apex_zero(key, values[key], document) then
+            issues[key] = { severity = ui.ISSUE_SEVERITY.WARNING,
+                message = "A saved zero can leave the player hanging indefinitely. Enter 0.05 or higher to change it." }
+        else
+            issues[key] = M.range_issue(ui, key, values[key])
+        end
+    end)
     for key, message in pairs(Model.attack_issues(values)) do
         issues[key] = {severity=ui.ISSUE_SEVERITY.ERROR, message=message}
     end
@@ -303,7 +413,7 @@ function M.field_issues(ui, session, values, context)
         issues.ui_font_file = {severity=ui.ISSUE_SEVERITY.ERROR,
             message="UI font file is missing. Add its .ttf or .otf and licence to the project, then reopen Game Settings."}
     end
-    if context and context.ending and not M.has_errors(values) then
+    if context and context.ending and not M.has_errors(values, document) then
         local cfg = require("mvtk.game.endings").effective((session.baseline or {}).game_completion,
             ((session.draft or {}).overrides or {}).game_completion)
         each_field(function(key)
@@ -410,7 +520,12 @@ end
 
 local function section_view(ui, section, values, defaults, set, note, issues, result, session, document)
     local rows = {}
-    for _, key in ipairs(section.fields) do rows[#rows + 1] = row(ui, key, values, defaults, set, issues, result, session, document) end
+    for _, key in ipairs(section.fields) do
+        local spec = specification(key)
+        if not spec.hide_when_inapplicable or dependency(spec, values) then
+            rows[#rows + 1] = row(ui, key, values, defaults, set, issues, result, session, document)
+        end
+    end
     return ui.vertical({ spacing = ui.SPACING.SMALL, children = {
         ui.heading({ text = section.title, style = ui.HEADING_STYLE.H4 }),
         note and ui.paragraph({ text = note, color = ui.COLOR.HINT }) or false,
@@ -429,12 +544,15 @@ function M.component(ui)
         local values, set_values = ui.use_state(starting_values, props.session, props.values)
         local document, set_document = ui.use_state(Model.copy, props.document or props.session.draft)
         local preset, set_preset = ui.use_state("current")
+        local feel, set_feel = ui.use_state(Presets.feel_order[1])
+        local applied_feel, set_applied_feel = ui.use_state(Presets.feel_order[1])
+        local feel_message, set_feel_message = ui.use_state(false)
         local pending, set_pending = ui.use_state(props.art_import or props.session.art_import or false)
         local art_notice, set_art_notice = ui.use_state(false)
         local attack_id, set_attack_id = ui.use_state(Model.attack_sections[1].id)
         local attack_edits, set_attack_edits = ui.use_state(props.attack_edits or false)
         local function draft_copy()
-            local draft = Wizard.new(props.session.baseline, props.session.original)
+            local draft = Wizard.new(props.session.baseline, props.session.original, nil, props.session.load_config)
             draft.draft = Model.copy(document)
             draft.identity = props.session.identity
             draft.project_name = values.project_name
@@ -478,8 +596,8 @@ function M.component(ui)
         local defaults = Model.controls({}, props.session.baseline)
         defaults.project_name = props.session.identity and props.session.identity.title or values.project_name
         local edits = M.unsaved_count(props.session, values, document, pending)
-        local issues = M.field_issues(ui, props.session, values, props.context)
-        local can_save = edits > 0 and not invalid_issues(ui, issues)
+        local issues = M.field_issues(ui, props.session, values, props.context, document)
+        local can_save = (edits > 0 or props.session.attack_recovery_save_pending == true) and not invalid_issues(ui, issues)
         local function result(action, key)
             return { action=action, key=key, values=values, document=document, art_import=pending, attack_edits=attack_edits }
         end
@@ -491,9 +609,13 @@ function M.component(ui)
                 for _, section in ipairs(tab.sections) do
                     ids[#ids + 1], labels[section.id] = section.id, section.title
                 end
-                sections[#sections + 1] = ui.paragraph({text="Tune each attack independently. Sounds, sprite offsets, Spine bones, reaction types and parryable flags remain in developer/config/combat_config.lua. Hover for help; blue names differ from defaults and x resets a row."})
-                sections[#sections + 1] = ui.select_box({value=attack_id, options=ids,
-                    to_string=function(id) return labels[id] end, on_value_changed=set_attack_id})
+                sections[#sections + 1] = ui.paragraph({text="Every attack in this list is in the game at the same time. Choose one to see and change its settings; choosing it changes nothing in the game, and nothing needs saving until a value changes. Sounds, sprite offsets, Spine bones, reaction types and parryable flags remain in developer/config/combat_config.lua. Hover for help; blue names differ from defaults and x resets a row."})
+                -- A bare list read as a choice of the player's attack; the label says it only selects what is shown.
+                sections[#sections + 1] = ui.horizontal({ spacing = ui.SPACING.SMALL, children = {
+                    ui.label({ text = "Attack to edit", alignment = ui.ALIGNMENT.LEFT }),
+                    ui.select_box({value=attack_id, options=ids,
+                        to_string=function(id) return labels[id] end, on_value_changed=set_attack_id}),
+                } })
                 local messages, seen = {}, {}
                 for _, message in pairs(Model.attack_issues(values)) do
                     if not seen[message] then messages[#messages + 1], seen[message] = message, true end
@@ -505,17 +627,48 @@ function M.component(ui)
             end
             if index == 1 then
                 sections[#sections + 1] = ui.horizontal({ spacing = ui.SPACING.SMALL, children = {
-                    ui.label({ text = "Preset", alignment = ui.ALIGNMENT.LEFT }),
+                    ui.label({ text = "Starter preset", alignment = ui.ALIGNMENT.LEFT }),
                     ui.select_box({ value = preset, options = Presets.order, to_string = pretty,
                         on_value_changed = set_preset }),
-                    ui.button({ text = "Apply preset", on_pressed = function()
+                    ui.button({ text = "Apply starter preset", on_pressed = function()
                         local next_values, next_document = M.apply_preset(props.session, values, preset, document)
                         set_document(next_document)
                         set_values(next_values)
+                        set_applied_feel(false)
                         if preset == "current" then set_attack_edits(false) end
                         if pending then set_pending(false); set_art_notice("Preset applied. Import and preview again to use the new art.") end
                     end }),
                 } })
+            end
+            if tab.title == "Movement feel" then
+                local template = Presets.feel[feel]
+                sections[#sections + 1] = ui.horizontal({ spacing = ui.SPACING.SMALL, children = {
+                    ui.label({ text = "Feel template", alignment = ui.ALIGNMENT.LEFT }),
+                    ui.select_box({ value = feel, options = Presets.feel_order,
+                        to_string = function(id) return Presets.feel[id].name end,
+                        on_value_changed = function(id) set_feel(id); set_feel_message(false) end }),
+                    ui.button({ text = "Apply template", on_pressed = function()
+                        local next_values, next_document, message =
+                            M.apply_feel_template(props.session, values, feel, document)
+                        set_feel_message(message or false)
+                        if next_values then
+                            set_document(next_document)
+                            set_values(next_values)
+                            set_applied_feel(feel)
+                        end
+                    end }),
+                } })
+                local tuned_for = #template.tuned_for > 0 and table.concat(template.tuned_for, ", ") or "Any ability set"
+                sections[#sections + 1] = ui.paragraph({ text = template.description .. "\nTuned for: " .. tuned_for })
+                if feel_message then
+                    sections[#sections + 1] = ui.paragraph({ text = feel_message, color = ui.COLOR.ERROR })
+                end
+                local reach = reach_line(props.session, values, document)
+                if feel ~= applied_feel then
+                    local preview, preview_document = M.apply_feel_template(props.session, values, feel, document)
+                    if preview then reach = reach .. "\nThis template: " .. reach_line(props.session, preview, preview_document) end
+                end
+                sections[#sections + 1] = ui.paragraph({ text = reach })
             end
             for section_index, section in ipairs(tab.sections) do
                 local note = tab.title == "Abilities" and section_index == 1
@@ -526,7 +679,7 @@ function M.component(ui)
             end
             if tab.title == "Player art" then
                 sections[#sections + 1] = ui.dialog_button({text="Import and preview…",
-                    enabled=not M.has_errors(values), result=result("import")})
+                    enabled=not M.has_errors(values, document), result=result("import")})
                 sections[#sections + 1] = ui.paragraph({text=art_notice or (pending
                     and "Art is ready to save with the settings." or "Import and preview before using new player art."), color=ui.COLOR.HINT})
             elseif tab.title == "Movement test" or tab.title == "Camera" then
@@ -534,7 +687,7 @@ function M.component(ui)
                 local course = tab.title == "Movement test"
                 sections[#sections + 1] = ui.dialog_button({
                     text=supported and (course and "Launch test course" or "Launch room preview") or "Previews need Windows for now",
-                    enabled=supported and not M.has_errors(values),
+                    enabled=supported and not M.has_errors(values, document),
                     result=result(course and "preview_course" or "preview_rooms")})
             elseif tab.title == "Ending" then
                 sections[#sections + 1] = ui.dialog_button({text="Preview ending…", result=result("ending_preview")})
@@ -1008,7 +1161,7 @@ function M.run(deps)
                 local draft = M.draft_session(session,values,true,document,pending)
                 local prepared = (deps.ending_preview or M.ending_preview)(deps,draft)
                 prepared.issues = {}
-                local issues = M.field_issues(ui,session,values,context)
+                local issues = M.field_issues(ui,session,values,context,document)
                 each_field(function(key)
                     if key:match("^ending_") and issues[key] then prepared.issues[#prepared.issues+1] = issues[key] end
                 end)
@@ -1027,7 +1180,7 @@ function M.run(deps)
             local saved_session
             local ok, saved = pcall(function()
                 saved_session = M.draft_session(session,values,false,document,pending)
-                assert(not invalid_issues(ui,M.field_issues(ui,session,values,context)),"Correct the field errors before saving.")
+                assert(not invalid_issues(ui,M.field_issues(ui,session,values,context,document)),"Correct the field errors before saving.")
                 return save(deps,saved_session)
             end)
             if not ok or not saved or not saved.ok then

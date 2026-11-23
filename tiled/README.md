@@ -31,10 +31,11 @@ exporting to rebuild rooms at the matching scale.
 
 The generated **[template property reference](templates/README.html)** mirrors every live `.tx` default and property. `templates/README.md` is the paired generated inventory used by maintainers and validation tools.
 
-Most templates keep their identity selector and required ID at the top level,
-then place related tuning inside one-level collapsible groups. Existing maps can
-continue to export with legacy flat overrides. Newly placed templates already
-include the grouped properties; no upgrade step is needed.
+Most templates keep their identity selector and required ID at the top level
+and place related tuning inside collapsible groups. Each placed object bakes
+into a gameobject in the Defold room collection. Save a property edit on a
+**Boss**, **Boss Phase** or **Boss Arena** and choose **Build** to try it.
+Export the room again and run **Prepare & Check** to use the Tiled values.
 
 Do not infer creator support from compatibility code elsewhere in the repository. A gameplay object is in the toolkit's public surface only when its `.tx` template appears here and in the generated catalog.
 

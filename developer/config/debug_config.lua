@@ -84,6 +84,11 @@ local Debug = {
         disable_combat_fx = false,  -- Suppress animation/enemy hit visual-FX hooks
     },
     bosses = {
+        -- Draw boss attacks tested by position: swings, slams, zones, beams,
+        -- waves and landings. For shots and placed hazards, use F2: Physics.
+        shapes = false,
+        shape_color = {1, 0.35, 0.15, 1}, -- Outline of the attack in RGBA (0 to 1).
+        player_body_color = {0.25, 0.9, 1, 1}, -- Outline of the player body in RGBA (0 to 1).
         manager = false,  -- Boss state machine
         phases = false,  -- Boss stage transitions
         attacks = false,  -- Attack pattern execution

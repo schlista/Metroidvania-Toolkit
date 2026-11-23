@@ -1,6 +1,7 @@
 -- Edit known geometry inside creator-owned resources, preserving all references.
 -- Unsupported/ambiguous shapes fail in staging, before any project writes.
 local Text = require "mvtk.editor.resource_text"
+local PlayerScale = require "mvtk.player.player_scale"
 local M = {}
 
 function M.patch(kind, content, old_scale, player)
@@ -62,12 +63,11 @@ function M.patch(kind, content, old_scale, player)
                 -- Input is the standing box, never an already-shrunk compact box.
                 -- Lower only its top by D: half-height and centre each lose D/2.
                 local height = player.collider_half_height * (player.player_scale or 1)
-                local reduction = height * math.max(0, math.min(0.9,
-                    (player.compact_form or {}).height_reduction_ratio or 0.45))
-                Text.replace(doc, data[2], height - reduction * 0.5)
                 local position = Text.one(shapes[1].node, "position")
                 local y = position and Text.one(position.node, "y")
-                local center = (y and y.value or 0) * ratio - reduction * 0.5
+                local compact_height, center = PlayerScale.compact_hurtbox(
+                    height, (y and y.value or 0) * ratio, (player.compact_form or {}).height_reduction_ratio)
+                Text.replace(doc, data[2], compact_height)
                 if y then Text.replace(doc, y, center)
                 elseif position then Text.insert(doc, position.node, "y: " .. Text.format_number(center))
                 else Text.insert(doc, shapes[1].node, "position { y: " .. Text.format_number(center) .. " }") end

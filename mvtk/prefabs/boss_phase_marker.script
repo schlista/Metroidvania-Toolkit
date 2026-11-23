@@ -1,7 +1,9 @@
 local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+local Registration = require "mvtk.bosses.placed_registration"
 
 go.property("registration_id", "")
 go.property("object_id", 0)
+go.property("boss_properties_baked", false)
 go.property("phase_id", "")
 go.property("boss_id", "")
 go.property("boss_type", "")
@@ -12,8 +14,11 @@ go.property("health_min", -1)
 go.property("partner_defeated", false)
 go.property("health_max", -1)
 go.property("attacks", "")
-go.property("attack_interval_min", 2)
-go.property("attack_interval_max", 4)
+go.property("moveset", "none")
+go.property("telegraph_scale", -1)
+go.property("cooldown_scale", -1)
+go.property("attack_interval_min", -1)
+go.property("attack_interval_max", -1)
 -- Optional phase-local movement and charge overrides. Negative values inherit
 -- from the boss object, preset, or selected attack pattern.
 go.property("chase_speed", -1)
@@ -24,28 +29,31 @@ go.property("charge_duration", -1)
 go.property("charge_cooldown", -1)
 go.property("charge_recovery", -1)
 go.property("behavior", "")
-go.property("speed_multiplier", 1)
-go.property("damage_multiplier", 1)
-go.property("stagger_immune", false)
+go.property("speed_multiplier", -1)
+go.property("damage_multiplier", -1)
+-- Blank inherits; enter true or false for a phase-local override.
+go.property("stagger_immune", "")
 go.property("transition_type", "")
 go.property("transition_duration", 0)
 go.property("transition_iframes", 0)
 go.property("transition_animation", "")
 go.property("transition_camera_intensity", 0)
 go.property("transition_camera_duration", 0)
-go.property("transition_flash", false)
-go.property("transition_arena_darkness", false)
+go.property("transition_flash", "")
+go.property("transition_arena_darkness", "")
 go.property("transition_spawn_hazards", "")
 go.property("transition_teleport_to", "")
 go.property("transition_new_music", "")
 go.property("room_id", "")
 -- Movement profile (see mvtk.bosses.movement_strategies)
 go.property("movement_profile", "")
-go.property("facing_lock", false)
+go.property("facing_lock", "")
 go.property("hover_height", 0)
 go.property("jump_height", 0)
 go.property("jump_speed", 0)
 go.property("leash_radius", 0)
+go.property("teleport_interval", 0)
+go.property("teleport_anchors", "")
 go.property("attack_range", 0)
 
 local HASH_FIELDS = {
@@ -129,7 +137,14 @@ local function build_properties(self)
         props[field] = Proxy.number(self[field], NUMBER_DEFAULTS[field] or 0)
     end
     for _, field in ipairs(BOOL_FIELDS) do
-        props[field] = Proxy.bool(self[field], false)
+        props[field] = Proxy.bool(self[field], nil)
+    end
+    if self.boss_properties_baked then
+        props.room_id, props.object_id = self.room_id, self.object_id
+        for _, field in ipairs({"attack_interval_min", "attack_interval_max", "speed_multiplier", "damage_multiplier"}) do
+            if props[field] < 0 then props[field] = nil end
+        end
+        return props
     end
     props = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
     return props
@@ -154,7 +169,7 @@ function init(self)
     props.boss_preset = boss_preset or ""
     props.boss_type = boss_preset or props.boss_type or ""
 
-    Proxy.post_to_main("register_boss_phase", {
+    local payload = {
         id = phase_id,
         boss_id = props.boss_id,
         boss_preset = props.boss_preset,
@@ -165,6 +180,12 @@ function init(self)
         health_min = props.health_min,
         health_max = props.health_max,
         attacks = props.attacks,
+        -- Read the typed component overrides so edits in Defold reach the boss.
+        moveset = self.moveset,
+        telegraph_scale = self.telegraph_scale,
+        cooldown_scale = self.cooldown_scale,
+        teleport_interval = self.teleport_interval,
+        teleport_anchors = self.teleport_anchors,
         attack_interval_min = props.attack_interval_min,
         attack_interval_max = props.attack_interval_max,
         chase_speed = props.chase_speed,
@@ -197,5 +218,15 @@ function init(self)
         jump_speed = props.jump_speed,
         leash_radius = props.leash_radius,
         attack_range = props.attack_range,
-    })
+    }
+    if self.boss_properties_baked then
+        payload.from_baked_marker = true
+        Registration.post(self, "register_boss_phase", payload)
+    else
+        Proxy.post_to_main("register_boss_phase", payload)
+    end
+end
+
+function final(self)
+    Registration.cancel(self)
 end

@@ -366,7 +366,12 @@ local function init_tables(opts)
             end
         end
 
-        ability_cooldowns[ability_id] = (override and override.current_cooldown) and math.max(0, override.current_cooldown) or 0
+        local cooldown = (override and override.current_cooldown) and math.max(0, override.current_cooldown) or 0
+        if cooldown > 0 then
+            require("mvtk.player.timers").start_combat_window(ability_cooldowns, ability_id, cooldown)
+        else
+            ability_cooldowns[ability_id] = 0
+        end
     end
 
     local ability_count = 0
@@ -497,7 +502,7 @@ function M.use_ability(ability_id)
     ensure_init()
     if not M.can_use_ability(ability_id) then return false end
     local def = ABILITIES[ability_id]
-    ability_cooldowns[ability_id] = def.cooldown or 0
+    require("mvtk.player.timers").start_combat_window(ability_cooldowns, ability_id, def.cooldown or 0)
     if not M.cost_waived() and M.stamina_enabled() then
         stamina = Util.clamp(stamina - (def.stamina_cost or 0), 0, max_stamina)
     end
@@ -564,9 +569,10 @@ end
 function M.update(dt)
     ensure_init()
     if dt and dt > 0 then
+        local timers = require "mvtk.player.timers"
         for ability_id, cooldown in pairs(ability_cooldowns) do
-            if cooldown > 0 then
-                ability_cooldowns[ability_id] = math.max(0, cooldown - dt)
+            if type(cooldown) == "number" and cooldown > 0 then
+                timers.tick_combat_window(ability_cooldowns, ability_id, dt)
             end
         end
         if stamina < max_stamina then
@@ -664,7 +670,8 @@ function M.load_save_data(save_data)
                     print(string.format("[ABILITY_MANAGER] %s is start-unlocked in ability_defaults.lua; overriding saved lock", ability_id))
                     state.unlocked = true
                 end
-                ability_cooldowns[ability_id] = math.max(0, tonumber(saved_state.current_cooldown) or 0)
+                require("mvtk.player.timers").start_combat_window(ability_cooldowns, ability_id,
+                    math.max(0, tonumber(saved_state.current_cooldown) or 0))
 
                 -- Log key abilities
                 for _, key_id in ipairs(key_abilities) do

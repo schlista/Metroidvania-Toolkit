@@ -21,5 +21,18 @@
 -- and drops. With skin, enemy_type supplies the archetype. max_active and
 -- drops inherit boss_defaults.summon_max_active (4) and summon_drops (false).
 -- Summons use the shared enemy collection; no per-pattern factory is read.
+-- An arena hazard pulse switches on Hazards already placed in Tiled.
+-- hazard_pulse.hazard_ids lists their Hazard IDs. Omit it to pulse the whole arena.
+-- hazard_pulse.warn_time is the harmless blink. hazard_pulse.duration is the
+-- dangerous time after the blink. Both times inherit boss_defaults.lua.
+-- Set a linked Hazard's Active phases to "none" to make it pulse-only.
+-- A pulse attack can turn it on, as can a rage or shield phase change whose
+-- Boss Phase > Transition effects > Spawn hazards matches its type.
+-- A melee followup_strikes list gives each later hit a delay from the first
+-- hit, telegraph_time, active_time and damage. Optional range and animation
+-- override the opening swing. Start each tell before its hit.
+-- A beam with beam.track_time warns while aiming at the player at up to
+-- beam.tracking_speed degrees per second. It holds still for beam.lock_time
+-- (or the boss_defaults setting) before becoming dangerous.
 return {}
 

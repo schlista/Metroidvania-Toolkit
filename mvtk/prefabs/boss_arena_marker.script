@@ -1,4 +1,5 @@
 local Proxy = require "mvtk.prefabs.tiled_proxy_util"
+local Registration = require "mvtk.bosses.placed_registration"
 local Util = require "mvtk.core.util"
 
 local BASE_MARKER_WIDTH = 128
@@ -6,6 +7,7 @@ local BASE_MARKER_HEIGHT = 128
 
 go.property("registration_id", "")
 go.property("object_id", 0)
+go.property("boss_properties_baked", false)
 go.property("arena_id", "")
 go.property("shared_health", false)
 go.property("group_name", "")
@@ -55,6 +57,9 @@ local AUTHORED_SCHEMA = {
 }
 
 local function resolve_zone_dimensions(self)
+    if self.boss_properties_baked then
+        return self.zone_width, self.zone_height
+    end
     local scale = go.get_scale()
     local scale_x = math.abs(tonumber(scale.x) or 1)
     local scale_y = math.abs(tonumber(scale.y) or 1)
@@ -98,7 +103,9 @@ local function build_properties(self, room_id)
         zone_width = zone_width,
         zone_height = zone_height,
     }
-    props = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
+    if not self.boss_properties_baked then
+        props = Proxy.overlay_authored(self, props, AUTHORED_SCHEMA)
+    end
     if props.arena_id == "" then
         props.arena_id = room_id ~= "" and ("arena_" .. room_id) or Proxy.registration_id(self, "boss_arena")
     end
@@ -170,7 +177,7 @@ function init(self)
 
     setup_arena(props, room_id, pos)
 
-    Proxy.post_to_main("register_camera_zone", {
+    local camera = {
         id = props.arena_id ~= "" and props.arena_id or Proxy.registration_id(self, "boss_camera"),
         position = zone_position,
         width = props.zone_width,
@@ -180,9 +187,9 @@ function init(self)
         arena_auto_fit = props.camera_lock,
         fit_padding = 0,
         priority = props.camera_priority,
-    })
+    }
 
-    Proxy.post_to_main("register_arena_lock", {
+    local lock = {
         id = Proxy.registration_id(self, props.arena_id),
         arena_id = props.arena_id,
         position = zone_position,
@@ -195,7 +202,18 @@ function init(self)
         boss_preset = props.boss_preset,
         boss_type = props.boss_type,
         charge_edge_padding = props.charge_edge_padding,
-        is_boss_arena = true,
+        is_boss_arena = props.is_boss_arena,
         properties = props,
-    })
+    }
+    if self.boss_properties_baked then
+        Registration.post(self, "register_camera_zone", camera)
+        Registration.post(self, "register_arena_lock", lock)
+    else
+        Proxy.post_to_main("register_camera_zone", camera)
+        Proxy.post_to_main("register_arena_lock", lock)
+    end
+end
+
+function final(self)
+    Registration.cancel(self)
 end

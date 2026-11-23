@@ -178,7 +178,7 @@ function M.do_potion(self)
     end
   end
 
-  self._cd_potion = math.max(cooldown, 0)
+  require("mvtk.player.timers").start_combat_window(self, "_cd_potion", math.max(cooldown, 0))
 
   if Inventory.count then
     local remaining = Inventory.count(consumed_id)

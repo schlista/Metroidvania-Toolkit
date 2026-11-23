@@ -15,7 +15,7 @@
 -- developer/config/boss_defaults.lua — do not add magic numbers here.
 --
 -- Adding a new attack type:
---   1. Create mvtk/bosses/boss_attacks/<type>.lua exporting M.execute(boss, pattern).
+--   1. Create mvtk/bosses/boss_attacks/<type>.lua exporting M.execute(boss, pattern, instance).
 --   2. Import it below and add it to MODULES.
 --   3. Add the entry to M._dispatch.
 --
@@ -30,6 +30,7 @@ local Summon        = require "mvtk.bosses.boss_attacks.summon"
 local Beam          = require "mvtk.bosses.boss_attacks.beam"
 local Charge        = require "mvtk.bosses.boss_attacks.charge"
 local Hazard        = require "mvtk.bosses.boss_attacks.hazard"
+local HazardPulse   = require "mvtk.bosses.boss_attacks.hazard_pulse"
 local Combo         = require "mvtk.bosses.boss_attacks.combo"
 local Special       = require "mvtk.bosses.boss_attacks.special"
 local Grab          = require "mvtk.bosses.boss_attacks.grab"
@@ -40,6 +41,15 @@ local ParryWindow   = require "mvtk.bosses.boss_attacks.parry_window"
 local Environmental = require "mvtk.bosses.boss_attacks.environmental"
 local Mine          = require "mvtk.bosses.boss_attacks.mine"
 local Wave          = require "mvtk.bosses.boss_attacks.wave"
+local Zone          = require "mvtk.bosses.boss_attacks.zone"
+local GroundWave    = require "mvtk.bosses.boss_attacks.ground_wave"
+local Sweep         = require "mvtk.bosses.boss_attacks.sweep"
+local Rain          = require "mvtk.bosses.boss_attacks.rain"
+local Ring          = require "mvtk.bosses.boss_attacks.ring"
+local Leap          = require "mvtk.bosses.boss_attacks.leap"
+local Dive          = require "mvtk.bosses.boss_attacks.dive"
+local Reposition    = require "mvtk.bosses.boss_attacks.reposition"
+local Telegraph     = require "mvtk.bosses.boss_telegraph"
 
 local M = {}
 
@@ -52,6 +62,7 @@ M.execute_summon        = Summon.execute
 M.execute_beam          = Beam.execute
 M.execute_charge        = Charge.execute
 M.execute_hazard        = Hazard.execute
+M.execute_hazard_pulse  = HazardPulse.execute
 M.execute_combo         = Combo.execute
 M.execute_special       = Special.execute
 M.execute_grab          = Grab.execute
@@ -62,6 +73,14 @@ M.execute_parry_window  = ParryWindow.execute
 M.execute_environmental = Environmental.execute
 M.execute_mine          = Mine.execute
 M.execute_wave          = Wave.execute
+M.execute_zone          = Zone.execute
+M.execute_ground_wave   = GroundWave.execute
+M.execute_sweep         = Sweep.execute
+M.execute_rain          = Rain.execute
+M.execute_ring          = Ring.execute
+M.execute_leap          = Leap.execute
+M.execute_dive          = Dive.execute
+M.execute_reposition    = Reposition.execute
 
 -- Pattern.type -> execute_* function. Keep entries in lowercase to match
 -- pattern.type values produced by `developer/config/boss_*.lua` and the
@@ -79,8 +98,17 @@ M._dispatch = {
     shield        = M.execute_shield,
     parry_window  = M.execute_parry_window,
     environmental = M.execute_environmental,
+    hazard_pulse  = M.execute_hazard_pulse,
     mine          = M.execute_mine,
     wave          = M.execute_wave,
+    zone          = M.execute_zone,
+    ground_wave   = M.execute_ground_wave,
+    sweep         = M.execute_sweep,
+    rain          = M.execute_rain,
+    ring          = M.execute_ring,
+    leap          = M.execute_leap,
+    dive          = M.execute_dive,
+    reposition    = M.execute_reposition,
     -- Legacy aliases routed through execute_special for back-compat.
     special       = M.execute_special,
     charge        = M.execute_special,
@@ -88,60 +116,47 @@ M._dispatch = {
     combo         = M.execute_special,
 }
 
--- Stateful attacks are advanced by the boss state machine after execute().
--- Most attacks are fire-and-forget and therefore need no update/cancel hook.
-M._updates = {
-    charge = Charge.update,
-}
-
-M._active_checks = {
-    charge = Charge.is_active,
-}
-
-M._cancellers = {
-    charge = Charge.cancel,
-}
-
 local function execute_pattern(boss, pattern, opts)
     opts = opts or {}
-    if not boss or not pattern then
+    if not boss or not pattern or (boss.boss_data and boss.boss_data.defeated) then
         return
     end
 
-    if opts.play_animation ~= false then
-        C.play_pattern_animation(boss, pattern)
+    local fn = M._dispatch[pattern.type]
+    if not fn then return end
+    local instance = C.instance(boss, pattern, opts.instance)
+    instance._defer = opts.defer_timers == true
+
+    local function launch(active)
+        if opts.play_animation ~= false then
+            C.play_pattern_animation(boss, pattern)
+        end
+        fn(boss, pattern, active)
     end
 
-    local fn = M._dispatch[pattern.type]
-    if fn then
-        return fn(boss, pattern)
+    local warning_time = opts.warn and pattern.telegraph_time or 0
+    if warning_time > 0 then
+        local warning = Telegraph.begin(boss, pattern, warning_time, true)
+        local launched = false
+        instance.interruptible = true
+        instance:on_cancel(function() Telegraph.cancel(warning) end)
+        instance:after(warning_time, function(active)
+            launched = true
+            active:on_cancel(nil)
+            Telegraph.with_child_warning(warning, launch, active)
+        end)
+        instance:each_frame(function()
+            if launched then return false end
+            Telegraph.refresh(boss, warning)
+        end, warning_time)
+    else
+        launch(instance)
     end
+    instance:finish()
+    return instance
 end
 
 M.execute_pattern = execute_pattern
-
-function M.update_pattern(boss, pattern, dt)
-    if not (boss and pattern) then return false end
-    local fn = M._updates[pattern.type]
-    if fn then
-        return fn(boss, pattern, dt)
-    end
-    return false
-end
-
-function M.is_pattern_active(boss, pattern)
-    if not (boss and pattern) then return false end
-    local fn = M._active_checks[pattern.type]
-    return fn and fn(boss, pattern) or false
-end
-
-function M.cancel_pattern(boss, pattern)
-    if not (boss and pattern) then return end
-    local fn = M._cancellers[pattern.type]
-    if fn then
-        fn(boss, pattern)
-    end
-end
 
 -- Combo re-enters the dispatcher; bind it on the common module so submodules
 -- can call C.execute_pattern() without a circular require.

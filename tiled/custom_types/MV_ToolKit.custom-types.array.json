@@ -1831,6 +1831,70 @@
         "valuesAsFlags": false
     },
     {
+        "id": 100170,
+        "name": "boss_movesets",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "none",
+            "charge_and_shoot",
+            "close_and_ranged",
+            "colossus_rage",
+            "crystal_guard",
+            "crystal_refraction",
+            "crystal_shatter",
+            "dark_swordsman",
+            "factory_patrol_fire",
+            "factory_unstable",
+            "forest_guardian_grove",
+            "forest_guardian_poison",
+            "needles_and_slams",
+            "ruins_dark_beam",
+            "ruins_last_ritual",
+            "ruins_shadow_host",
+            "sanctum_blades",
+            "sanctum_call",
+            "sanctum_clones",
+            "sentinel_reinforcements",
+            "sentinel_watch",
+            "shadow_ambush",
+            "warden_last_stand",
+            "warden_patrol",
+            "whip_and_roots"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 100171,
+        "name": "boss_ground_motion",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "type_default",
+            "On",
+            "Off"
+        ],
+        "valuesAsFlags": false
+    },
+    {
+        "id": 100172,
+        "name": "boss_teleport_anchors",
+        "storageType": "string",
+        "type": "enum",
+        "values": [
+            "near_player",
+            "far_from_player",
+            "behind_player",
+            "left",
+            "centre",
+            "right",
+            "top_left",
+            "top_centre",
+            "top_right"
+        ],
+        "valuesAsFlags": true
+    },
+    {
         "color": "#ff7f7f7f",
         "drawFill": true,
         "id": 230,
@@ -2656,6 +2720,29 @@
     {
         "color": "#ff7f7f7f",
         "drawFill": true,
+        "id": 100173,
+        "members": [
+            {
+                "name": "feet_offset",
+                "type": "float",
+                "value": 0
+            },
+            {
+                "name": "ground_motion",
+                "propertyType": "boss_ground_motion",
+                "type": "string",
+                "value": "type_default"
+            }
+        ],
+        "name": "boss_movement",
+        "type": "class",
+        "useAs": [
+            "property"
+        ]
+    },
+    {
+        "color": "#ff7f7f7f",
+        "drawFill": true,
         "id": 213,
         "members": [
             {
@@ -2677,6 +2764,22 @@
                 "name": "attack_range",
                 "type": "float",
                 "value": 0
+            },
+            {
+                "name": "moveset",
+                "propertyType": "boss_movesets",
+                "type": "string",
+                "value": "none"
+            },
+            {
+                "name": "telegraph_scale",
+                "type": "float",
+                "value": 1
+            },
+            {
+                "name": "cooldown_scale",
+                "type": "float",
+                "value": 1
             },
             {
                 "name": "damage_multiplier",
@@ -2795,6 +2898,17 @@
                 "propertyType": "movement_profiles",
                 "type": "string",
                 "value": "ground_chase"
+            },
+            {
+                "name": "teleport_anchors",
+                "propertyType": "boss_teleport_anchors",
+                "type": "string",
+                "value": ""
+            },
+            {
+                "name": "teleport_interval",
+                "type": "float",
+                "value": 0
             },
             {
                 "name": "facing_lock",

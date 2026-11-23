@@ -25,7 +25,6 @@ local BonePhysics = require "mvtk.player.bone_physics"
 -- Cache Audio/FX at module level to avoid pcall(require) on every jump/dash/slide
 local Audio = Util.require_module("mvtk.audio.audio")
 local FX = Util.require_module("mvtk.fx.fx")
-local C = require "mvtk.core.constants"
 -- Tiny helper that consolidates the per-frame `if (x or 0) > 0 then x =
 -- math.max(0, x - dt) end` pattern used dozens of times in this file.
 local Timers = require "mvtk.player.timers"
@@ -47,15 +46,27 @@ local PLAYER_HOST_MODULE = "mvtk.player.player_host"
 local SurfaceEffects = require "mvtk.player.surface_effects"
 local M = {}
 
--- Apply against this frame's effective gravity, including fall/release/glide.
--- Faster existing ascent keeps its velocity; only the lift contribution caps.
+-- Preserve the movement curves authored for this simulation step.
+M.REFERENCE_STEP = Timers.REFERENCE_STEP
+
+-- Apply lift against effective gravity. Existing ascent above the limit is
+-- preserved; the limit only applies to the lift contribution.
+function M.env_lift(vy, g, dt, multiple, cap)
+  if multiple < 0 or (multiple > 0 and vy < cap) then
+    local acceleration = multiple * math.abs(g)
+    local lifted_vy = vy + acceleration * dt
+    if multiple > 0 and lifted_vy > cap then return cap, acceleration, true end
+    return lifted_vy, acceleration, false
+  end
+  return vy
+end
+
 function M.apply_env_lift(self, g, dt)
   local multiple, cap = SurfaceEffects.lift(self)
-  if multiple > 0 then
-    if self.vy < cap then self.vy = math.min(cap, self.vy + multiple * math.abs(g) * dt) end
-  elseif multiple < 0 then
-    self.vy = self.vy + multiple * math.abs(g) * dt
-  end
+  local vy, acceleration, capped = M.env_lift(self.vy, g, dt, multiple, cap)
+  if acceleration then self._jump_cut_pending = nil end
+  self.vy = vy
+  return acceleration, capped
 end
 
 local pstate_log = Util.make_debug_log("[PSTATE]", function()
@@ -67,9 +78,8 @@ local function glide_debug_enabled()
 end
 local glide_log = Util.make_debug_log("[GLIDE]", glide_debug_enabled)
 
-local POUND_TIMERS = { "_pound_cool", "_pound_recovery_t" }
 -- Countdowns that keep running while a zip line or loaded cannon owns motion.
-local OWNED_TIMERS = { "_slide_cool", "_dash_cool", "_roll_cool", "_coyote_t", "_jump_buffer_t", "_jump_hold_t", "_double_jump_t" }
+local OWNED_TIMERS = { "_jump_hold_t", "_double_jump_t" }
 local WALL_TIMERS = { "_wall_contact_timer", "_wall_coyote_t", "_wall_reattach_lock_t" }
 
 local GRAPPLE_GROUP = hash("grapple")
@@ -139,6 +149,7 @@ function M.clear_ledge_state(self)
   self._ledge_kinematic = false
   self._ledge_hang_side = 0
   self._ledge_climb_side = 0
+  Timers.clear_window(self, "_ledge_climb_window")
   self._ledge_climb_t = 0
   self._ledge_climb_duration = 0
   self._ledge_climb_start = nil
@@ -176,11 +187,11 @@ function M.enter_ledge_hang(self, wall_side, center_hit)
   self._on_wall = true
   self._wall_side = side
   self._wall_last_side = side
-  self._wall_contact_timer = math.max(
-    self._wall_contact_timer or 0,
+  Timers.extend_window(self, "_wall_contact_timer",
     (self._cfg.wall_climb and self._cfg.wall_climb.contact_grace) or 0.12)
   self.grounded = false
   self.facing = side
+  self._jump_cut_pending = nil
   self.vx, self.vy = 0, 0
   return true
 end
@@ -214,6 +225,7 @@ function M.start_ledge_climb(self)
   self._ledge_climb_started = true
   self._ledge_climb_completed = false
   self._ledge_climb_side = side
+  Timers.start_window(self, "_ledge_climb_window", duration)
   self._ledge_climb_t = 0
   self._ledge_climb_duration = duration
   self._ledge_climb_start = start
@@ -225,9 +237,9 @@ function M.start_ledge_climb(self)
   self._ledge_climb_aborted = false
   self._on_wall = false
   self._wall_side = 0
-  self._wall_contact_timer = 0
-  self._wall_coyote_t = 0
-  self._wall_reattach_lock_t = math.max(self._wall_reattach_lock_t or 0, duration + 0.05)
+  Timers.clear_window(self, "_wall_contact_timer")
+  Timers.clear_window(self, "_wall_coyote_t")
+  Timers.extend_window(self, "_wall_reattach_lock_t", duration + 0.05)
   self.grounded = false
   self.facing = side
   self.vx, self.vy = 0, 0
@@ -242,10 +254,11 @@ local function abort_ledge_climb(self, reason)
   self._ledge_climb_collision = nil
   self._ledge_climb_blocked_reason = reason or "blocked"
   self._ledge_climb_aborted = true
+  Timers.clear_window(self, "_ledge_climb_window")
   self._on_wall = false
   self._wall_side = 0
-  self._wall_contact_timer = 0
-  self._wall_reattach_lock_t = math.max(self._wall_reattach_lock_t or 0, 0.18)
+  Timers.clear_window(self, "_wall_contact_timer")
+  Timers.extend_window(self, "_wall_reattach_lock_t", 0.18)
   self.grounded = false
   self.vx, self.vy = 0, 0
 end
@@ -259,7 +272,17 @@ local function advance_ledge_climb(self, dt)
   end
 
   local duration = math.max(0.001, self._ledge_climb_duration or 0.45)
-  self._ledge_climb_t = math.min(duration, (self._ledge_climb_t or 0) + math.max(dt or 0, 0))
+  if self._ledge_climb_window == nil then
+    -- An in-progress climb can survive a script reload.
+    Timers.start_window(self, "_ledge_climb_window", duration, false, self._ledge_climb_t)
+  end
+  Timers.tick_window(self, "_ledge_climb_window", dt)
+  local complete = self._ledge_climb_window <= 0
+  if complete then
+    self._ledge_climb_t = duration
+  else
+    self._ledge_climb_t = math.min(duration, (self._ledge_climb_t or 0) + math.max(dt, 0))
+  end
   local t = self._ledge_climb_t / duration
   -- Rise clear of the wall first, then translate over its top. A direct
   -- diagonal root lerp would necessarily sweep the collider through the wall.
@@ -280,7 +303,7 @@ local function advance_ledge_climb(self, dt)
   end
 
   local final_support
-  if t >= 1 then
+  if complete then
     local authored_target = self._ledge_climb_authored_target or target
     final_support, self._ledge_climb_blocked_reason = BonePhysics.probe_ledge_support(
       self, authored_target, start)
@@ -302,14 +325,14 @@ local function advance_ledge_climb(self, dt)
   self._ledge_climb_last_safe = vmath.vector3(desired)
   self.vx, self.vy = 0, 0
 
-  if t >= 1 then
+  if complete then
     self._ledge_climbing = false
     self._ledge_kinematic = false
     self._ledge_climb_completed = true
     self._ledge_climb_collision = final_support.collision
     self._on_wall = false
     self._wall_side = 0
-    self._wall_contact_timer = 0
+    Timers.clear_window(self, "_wall_contact_timer")
     -- player.script routes this real support collision through set_grounded().
     self.grounded = false
   end
@@ -323,6 +346,15 @@ function M.wall_jump_forces(self, rule, wall_jump)
     y and y >= 0 and y * scale or (wall_jump.push_v or self._jump_speed)
 end
 
+function M.start_wall_jump_steering(self, wall_side, wall_jump)
+  local duration = wall_jump.steer_lock or 0
+  if duration > 0 then
+    self._wall_jump_steering = { direction = -wall_side }
+    Timers.start_window(self._wall_jump_steering, "remaining", duration)
+    self.facing = -wall_side
+  end
+end
+
 function M.wall_can_climb(self)
   local rule = self._wall_rule
   return not rule or (rule.allow_climb ~= false and rule.allow_slide ~= false)
@@ -332,6 +364,8 @@ end
 function M.release_ledge_hang(self, opts)
   opts = opts or {}
   if not self._ledge_hanging then return false end
+  self._vertical_grid = nil
+  self._jump_cut_pending = nil
   local side = self._ledge_hang_side ~= 0 and self._ledge_hang_side or self._wall_side
   local wall_climb = self._cfg.wall_climb or {}
   local wall_jump = wall_climb.wall_jump or {}
@@ -344,10 +378,9 @@ function M.release_ledge_hang(self, opts)
   self._on_wall = false
   self._wall_side = 0
   self._wall_time = 0
-  self._wall_contact_timer = 0
-  self._wall_coyote_t = wall_jump.coyote_time or 0
-  self._wall_reattach_lock_t = math.max(
-    self._wall_reattach_lock_t or 0,
+  Timers.clear_window(self, "_wall_contact_timer")
+  Timers.start_window(self, "_wall_coyote_t", wall_jump.coyote_time or 0)
+  Timers.extend_window(self, "_wall_reattach_lock_t",
     wall_climb.reattach_lock or wall_jump.reattach_lock or 0.18)
 
   if opts.jump_away then
@@ -356,6 +389,8 @@ function M.release_ledge_hang(self, opts)
       local push_h, push_v = M.wall_jump_forces(self, rule, wall_jump)
       self.vx = -side * push_h
       self.vy = push_v
+      M.start_wall_jump_steering(self, side, wall_jump)
+      self._jump_cut_pending = true
       -- The impulse supplies jump speed; it must not unlock ground running.
     else
       self.vx = -side * (wall_climb.detach_push or 220)
@@ -372,6 +407,7 @@ local function instant_ledge_climb(self, cfg)
   cfg = cfg or ledge_config(self)
   local side = self._wall_side or 0
   if side == 0 then return false end
+  self._vertical_grid = nil
   local p = copy_player_position(self)
   p.x = p.x + ((cfg.climb_x or 32) * (side < 0 and 1 or -1))
   p.y = p.y + (cfg.climb_y or 64)
@@ -381,6 +417,7 @@ local function instant_ledge_climb(self, cfg)
   self._wall_side = 0
   self._wall_time = 0
   self.grounded = false
+  self._jump_cut_pending = nil
   self.vy = math.max(self.vy or 0, 0)
   return true
 end
@@ -418,17 +455,31 @@ function M.on_ledge_animation_missing(self)
     self._on_wall = side ~= 0
     self._wall_side = side
     self._wall_last_side = side
-    self._wall_contact_timer = (self._cfg.wall_climb and self._cfg.wall_climb.contact_grace) or 0.12
+    Timers.start_window(self, "_wall_contact_timer", (self._cfg.wall_climb and self._cfg.wall_climb.contact_grace) or 0.12)
     self.grounded = false
     self.vx, self.vy = 0, 0
   end
   return false
 end
 
+function M.interrupt_window_handoffs(self)
+  self._compact_roll_exit, self._slide_exit_elapsed, self._dash_exit_elapsed = nil, nil, nil
+  -- A rounded-zero pulse may still owe part of the next ordinary steering
+  -- frame. An interruption ends that handoff without clearing a live timer.
+  if self._autorun_nudge_t == 0 then Timers.discard_window(self, "_autorun_nudge_t") end
+end
+
 -- Clear PSTATE-owned transient ability fields. Feature-owned state resets
 -- in its own PlayerHost hook. Safe on a fresh self for init and every reset reason.
 function M.reset_ability_state(self, reason)
-  self._dash_vy = nil
+  self._jump_cut_pending = nil
+  self._vertical_grid = nil
+  M.interrupt_window_handoffs(self)
+  if self._autorun_nudge_t ~= nil then
+    Timers.start_window(self, "_autorun_nudge_t", 0)
+  end
+  self._wall_jump_steering = nil
+  self._dash_vy, self._dash_vertical_exited = nil, nil
   self._last_dash_dir_y = nil
   self._super_jump_ready, self._super_jump_rising = nil, nil
   self._super_jump_started = nil
@@ -448,8 +499,8 @@ function M.init(self, overrides)
   self._slide_cool = 0
   self._slide_recovery_t = 0
   -- Jump helpers / timers
-  self._coyote_t = 0
-  self._jump_buffer_t = 0
+  Timers.clear_window(self, "_coyote_t")
+  Timers.clear_window(self, "_jump_buffer_t")
   self._jump_hold_t = 0
   self._extra_jumps = self._cfg.air_jumps or 0
   self._double_jump_t = 0  -- Timer to track double jump animation
@@ -469,9 +520,6 @@ function M.init(self, overrides)
   -- Backdash
   self._backdash_t = 0
   self._backdash_cool = 0
-  -- Roll
-  self._roll_t = 0
-  self._roll_cool = 0  -- Ground Pound
   self._pound_active = false
   self._pound_recovery_t = 0
   self._pound_cool = 0
@@ -484,9 +532,10 @@ function M.init(self, overrides)
   self._on_wall = false
   self._wall_side = 0  -- -1 = left wall, 1 = right wall, 0 = no wall
   self._wall_time = 0
-  self._wall_contact_timer = 0  -- Timer to clear wall contact when no longer touching
-  self._wall_coyote_t = 0        -- grace to still wall-jump after detaching
-  self._wall_reattach_lock_t = 0 -- prevents instant re-stick after wall jump
+  Timers.clear_window(self, "_wall_contact_timer")
+  Timers.clear_window(self, "_wall_coyote_t")
+  Timers.clear_window(self, "_wall_reattach_lock_t")
+  Timers.clear_window(self, "_climb_reattach_lock_t")
   -- Optimistically enable the bundled animations, but preserve an explicit
   -- false supplied by a custom renderer. animation_controller revokes this at
   -- runtime if either required animation fails to play.
@@ -546,8 +595,10 @@ end
 
 function M.set_grounded(self, g)
   local was_grounded = self.grounded and true or false
+  if was_grounded ~= (g and true or false) then self._vertical_grid = nil end
   self.grounded = g and true or false
   if self.grounded then
+    self._jump_cut_pending = nil
     self._grapple_carry_t = 0
     self._grapple_flight = false
     -- A floor contact ends wall movement, including the late-jump grace.
@@ -555,9 +606,11 @@ function M.set_grounded(self, g)
     self._on_wall, self._wall_sliding = false, false
     self._wall_side, self._wall_last_side, self._wall_time = 0, 0, 0
     self._wall_rule, self._wall_last_rule = nil, nil
-    self._wall_coyote_t, self._wall_contact_timer = 0, 0
-    self._wall_reattach_lock_t = 0
+    Timers.clear_window(self, "_wall_coyote_t")
+    Timers.clear_window(self, "_wall_contact_timer")
+    Timers.clear_window(self, "_wall_reattach_lock_t")
     if not was_grounded then
+    self._wall_jump_steering = nil
     -- A downward dash ends at the floor; keep horizontal momentum.
     if (self._dash_t or 0) > 0 and (self._last_dash_dir_y or 0) < 0 then
       self._dash_t = 0
@@ -570,7 +623,7 @@ function M.set_grounded(self, g)
       if Audio and Audio.stop_sfx then Audio.stop_sfx("air_dash") end
     end
     -- Landed: clear coyote, restore air resources, clamp landing vy
-    self._coyote_t = 0
+    Timers.clear_window(self, "_coyote_t")
     self._air_dashes_left = (self._cfg.air_dash and self._cfg.air_dash.max_air_dashes) or 1
     self._extra_jumps = self._cfg.air_jumps or 0
     if self.vy < 0 then self.vy = 0 end
@@ -585,17 +638,18 @@ function M.set_grounded(self, g)
     end
     -- Buffered jump: if a jump was buffered, perform it now as a ground jump
     if (self._jump_buffer_t or 0) > 0 then
-      self.vy = M.jump_velocity(self, M.ground_jump_speed(self))
+      self.vy = M.ground_jump_velocity(self)
+      self._jump_cut_pending = true
       self.grounded = false
-      self._coyote_t = 0
-      self._jump_buffer_t = 0
+      Timers.clear_window(self, "_coyote_t")
+      Timers.clear_window(self, "_jump_buffer_t")
       self._jump_hold_t = self._cfg.jump_min_hold_time or 0
     end
     end
   else
     -- Left ground this frame: start coyote timer
     if was_grounded then
-      self._coyote_t = self._cfg.coyote_time or 0
+      Timers.start_window(self, "_coyote_t", self._cfg.coyote_time or 0)
     end
   end
   SafeGround.observe(self)
@@ -607,8 +661,25 @@ function M.jump_velocity(self, base)
   return base * PlayerStats.mult("jump_mult")
 end
 
+-- Scale the ordinary ground jump's height using effective walk and run speeds.
+function M.ground_jump_velocity(self)
+  local speed = M.jump_velocity(self, M.ground_jump_speed(self))
+  local bonus = self._cfg.speed_jump_bonus or 0
+  if bonus > 0 then
+    local speed_mult = PlayerStats.mult("speed_mult")
+    local walk_speed = (self._cfg.walk_speed or 1200) * speed_mult
+    local run_speed = (self._cfg.run_speed or 2000) * speed_mult
+    local takeoff_speed = math.abs(self.vx)
+    if run_speed > walk_speed and takeoff_speed > walk_speed then
+      local share = Util.clamp((takeoff_speed - walk_speed) / (run_speed - walk_speed), 0, 1)
+      speed = speed * math.sqrt(1 + bonus * share)
+    end
+  end
+  return speed
+end
+
 local function ground_jump(self, boost_ground)
-  local base_speed = boost_ground and M.ground_jump_speed(self) or self._jump_speed
+  self._vertical_grid = nil
   -- Check for extended jump
   if self._cfg.extended_jump and self._cfg.extended_jump.enabled then
     self._extended_jump_active = true
@@ -627,10 +698,12 @@ local function ground_jump(self, boost_ground)
         tostring(self._cfg.extended_jump and self._cfg.extended_jump.enabled)))
     end
   end
-  self.vy = boost_ground and M.jump_velocity(self, base_speed) or base_speed
+  self.vy = boost_ground and M.ground_jump_velocity(self) or self._jump_speed
+  -- The unboosted call is the stationary grapple hang dismount.
+  self._jump_cut_pending = boost_ground
   if Audio and Audio.sfx then Audio.sfx("jump") end
   self.grounded = false
-  self._coyote_t = 0
+  Timers.clear_window(self, "_coyote_t")
   self._jump_hold_t = self._cfg.jump_min_hold_time or 0
   -- Cancel slide on jump if configured
   if self._slide_t > 0 and self._cfg.slide and self._cfg.slide.cancel_on_jump then
@@ -653,7 +726,7 @@ function M.request_jump(self, input_opt)
   if self._pound_active then
     -- The committed slam cannot be replaced by an air, wall or ledge jump.
     -- Keep the ordinary buffer so a press just before landing can still win.
-    self._jump_buffer_t = math.max(self._jump_buffer_t or 0, self._cfg.jump_buffer or 0)
+    Timers.extend_window(self, "_jump_buffer_t", self._cfg.jump_buffer or 0)
     return false
   end
   if self._grapple_hanging then
@@ -744,10 +817,13 @@ function M.request_jump(self, input_opt)
     local push_h, push_v = M.wall_jump_forces(self, wall_rule, WJ)
     -- Push away from wall: wall_side -1 (left wall) -> push right (+), 1 (right wall) -> push left (-)
     self.vx = -dir * push_h
+    self._vertical_grid = nil
     self.vy = push_v
-    self._wall_coyote_t = 0
-    self._wall_contact_timer = 0
-    self._wall_reattach_lock_t = WJ.reattach_lock or 0.18
+    M.start_wall_jump_steering(self, side, WJ)
+    self._jump_cut_pending = true
+    Timers.clear_window(self, "_wall_coyote_t")
+    Timers.clear_window(self, "_wall_contact_timer")
+    Timers.start_window(self, "_wall_reattach_lock_t", WJ.reattach_lock or 0.18)
     self._on_wall = false
     self._wall_side = 0
     -- Preserve the existing locomotion mode. A wall impulse is not a run unlock.
@@ -764,10 +840,13 @@ function M.request_jump(self, input_opt)
     and not self._attack and not (self._combat and self._combat.current)
     and not self._is_dead and (self._stun_t or 0) <= 0
     and self._ability_can_use and self._ability_can_use("super_jump") then
+    self._vertical_grid = nil
     self.vy = self._jump_speed * math.sqrt(math.max(1, (self._cfg.super_jump or {}).launch_height_mult or 3))
+    self._jump_cut_pending = nil
     self.vx = 0
     self.grounded = false
-    self._coyote_t, self._jump_buffer_t = 0, 0
+    Timers.clear_window(self, "_coyote_t")
+    Timers.clear_window(self, "_jump_buffer_t")
     self._super_jump_ready, self._super_jump_rising = false, true
     self._super_jump_started = true -- Preserve the launch edge through same-frame ceiling resolution.
     self._control_locked = (self._cfg.super_jump or {}).lock_horizontal ~= false
@@ -781,8 +860,10 @@ function M.request_jump(self, input_opt)
   end
   -- Air jump if available
   if (self._extra_jumps or 0) > 0 then
+    self._vertical_grid = nil
     self.vy = M.jump_velocity(self, self._cfg.high_jump and self._cfg.high_jump.apply_to_air_jumps
       and M.ground_jump_speed(self) or self._jump_speed)
+    self._jump_cut_pending = true
     if Audio and Audio.sfx then Audio.sfx("double_jump") end
     self._extra_jumps = self._extra_jumps - 1
     self._double_jump_t = 0.4  -- Set timer for double jump animation
@@ -796,14 +877,16 @@ function M.request_jump(self, input_opt)
     return true
   end
   -- Could not jump now: buffer it
-  self._jump_buffer_t = math.max(self._jump_buffer_t or 0, self._cfg.jump_buffer or 0)
+  Timers.extend_window(self, "_jump_buffer_t", self._cfg.jump_buffer or 0)
   return false
 end
 
--- These are no-ops unless slide gating is enabled
-function M.request_slide_press(self, input)
+function M.request_slide_press(self, input, request_swim_dash)
   if self._carry_active then return false end
   if require(PLAYER_HOST_MODULE).holds_presses(self) then return false end
+  if self._in_water then
+    return request_swim_dash and request_swim_dash(self, input) or false
+  end
   -- If airborne, handle air dash first (do not early-return due to slide ground requirements).
   local AD = self._cfg.air_dash
   if AD and AD.enabled and not self.grounded then
@@ -822,16 +905,19 @@ function M.request_slide_press(self, input)
     -- A successful dash takes ownership of movement. Failed requests leave
     -- the hook intact and never spend an air-dash charge.
     Grapple.clear(self)
-    self._dash_t   = AD.duration or 0.18
-    self._dash_iframes_t = AD.iframe_seconds or 0
-    self._dash_cool= (AD.cooldown or 0.20) + self._dash_t
+    Timers.start_window(self, "_dash_t", AD.duration or 0.18, true)
+    Timers.start_window(self, "_dash_iframes_t", AD.iframe_seconds or 0, true)
+    Timers.start_window(self, "_dash_cool", (AD.cooldown or 0.20) + self._dash_t)
     local s = AD.speed or 1400
     local dir, dy = AirDash.direction(input, self.facing, self._on_wall, self._wall_side, AD)
+    self._wall_jump_steering = nil
     self.vx = s * dir
     self._last_dash_dir = dir
     self._last_dash_dir_y = nil
-    self._dash_vy = nil
+    self._dash_vy, self._dash_vertical_exited = nil, nil
     if AD.directions == "eight" then
+      self._vertical_grid = nil
+      self._jump_cut_pending = nil
       self.vy = s * dy
       self._last_dash_dir_y = dy
       if AD.suspend_gravity ~= false then self._dash_vy = self.vy end
@@ -864,9 +950,9 @@ function M.request_slide_press(self, input)
       end
       return
     end
-    self._slide_t   = self._cfg.slide.duration or 0.28
-    self._slide_iframes_t = self._cfg.slide.iframe_seconds or 0
-    self._slide_cool= (self._cfg.slide.cooldown or 0.15) + self._slide_t
+    Timers.start_window(self, "_slide_t", self._cfg.slide.duration or 0.28, true)
+    Timers.start_window(self, "_slide_iframes_t", self._cfg.slide.iframe_seconds or 0, true)
+    Timers.start_window(self, "_slide_cool", (self._cfg.slide.cooldown or 0.15) + self._slide_t)
     local s = self._cfg.slide.speed or 520
     local dir = (self.facing ~= 0 and self.facing or 1)
     self.vx = s * dir
@@ -889,14 +975,17 @@ end
 -- A successful teleport ends movement ownership without refilling charges or
 -- cooldowns. Keep the eight-direction dash cleanup in step with natural expiry.
 function M.end_dash_slide(self)
+  M.interrupt_window_handoffs(self)
+  self._vertical_grid = nil
   self._super_jump_rising = false -- Blink uses this seam even with a positive exit vertical speed.
   self._super_jump_started = nil
-  if (self._dash_t or 0) > 0 and self._last_dash_dir_y ~= nil then
+  if (self._dash_t or 0) > 0 and self._last_dash_dir_y ~= nil and not self._dash_vertical_exited then
+    self._jump_cut_pending = nil
     self.vy = self.vy * (self._cfg.air_dash.end_vertical_speed_mult or 0.35)
   end
   self._dash_t, self._slide_t, self._slide_recovery_t = 0, 0, 0
   self._slide_iframes_t, self._dash_iframes_t = 0, 0
-  self._dash_vy, self._last_dash_dir_y = nil, nil
+  self._dash_vy, self._last_dash_dir_y, self._dash_vertical_exited = nil, nil, nil
   M.tick_iframes(self, 0)
   self._last_dash_dir = 0
   self._control_locked, self._run_gate = false, false
@@ -912,8 +1001,8 @@ function M.request_backdash(self)
   if not (BD and BD.enabled) then return end
   if not self.grounded then return end
   if (self._backdash_cool or 0) > 0 then return end
-  self._backdash_t = BD.duration or 0.16
-  self._backdash_cool = (BD.cooldown or 0.30) + self._backdash_t
+  Timers.start_window(self, "_backdash_t", BD.duration or 0.16, true)
+  Timers.start_window(self, "_backdash_cool", (BD.cooldown or 0.30) + self._backdash_t)
   self._control_locked = true
   local dir = (self.facing ~= 0 and self.facing or 1)
   self.vx = -(BD.speed or 1800) * dir
@@ -943,9 +1032,12 @@ function M.request_ground_pound(self, input)
   -- require down input if configured
   local th = GP.require_down_threshold or 0.6
   if input and (input.move_y or 0) > -th then return end
+  self._wall_jump_steering = nil
   self._pound_active = true
+  self._vertical_grid = nil
   self._control_locked = true
   self.vx = 0
+  self._jump_cut_pending = nil
   self.vy = - (GP.slam_speed or 2000)
   drop_attacks_for_slam(self)
 end
@@ -955,14 +1047,16 @@ function M.on_ground_impact(self, pos)
     local GP = self._cfg.ground_pound or {}
     self._pound_active = false
     self.vx = 0
-    self._pound_cool = GP.cooldown or 0
+    Timers.start_window(self, "_pound_cool", GP.cooldown or 0)
     -- set_grounded runs first and may already have consumed a buffered jump.
     -- That player's jump wins over both the automatic pop and its recovery.
     if self.vy > 0 then
       self._pound_recovery_t = 0
     else
+      self._jump_cut_pending = nil
+      self._vertical_grid = nil
       self.vy = GP.impact_bounce or 0
-      self._pound_recovery_t = GP.recovery or 0
+      Timers.start_window(self, "_pound_recovery_t", GP.recovery or 0, true)
     end
     -- Dust, shake, freeze-frame and rumble (player_actions ground_pound.feedback).
     PoundFeedback.landed(pos)
@@ -975,11 +1069,12 @@ function M.cancel_ground_pound(self)
   if not self._pound_active then return end
   self._pound_active = false
   self._pound_recovery_t = 0
-  self._pound_cool = (self._cfg.ground_pound and self._cfg.ground_pound.cooldown) or 0
+  Timers.start_window(self, "_pound_cool", (self._cfg.ground_pound and self._cfg.ground_pound.cooldown) or 0)
 end
 
 function M.set_water(self, v)
   if v then
+    self._wall_jump_steering = nil
     M.cancel_ground_pound(self)
     if self._compact_active then require("mvtk.player.compact_form").stand(self) end
   end
@@ -1057,10 +1152,14 @@ function M.request_grapple(self, input)
         hit = {position = vmath.vector3(hit.position), normal = vmath.vector3(hit.normal)},
         distance = math.sqrt(hx * hx + hy * hy), travelled = 0,
         room = current_room, dir = {x = x, y = y}}
+      local hook = self._grapple_hook
+      Timers.start_window(hook, "travel_t", math.max(M.REFERENCE_STEP, hook.distance / CG.hook_speed))
       self._grapple_recast_t = 0
+      self._wall_jump_steering = nil
       return true
     end
     if not Grapple.attach(self, p, hit, G, CG, self.grounded) then return false end
+    self._wall_jump_steering = nil
     self._grapple_room_id = current_room
     return true
   end
@@ -1086,7 +1185,7 @@ function M.request_grapple(self, input)
   -- extend it, and releases never come through this path to start one.
   if input and input.grapple_down and input.grapple_held ~= false
     and not (input.grapple_held == nil and input.grapple_up) then
-    self._grapple_recast_t = math.max(0, CG.recast_window_s or G.recast_window_s or 0.3)
+    Timers.start_window(self, "_grapple_recast_t", math.max(0, CG.recast_window_s or G.recast_window_s or 0.3))
   end
   return false
 end
@@ -1111,7 +1210,9 @@ function M.advance_grapple_hook(self, dt, input)
     return
   end
   hook.travelled = math.min(hook.distance, hook.travelled + math.max(0, CG.hook_speed or 0) * math.max(0, dt))
-  if hook.travelled < hook.distance then return end
+  if Timers.has_window(hook, "travel_t") then
+    if not Timers.tick_deadline(hook, "travel_t", dt) then return end
+  elseif hook.travelled < hook.distance then return end
   -- A catch is checked against the captured point, not a moving target's new location.
   -- Match attached-rope validation: extend through the surface by its tolerance.
   self._grapple_hook, self._grapple_recast_t = nil, 0
@@ -1136,6 +1237,7 @@ function M.advance_grapple_hook(self, dt, input)
   -- spent by another ability during flight must leave an ordinary miss.
   if self._ability_can_use and not self._ability_can_use("grapple") then return end
   if not Grapple.attach(self, p, hook.hit, G, CG, self.grounded) then return end
+  self._wall_jump_steering = nil
   self._grapple_room_id = current_room
   return "caught"
 end
@@ -1181,7 +1283,7 @@ local function validate_grapple(self, input)
 end
 
 function M.is_invulnerable(self, hit)
-  if self._invulnerable then return true end
+  if self._movement_iframes or (self._invulnerable and not (hit and hit.ignore_iframes)) then return true end
   return PlayerStats.flag("invulnerable") and not (hit and hit.lethal)
 end
 
@@ -1221,13 +1323,17 @@ function M.set_wall_contact(self, wall_side)
     self._wall_side = 0
     self._wall_last_side = 0
     self._wall_time = 0
-    self._wall_contact_timer = 0
-    self._wall_coyote_t = 0
+    Timers.clear_window(self, "_wall_contact_timer")
+    Timers.clear_window(self, "_wall_coyote_t")
     self._wall_sliding = false
     M.clear_ledge_state(self)
     return
   end
-  if wall_side ~= 0 then self._grapple_carry_t = 0 end
+  if wall_side ~= 0 then
+    self._grapple_carry_t = 0
+    if self._vertical_grid then self._vertical_grid.release_mult = nil end
+    self._wall_jump_steering = nil
+  end
   local WC = self._cfg.wall_climb
   -- Wall contact matters for wall climb OR wall jump (wall slide).
   local jump_only = WC and not WC.enabled and type(WC.wall_jump) == "table" and WC.wall_jump.enabled == true
@@ -1255,7 +1361,8 @@ function M.set_wall_contact(self, wall_side)
       M.clear_ledge_state(self)
       self._on_wall, self._wall_sliding = false, false
       self._wall_side, self._wall_last_side = 0, 0
-      self._wall_contact_timer, self._wall_coyote_t = 0, 0
+      Timers.clear_window(self, "_wall_contact_timer")
+      Timers.clear_window(self, "_wall_coyote_t")
       return
     end
     if rule and (rule.allow_slide == false or rule.allow_climb == false) then
@@ -1264,10 +1371,10 @@ function M.set_wall_contact(self, wall_side)
       if rule.allow_slide == false or (WC.wall_jump and WC.wall_jump.enabled == false) then
         self._wall_sliding = false
         self._wall_side, self._wall_last_side = wall_side, wall_side
-        self._wall_contact_timer = WC.contact_grace or 0.12
+        Timers.start_window(self, "_wall_contact_timer", WC.contact_grace or 0.12)
         local WJ = WC.wall_jump or {}
         if (self._wall_reattach_lock_t or 0) <= 0 then
-          self._wall_coyote_t = WJ.coyote_time or WJ.slide_coyote_time or 0
+          Timers.start_window(self, "_wall_coyote_t", WJ.coyote_time or WJ.slide_coyote_time or 0.12)
         end
         return
       end
@@ -1277,7 +1384,7 @@ function M.set_wall_contact(self, wall_side)
 
   if self._ledge_hanging then
     if wall_side ~= 0 and not self.grounded then
-      self._wall_contact_timer = (self._cfg.wall_climb.contact_grace or 0.12)
+      Timers.start_window(self, "_wall_contact_timer", (self._cfg.wall_climb.contact_grace or 0.12))
       self._wall_side = wall_side
       self._wall_last_side = wall_side
     elseif self.grounded then
@@ -1292,7 +1399,7 @@ function M.set_wall_contact(self, wall_side)
   -- wall_side: -1 = left wall, 1 = right wall, 0 = no wall
   if wall_side ~= 0 and not self.grounded then
     -- Refresh contact grace window
-    self._wall_contact_timer = (self._cfg.wall_climb.contact_grace or 0)
+    Timers.start_window(self, "_wall_contact_timer", (self._cfg.wall_climb.contact_grace or 0))
     self._wall_last_side = wall_side
     -- Start wall climbing immediately when touching wall in air (unless locked)
     if not self._on_wall and (self._wall_reattach_lock_t or 0) <= 0 then
@@ -1306,6 +1413,7 @@ function M.set_wall_contact(self, wall_side)
         -- Wall climb: stop all momentum when sticking to wall
         self.vx = 0
         self.vy = 0
+        self._jump_cut_pending = nil
       end
     end
     -- Keep updating wall side (in case player moves between walls)
@@ -1366,44 +1474,575 @@ end
 function M.tick_iframes(self, dt)
   -- Separate countdowns start only on a successful movement request. Zero is
   -- the legacy whole-action window; neither immunity window can outlive its action.
-  self._slide_iframes_t = math.max(0, (self._slide_iframes_t or 0) - dt)
-  self._dash_iframes_t = math.max(0, (self._dash_iframes_t or 0) - dt)
+  Timers.step_window(self, "_slide_iframes_t", dt)
+  Timers.step_window(self, "_dash_iframes_t", dt)
   local slide_iframes = (self._cfg.slide and self._cfg.slide.iframes) and (self._slide_t or 0) > 0
-    and ((self._cfg.slide.iframe_seconds or 0) == 0 or self._slide_iframes_t > 0)
+    and ((self._cfg.slide.iframe_seconds or 0) == 0 or (self._slide_iframes_t or 0) > 0)
   local dash_iframes = (self._cfg.air_dash and self._cfg.air_dash.iframes) and (self._dash_t or 0) > 0
-    and ((self._cfg.air_dash.iframe_seconds or 0) == 0 or self._dash_iframes_t > 0)
+    and ((self._cfg.air_dash.iframe_seconds or 0) == 0 or (self._dash_iframes_t or 0) > 0)
   local backdash_iframes = (self._cfg.backdash and self._cfg.backdash.iframes) and (self._backdash_t or 0) > 0
-  if (self._parry_iframes_t or 0) > 0 then self._parry_iframes_t = math.max(0, self._parry_iframes_t - dt) end
-  if (self._damage_iframes_t or 0) > 0 then self._damage_iframes_t = math.max(0, self._damage_iframes_t - dt) end
+  Timers.tick_combat_deadline(self, "_parry_iframes_t", dt)
+  Timers.tick_combat_deadline(self, "_damage_iframes_t", dt)
   self._movement_iframes = (slide_iframes or dash_iframes or backdash_iframes
     or ((self._parry_iframes_t or 0) > 0)) and true or false
   self._invulnerable = self._movement_iframes or ((self._damage_iframes_t or 0) > 0)
   return slide_iframes
 end
 
+-- Keep the same direction for movement and animation on the last frame.
+function M.tick_wall_jump_steering(self, dt)
+  local steering = self._wall_jump_steering
+  local active, travel = Timers.slice_window(steering, "remaining", dt)
+  if not active then self._wall_jump_steering = nil end
+  if active or travel > 0 then return steering.direction, travel end
+end
+
 -- update does not run while a zip line ride or loaded cannon owns motion.
 -- Keep its iFrames and countdowns running without its movement or locks.
 -- The dash timer is already zero there: a ride refuses a dash and loading ends one.
 function M.tick_owned_timers(self, dt)
+  M.interrupt_window_handoffs(self)
+  self._vertical_grid = nil
+  if self._wall_jump_steering then M.tick_wall_jump_steering(self, dt) end
   M.tick_iframes(self, dt)
-  Timers.tick_all(self, POUND_TIMERS, dt)
+  M.tick_action_clocks(self, dt)
+  Timers.tick_window(self, "_coyote_t", dt)
+  Timers.tick_window(self, "_jump_buffer_t", dt)
   Timers.tick_all(self, OWNED_TIMERS, dt)
 end
 
-function M.update(self, dt, input)
+function M.tick_action_clocks(self, dt)
+  Timers.tick_window(self, "_pound_cool", dt)
+  local _, _, pound_exit = Timers.step_window(self, "_pound_recovery_t", dt)
+  Timers.tick_window(self, "_slide_cool", dt)
+  Timers.tick_window(self, "_dash_cool", dt)
+  M.tick_backdash_cooldown(self, dt)
+  return pound_exit
+end
+
+function M.tick_backdash_cooldown(self, dt)
+  Timers.tick_window(self, "_backdash_cool", dt)
+end
+
+-- Retire the old speed hold once another state supplies the velocity. Features
+-- already tick their clocks in their motion hook. Swim and climb keep the
+-- cooldown of an interrupted action running across subsequent traversal draws.
+function M.update_motion_takeover(self, dt, traversal, ordinary_motion)
+  local features = self._host and self._host.features
+  local compact = features and features.compact_form
+  -- Compact Form runs ordinary physics while its own burst supplies speed.
+  -- When another state takes the body, end just the burst and its stat source.
+  if not ordinary_motion and compact and ((compact.roll or 0) > 0 or self._compact_roll_exit) then
+    require("mvtk.player.compact_form").end_roll(self)
+  end
+  self._vertical_grid = nil
+  if self._movement_windows or self._compact_roll_exit then M.interrupt_window_handoffs(self) end
+  local dash = (self._dash_t or 0) > 0
+  local slide = (self._slide_t or 0) > 0
+  local backdash = (self._backdash_t or 0) > 0
+  if dash or slide or backdash then
+    local windows = self._movement_windows or {}
+    -- The flag is owned by the cooldown window and expires or resets with it.
+    if dash and windows._dash_cool then windows._dash_cool.continue_during_traversal = true end
+    if slide and windows._slide_cool then windows._slide_cool.continue_during_traversal = true end
+    Timers.clear_window(self, "_dash_t")
+    Timers.clear_window(self, "_slide_t")
+    Timers.clear_window(self, "_backdash_t")
+    Timers.clear_window(self, "_slide_recovery_t")
+    Timers.clear_window(self, "_dash_iframes_t")
+    Timers.clear_window(self, "_slide_iframes_t")
+    self._last_dash_dir, self._last_dash_dir_y = 0, nil
+    self._dash_vy, self._dash_vertical_exited = nil, nil
+    local blink = features and features.blink
+    if blink and (dash or slide) then blink.dashing, blink.sliding = false, false end
+    if traversal and (self._stun_t or 0) <= 0 then self._control_locked = false end
+    if dash and Audio and Audio.stop_sfx then Audio.stop_sfx("air_dash") end
+  end
+  -- Intangible Dash normally publishes after physics. A takeover delivered
+  -- by message must also retire the lease before another message can hit.
+  if features and features.intangible_dash and features.intangible_dash.invulnerable then
+    require("mvtk.player.features.intangible_dash_feature").reset(self)
+  end
+  if traversal then
+    local windows = self._movement_windows
+    local dash_cool, slide_cool = windows and windows._dash_cool, windows and windows._slide_cool
+    if dash_cool and dash_cool.continue_during_traversal then Timers.tick_window(self, "_dash_cool", dt) end
+    if slide_cool and slide_cool.continue_during_traversal then Timers.tick_window(self, "_slide_cool", dt) end
+    M.tick_backdash_cooldown(self, dt)
+    M.tick_iframes(self, dt)
+  elseif self._movement_iframes then
+    -- Cannon loading can have cleared a motion clock since the last tick.
+    M.tick_iframes(self, 0)
+  end
+end
+
+M.reference_window_remaining = Timers.reference_remaining
+
+function M.start_dash_animation_lock(self)
+  Timers.start_window(self, "_anim_lock_t", self._anim_lock_t or 0)
+end
+
+function M.tick_animation_lock(self, dt)
+  Timers.tick_window(self, "_anim_lock_t", dt)
+end
+
+-- Sample the conditions driven by the opening velocity once per step.
+function M.sample_vertical(self, step, duration, input, release_g)
+  local extended = self._cfg.extended_jump
+  step.hang = false
+  if not release_g and self._extended_jump_active and extended and extended.enabled
+    and math.abs(self.vy) <= 100 and input and input.jump_held then
+    if not self._extended_jump_bonus_applied then
+      self.vy = self.vy + self._extended_jump_speed
+      self._extended_jump_bonus_applied = true
+      if self._cfg.debug_movement then
+        pstate_log(string.format("%s Extended jump bonus at apex: vy=%.1f",
+          self._cfg.debug_tag or "[PSTATE]", self.vy))
+      end
+    end
+    if self._extended_jump_hang_time < (extended.hang_time or 0.15) then
+      self._extended_jump_hang_time = self._extended_jump_hang_time + duration
+      step.hang = true
+    end
+  end
+  if self.vy <= 0 then
+    if self._jump_cut_pending then self._jump_cut_pending = nil end
+    if self._grapple_flight then self._grapple_flight = false end
+  end
+  step.vy, step.left, step.plan = self.vy, duration, nil
+end
+
+function M.vertical_forces(self, step, input, g, release_g, release_ready)
+  local cfg, vy = self._cfg, step.vy
+  local jump_held = input and input.jump_held
+  local hang = step.hang and self._extended_jump_active and jump_held
+  if release_g then
+    g = release_g
+  else
+    if hang then g = g * 0.1 end
+    if vy < 0 then g = g * (cfg.fall_gravity_mult or 1.0) end
+    local apex = cfg.apex_hang_speed or 0
+    if apex <= 0 then apex = cfg.apex_threshold_vy or 0 end
+    if apex > 0 and math.abs(vy) <= apex and not hang then
+      g = g * (cfg.apex_gravity_mult or 1.0)
+    end
+  end
+  local fast_falling = vy <= 0 and input and (input.move_y or 0) < -(cfg.fast_fall_threshold or 0.5)
+  if fast_falling then g = g * (cfg.fast_fall_mult or 1.0) end
+
+  local glide = cfg.glide
+  local glide_wanted = not self._pound_active and not release_g and glide and glide.enabled
+    and not self.grounded and (not glide.require_jump_held or jump_held)
+  if glide_wanted and vy < 0 and not fast_falling and not hang then
+    g = g * (glide.gravity_mult or 0.22)
+  end
+  if not release_g and vy > 0 and input and not jump_held and release_ready
+    and not self._extended_jump_active and not self._grapple_flight and not self._super_jump_rising then
+    if cfg.variable_jump_mode ~= "cut" then
+      g = g * (cfg.jump_release_gravity_mult or 1.0)
+    elseif self._jump_cut_pending then
+      self.vy = self.vy * (cfg.jump_cut_speed_mult or 0.4)
+      self._jump_cut_pending = nil
+      step.plan = nil
+    end
+  end
+
+  -- Glide gravity and the glide cap deliberately have different guards.
+  local cap = (CONFIG and CONFIG.physics and CONFIG.physics.max_fall_speed) or cfg.max_fall_speed
+  local player_cap = cfg.max_fall_speed_px or 0
+  if player_cap > 0 then cap = math.max(cap or -player_cap, -player_cap) end
+  if cap then
+    if fast_falling then cap = cap * (cfg.fast_fall_max_mult or 1) end
+    cap = cap * PlayerStats.mult("max_fall_mult")
+  end
+  local swim_cap = self._in_water and cfg.swim and cfg.swim.enabled and (cfg.swim.max_fall_speed or 0)
+  if swim_cap and swim_cap > 0 then cap = math.max(cap or -swim_cap, -swim_cap) end
+  local glide_cap = glide_wanted and glide.max_fall_speed
+  if glide_cap and glide_cap > 0 then cap = math.max(cap or -glide_cap, -glide_cap) end
+  if self._wall_sliding then
+    local wall_jump = (cfg.wall_climb and cfg.wall_climb.wall_jump) or {}
+    local speed = tonumber(wall_jump.slide_fall_speed)
+    if wall_jump.slide_fall_speed == nil then
+      speed = 350 * (cfg.scale_movement == false and 1 or (cfg.player_scale or 1))
+    end
+    local multiplier = self._wall_rule and self._wall_rule.slide_speed
+    if multiplier == 0 then speed = 0
+    elseif speed and multiplier and multiplier > 0 then speed = speed * multiplier end
+    if speed and (speed > 0 or multiplier == 0) then cap = math.max(cap or -speed, -speed) end
+  end
+  return g, cap
+end
+
+-- A reference clamp replaces the whole step's travel with travel at the
+-- clamped speed. Predict it before moving any part of that step.
+function M.vertical_plan(self, step, g, cap, lift, lift_cap)
+  local v = self.vy
+  local gravity_end = v + g * step.left
+  local lifted_end, lift_accel, lift_capped = M.env_lift(gravity_end, g, step.left, lift, lift_cap)
+  if lift_accel then self._jump_cut_pending = nil end
+  lift_accel = lift_accel or 0
+  if glide_debug_enabled() and not self.grounded and step.vy < 0 then
+    glide_log(string.format("[GLIDE] step: vy=%.1f, gravity=%.1f, fall cap=%s",
+      step.vy, g, tostring(cap)))
+  end
+  local finish = cap and math.max(lifted_end, cap) or lifted_end
+  local plan = step.storage
+  if not plan then plan = {}; step.storage = plan end
+  plan.g, plan.cap, plan.lift, plan.lift_cap = g, cap, lift, lift_cap
+  plan.start, plan.duration, plan.elapsed = v, step.left, 0
+  plan.accel, plan.gradient = lift_accel, g + lift_accel
+  plan.finish, plan.before_cap = finish, lifted_end
+  plan.linear = lift_capped or finish ~= lifted_end
+  return plan
+end
+
+function M.advance_vertical_piece(self, plan, dt, held_y)
+  plan.elapsed = plan.elapsed + dt
+  if plan.linear or plan.elapsed >= plan.duration - 1e-12 then
+    self.vy = plan.finish
+  else
+    self.vy = (plan.start + plan.g * plan.elapsed) + plan.accel * plan.elapsed
+  end
+  if held_y ~= nil then return held_y * dt end
+  local curve = plan.linear and 0 or -plan.gradient * dt * (dt - M.REFERENCE_STEP) / 2
+  return self.vy * dt + curve
+end
+
+function M.update_vertical(self, input, dt, hold_remaining, frame_offset, grapple_remaining, held_y, reference_handoff)
+  local h = M.REFERENCE_STEP
+  local step = self._vertical_grid
+  if not step then
+    step = {left = 0}
+    self._vertical_grid = step
+  end
+  if dt <= 0 then return 0 end
+  local cfg = self._cfg
+  local base_g = (cfg.gravity or -1200) * (self._gravity_mult or 1.0) * PlayerStats.mult("gravity_mult")
+  if self._in_water and cfg.swim and cfg.swim.enabled then
+    base_g = base_g * (cfg.swim.gravity_mult or 1.0)
+  end
+  local hold = cfg.jump_min_hold_time or 0
+  local wait = 0
+  if input and not input.jump_held and hold_remaining > 0 then
+    wait = JumpMath.shortest_jump_release_time(hold, h) - (hold - hold_remaining) - (frame_offset or 0)
+  end
+  -- The fixed-rate engine delta is the single-precision representation of
+  -- one reference step. Make one decision while using its real travel time.
+  local reference_frame = step.left == 0 and (reference_handoff or math.abs(dt - h) <= 1e-9)
+  local remaining, travel = dt, 0
+  local _, opening_bias = SurfaceEffects.at(self, 0)
+  local bias = opening_bias
+  while remaining > 1e-12 do
+    local offset = (frame_offset or 0) + dt - remaining
+    local _, next_bias, lift, lift_cap, contact_edge = SurfaceEffects.at(self, offset)
+    if held_y == nil and bias ~= next_bias then
+      self.vy = self.vy + bias - next_bias
+      bias = next_bias
+      step.left = 0
+      self._surface_vertical_travel = true
+    end
+    if step.plan and (step.plan.lift ~= lift or step.plan.lift_cap ~= lift_cap) then
+      step.left = 0
+    end
+    if step.left == 0 then
+      if held_y ~= nil and remaining < dt then self.vy = held_y end
+      if self._attack_vertical_sample then AttackExecutor.sample_attack_motion(self, offset) end
+      local duration = reference_frame and dt or h
+      local carry
+      if grapple_remaining then
+        carry = grapple_remaining - ((frame_offset or 0) + (dt - remaining) + duration)
+        -- The reference checks the carry after spending the step. Treat
+        -- authored frame multiples as spent despite countdown roundoff.
+        if carry <= h * 1e-6 then carry = 0 end
+      end
+      step.release_mult = Grapple.release_gravity(self, 1, ACTIONS.grapple, cfg.grapple, carry)
+      M.sample_vertical(self, step, duration, input, step.release_mult)
+    end
+    local piece = math.min(remaining, step.left)
+    if contact_edge < piece - 1e-9 then piece = contact_edge end
+    local ready = wait <= 1e-12
+    if not ready and wait < piece and (not reference_frame or piece - wait > 1e-7) then
+      piece = wait
+    end
+    local release_g = step.release_mult and base_g * step.release_mult
+    local g, cap = M.vertical_forces(self, step, input, base_g, release_g, ready)
+    local plan = step.plan
+    if not plan or g ~= plan.g or cap ~= plan.cap or lift ~= plan.lift or lift_cap ~= plan.lift_cap then
+      plan = M.vertical_plan(self, step, g, cap, lift, lift_cap)
+      step.plan = plan
+    end
+    local piece_travel = M.advance_vertical_piece(self, plan, piece, held_y)
+    -- At the reference rate the floor has already stopped the downward
+    -- motion before the first lift interval. Preserve that boundary when
+    -- the last grounded interval and the first lift share one display draw.
+    if self.grounded and self.vy < 0 and contact_edge < remaining - 1e-9
+      and math.abs(piece - contact_edge) < 1e-9 then
+      local _, _, next_lift = SurfaceEffects.at(self, offset + piece)
+      if next_lift > lift then
+        self.vy = 0
+        piece_travel = 0
+      end
+    end
+    travel = travel + piece_travel
+    if bias ~= opening_bias then travel = travel + (bias - opening_bias) * piece end
+    step.left = step.left - piece
+    remaining, wait = remaining - piece, wait - piece
+    if step.left <= 1e-12 then
+      step.left = 0
+      if self._super_jump_rising and plan.before_cap <= 0 then self._super_jump_rising = false end
+      if self._jump_cut_pending and self.vy <= 0 and (not self._extended_jump_active
+        or self._extended_jump_bonus_applied or self.vy < -100) then
+        self._jump_cut_pending = nil
+      end
+    end
+  end
+  step.last_vy, step.grounded = self.vy, self.grounded
+  if bias ~= opening_bias then self.vy = self.vy + bias - opening_bias end
+  return travel
+end
+
+function M.approach_horizontal_piece(self, dt, raw, carrying, stop_step)
+  local reference_step = M.REFERENCE_STEP
+  if raw ~= 0 then self.facing = Util.sign(raw) end
+  local base = (self._run_gate and (self._cfg.run_speed or 2000) or (self._cfg.walk_speed or 1200))
+  local shaped = shape_walk_speed_by_mode(self, raw)
+  local speed_mult = PlayerStats.mult("speed_mult")
+  local target_vx = base * shaped * speed_mult
+
+  if self._cfg.debug_movement and (self._run_gate or raw ~= 0) then
+    pstate_log(string.format("%s MOVEMENT: run_gate=%s, base_speed=%.0f, raw=%.3f, shaped=%.3f, target_vx=%.1f",
+      self._cfg.debug_tag or "[PSTATE]", tostring(self._run_gate), base, raw, shaped, target_vx))
+  end
+
+  -- Choose accel/decel with air control multipliers and turn braking
+  local on_ground = self.grounded
+  local accel = (self._cfg.accel or 18)
+  local decel = (self._cfg.decel or 26)
+  local reversing = (target_vx ~= 0 and self.vx ~= 0 and Util.sign(target_vx) ~= Util.sign(self.vx))
+  if on_ground then
+    local run_accel = self._cfg.run_accel or 0
+    if run_accel > 0 and not reversing then
+      local speed = math.abs(self.vx)
+      local walk_speed = (self._cfg.walk_speed or 1200) * speed_mult
+      if speed >= walk_speed and math.abs(target_vx) > speed then accel = run_accel end
+    end
+    accel = accel * PlayerStats.mult("ground_accel_mult")
+    decel = decel * PlayerStats.mult("ground_decel_mult")
+  else
+    accel = accel * (self._cfg.air_accel_mult or 1.0)
+    decel = decel * (self._cfg.air_decel_mult or 1.0)
+  end
+  local turn_brake = (self._cfg.turn_brake_mult or 1.0)
+  if on_ground then turn_brake = turn_brake * PlayerStats.mult("ground_turn_mult") end
+  local slippery_reverse = on_ground and reversing and turn_brake < 0.9999
+  if reversing and not slippery_reverse then decel = decel * turn_brake end
+
+  local stop_epsilon = (self._cfg.stop_epsilon or 3.0)
+  local move_target_vx = target_vx
+  local coasting_reverse = false
+  if slippery_reverse then
+    -- Let slippery surfaces keep the current slide alive until momentum has
+    -- bled down far enough for the new input direction to take over smoothly.
+    local walk_speed = (self._cfg.walk_speed or 1200)
+    local reverse_takeover_speed = math.max(
+      stop_epsilon * 8,
+      walk_speed * (0.08 + (0.20 * turn_brake))
+    )
+    if math.abs(self.vx) > reverse_takeover_speed then
+      move_target_vx = 0
+      coasting_reverse = true
+    end
+  end
+  local accelerating = (math.abs(move_target_vx) > math.abs(self.vx))
+  if coasting_reverse then accelerating = false end
+  local rate = accelerating and accel or decel
+  local carry_rate
+  move_target_vx, carry_rate = Grapple.carry_steering(self, move_target_vx, accelerating,
+    decel, ACTIONS.grapple, self._cfg.grapple, carrying)
+  if carry_rate ~= nil then
+    rate = carry_rate
+    accelerating = false
+  end
+  local t = Util.clamp(rate * reference_step, 0, 1)
+  -- Simple easing shaping for approach: >1 biases toward ease-out
+  if accelerating then
+    local e = (self._cfg.accel_ease_exp or 1.0)
+    if e ~= 1.0 then t = 1 - math.pow(1 - t, e) end
+  else
+    local e = (self._cfg.decel_ease_exp or 1.0)
+    if e ~= 1.0 then t = 1 - math.pow(1 - t, e) end
+  end
+  if carrying == nil then carrying = (self._grapple_carry_t or 0) > 0 end
+  if stop_step and shaped == 0 and not carrying then
+    local next_vx = Util.lerp(self.vx, move_target_vx, Timers.approach_fraction(t, stop_step))
+    if math.abs(next_vx) <= stop_epsilon then
+      self.vx = 0
+      self._move_dx_correction = nil
+      return
+    end
+  end
+  if dt == reference_step then
+    self.vx = Util.lerp(self.vx, move_target_vx, t)
+  elseif dt > 0 then
+    if t == 1 then
+      self.vx = move_target_vx
+    elseif t > 0 then
+      local fraction, ratio = Timers.approach_fraction(t, dt)
+      if fraction > 0 then
+        local dx = Timers.approach_travel(self.vx, move_target_vx, t, dt, ratio)
+        self.vx = Util.lerp(self.vx, move_target_vx, fraction)
+        self._move_dx_correction = dx - self.vx * dt
+      end
+    end
+  end
+  if not stop_step and shaped == 0 and math.abs(self.vx) <= stop_epsilon and not carrying then
+    self.vx = 0
+    self._move_dx_correction = nil
+  end
+end
+
+function M.approach_horizontal(self, dt, raw, carrying)
+  if dt <= 0 or not SurfaceEffects.horizontal_active(self, raw) then
+    return M.approach_horizontal_piece(self, dt, raw, carrying)
+  end
+  local initial = SurfaceEffects.at(self, 0)
+  local offset = self._surface_horizontal_offset or 0
+  local left, travel = dt, 0
+  local world_vx = self.vx + initial
+  while left > 1e-10 do
+    local bias, _, _, _, to_contact_edge = SurfaceEffects.at(self, offset)
+    local to_step_end = SurfaceEffects.horizontal_step(self, offset)
+    local piece = math.min(left, to_contact_edge, to_step_end)
+    self.vx = world_vx - bias
+    self._move_dx_correction = nil
+    M.approach_horizontal_piece(self, piece, raw, carrying, math.min(to_step_end, to_contact_edge))
+    world_vx = self.vx + bias
+    travel = travel + world_vx * piece + (self._move_dx_correction or 0)
+    if bias ~= 0 then self._surface_horizontal_tail = true end
+    offset, left = offset + piece, left - piece
+  end
+  if world_vx == 0 then self._surface_horizontal_tail = nil end
+  self._surface_horizontal_offset = offset
+  self.vx = world_vx - initial
+  self._move_dx_correction = travel - world_vx * dt
+end
+
+function M.approach_with_pulse(self, dt, raw, pulse_dt, carrying)
+  if pulse_dt > 0 and math.abs(raw) < 0.25 then
+    local strength = (self._cfg.slide and self._cfg.slide.autorun_strength) or 0
+    local nudged = math.max(-1, math.min(1, raw + (self._autorun_dir * strength)))
+    M.approach_horizontal(self, pulse_dt, nudged, carrying)
+    if pulse_dt < dt then
+      local pulse_dx = self.vx * pulse_dt + (self._move_dx_correction or 0)
+      self._move_dx_correction = nil
+      M.approach_horizontal(self, dt - pulse_dt, raw, carrying)
+      self._move_dx_correction = (self._move_dx_correction or 0) + pulse_dx - self.vx * pulse_dt
+    end
+  else
+    M.approach_horizontal(self, dt, raw, carrying)
+  end
+end
+
+function M.approach_after_launch_lock(self, dt, locked, raw, carry_dt)
+  local elapsed, travel = 0, 0
+  while elapsed < dt - 1e-12 do
+    local steering_locked = elapsed < locked
+    local carrying
+    local ending = steering_locked and locked or dt
+    if carry_dt ~= nil then
+      carrying = elapsed < carry_dt
+      if carrying then ending = math.min(ending, carry_dt) end
+    end
+    local piece = ending - elapsed
+    self._move_dx_correction = nil
+    M.approach_horizontal(self, piece, steering_locked and 0 or raw, carrying)
+    travel = travel + self.vx * piece + (self._move_dx_correction or 0)
+    elapsed = ending
+  end
+  self._move_dx_correction = travel - self.vx * dt
+end
+
+function M.stun_brake(self, dt)
+  local decel = math.max(0, tonumber(self._hurt_decel) or tonumber(self._cfg.hurt_decel) or self._cfg.decel or 0)
+  local epsilon = self._cfg.stop_epsilon or 3.0
+  local h = M.REFERENCE_STEP
+  if Timers.reference_frame(dt) and not self._stun_brake_step then
+    local t = 1 - math.exp(-decel * dt)
+    self.vx = Util.lerp(self.vx, 0, t)
+    if math.abs(self.vx) <= epsilon then self.vx = 0 end
+    return self.vx * dt
+  end
+  local fraction = 1 - math.exp(-decel * h)
+  local left, dx = dt, 0
+  while left > 1e-12 do
+    local step = self._stun_brake_step
+    if not step or step.vx ~= self.vx then
+      step = {left = step and step.left or h}
+      step.stop = math.abs(Util.lerp(self.vx, 0, 1 - math.exp(-decel * step.left))) <= epsilon
+    end
+    local piece = math.min(left, step.left)
+    if step.stop then
+      self.vx = 0
+    else
+      dx = dx + Timers.approach_travel(self.vx, 0, fraction, piece)
+      self.vx = Util.lerp(self.vx, 0, 1 - math.exp(-decel * piece))
+    end
+    step.left, step.vx = step.left - piece, self.vx
+    self._stun_brake_step = step.left > 1e-12 and step or nil
+    left = left - piece
+  end
+  return dx
+end
+
+function M.tick_stun(self, dt)
+  local remaining = Timers.window_remaining(self, "_stun_t")
+  local expired = Timers.tick_deadline(self, "_stun_t", dt)
+  -- The saved expiry update still locks controls, but no longer brakes.
+  local travel = math.max(0, math.min(dt, remaining - M.REFERENCE_STEP))
+  if Timers.reference_frame(dt) and not expired and dt - travel <= 1e-7 then return dt end
+  return travel
+end
+
+function M.same_vertical_sample(self, step)
+  if step.grounded ~= self.grounded then return false end
+  if step.last_vy == self.vy then return true end
+  if self._surface_reference_update or not self._surface_dt or not step.last_vy or not self.vy then return false end
+  local _, bias_y = SurfaceEffects.at(self, 0)
+  if bias_y == 0 or math.abs(step.last_vy - self.vy) > 1e-9 then return false end
+  -- Subtracting and restoring a vertical speed bias can round by a few
+  -- bits. That does not make the underlying motion a fresh gravity sample.
+  self.vy = step.last_vy
+  return true
+end
+
+function M.update(self, dt, input, bias_x, bias_y)
+  self._move_dx_correction, self._move_dy_correction = nil, nil
+  local launch_steer_dt, launch_steer_x = self._launch_steer_dt, self._launch_steer_x
+  self._launch_steer_dt, self._launch_steer_x = nil, nil
+  self._slide_exit_elapsed, self._dash_exit_elapsed = nil, nil
+  local previous_grid = self._vertical_grid
+  self._vertical_grid = nil
+  local steering_direction, steering_travel
+  if self._wall_jump_steering then
+    steering_direction, steering_travel = M.tick_wall_jump_steering(self, dt)
+  end
   if self._super_jump_rising or self._super_jump_started then
     if (self._dash_t or 0) > 0 or self._grapple_active
       or self._ledge_kinematic or self._ledge_hanging or self._ledge_climbing then
       self._super_jump_rising, self._super_jump_started = false, nil
-    elseif self.vy <= 0 then
+    elseif self.vy <= 0 and (not previous_grid or previous_grid.left == 0
+      or self.vy ~= previous_grid.last_vy) then
       self._super_jump_rising = false -- Keep the pending contact for a same-frame ceiling stop.
     end
   end
-  if self.grounded or self._on_wall then self._grapple_carry_t = 0 end
+  if self.grounded or self._on_wall then
+    self._grapple_carry_t = 0
+    if previous_grid then previous_grid.release_mult = nil end
+  end
   if input and (input.grapple_held == false or (input.grapple_held == nil and input.grapple_up)) then
     self._grapple_recast_t = 0
   else
-    self._grapple_recast_t = math.max(0, (self._grapple_recast_t or 0) - dt)
+    Timers.tick_window(self, "_grapple_recast_t", dt)
   end
   -- Keep a snapshot of the current input for edge-triggered actions
   self._last_input = input
@@ -1421,11 +2060,12 @@ function M.update(self, dt, input)
   end
   
   -- timers
-  Timers.tick_all(self, POUND_TIMERS, dt)
+  local pound_exit = M.tick_action_clocks(self, dt)
+  local horizontal_dt, stun_dt
   -- Runs after this frame's presses are queued and before they are used.
   if self._pound_active then drop_attacks_for_slam(self) end
   if (self._stun_t or 0) > 0 then
-    self._stun_t = math.max(0, self._stun_t - dt)
+    stun_dt = M.tick_stun(self, dt)
     self._control_locked = true
   elseif self._control_locked
     and not self._grapple_active
@@ -1435,15 +2075,14 @@ function M.update(self, dt, input)
     and (self._slide_t or 0) <= 0
     and (self._slide_recovery_t or 0) <= 0
     and (self._dash_t or 0) <= 0
-    and (self._backdash_t or 0) <= 0
-    and (self._roll_t or 0) <= 0 then
+    and (self._backdash_t or 0) <= 0 then
     -- release generic lock when not sliding/dashing
     self._control_locked = false
+    if pound_exit then horizontal_dt = dt + pound_exit end
   end
-  if (self._slide_cool or 0) > 0 then self._slide_cool = math.max(0, self._slide_cool - dt) end
-  if (self._dash_cool or 0) > 0 then self._dash_cool = math.max(0, self._dash_cool - dt) end
-  if (self._coyote_t or 0) > 0 then self._coyote_t = math.max(0, self._coyote_t - dt) end
-  if (self._jump_buffer_t or 0) > 0 then self._jump_buffer_t = math.max(0, self._jump_buffer_t - dt) end
+  Timers.tick_window(self, "_coyote_t", dt)
+  Timers.tick_window(self, "_jump_buffer_t", dt)
+  local jump_hold_remaining = self._jump_hold_t or 0
   if (self._jump_hold_t or 0) > 0 then self._jump_hold_t = math.max(0, self._jump_hold_t - dt) end
   
   -- Extended jump logic
@@ -1462,20 +2101,34 @@ function M.update(self, dt, input)
     end
   end
   -- Wall timers
-  Timers.tick_all(self, WALL_TIMERS, dt)
+  Timers.tick_windows(self, WALL_TIMERS, dt)
   if self._on_wall then 
     self._wall_time = (self._wall_time or 0) + dt 
+  end
+  local vertical_dt, held_travel
+  local exit_dx, exit_dy
+  if self._compact_roll_exit then
+    local roll_exit = self._compact_roll_exit
+    horizontal_dt, exit_dx = dt + roll_exit.offset, roll_exit.dx
+    self._compact_roll_exit = nil
   end
   if (self._slide_t or 0) > 0 then
     if self._cfg.debug_movement then
       pstate_log(string.format("%s SLIDE UPDATE: _slide_t=%.4f, dt=%.4f, new_slide_t=%.4f",
         self._cfg.debug_tag or "[PSTATE]", self._slide_t, dt, self._slide_t - dt))
     end
-    self._slide_t = math.max(0, self._slide_t - dt)
-    if self._slide_t == 0 then
+    local active, travel, offset = Timers.step_window(self, "_slide_t", dt)
+    if active then
+      held_travel = travel
+    else
+      if offset then
+        horizontal_dt = dt + offset
+        self._slide_exit_elapsed = horizontal_dt
+        if self._control_locked and travel > 0 then exit_dx = self.vx * travel end
+      end
       M.tick_iframes(self, 0) -- Drop movement immunity on this frame, preserving other windows.
       -- enter brief recovery/vulnerability window
-      self._slide_recovery_t = (self._cfg.slide and self._cfg.slide.recovery) or 0
+      Timers.start_window(self, "_slide_recovery_t", (self._cfg.slide and self._cfg.slide.recovery) or 0, true, offset)
       self._control_locked = (self._slide_recovery_t or 0) > 0
       -- stop movement during recovery
       if self._control_locked then self.vx = 0 end
@@ -1495,7 +2148,7 @@ function M.update(self, dt, input)
           self._run_gate = true
           -- autorun nudge
           local SL = self._cfg.slide or {}
-          self._autorun_nudge_t = SL.autorun_pulse or 0
+          Timers.start_window(self, "_autorun_nudge_t", SL.autorun_pulse or 0)
           local d = (self.facing ~= 0 and self.facing or (self.vx ~= 0 and (self.vx>0 and 1 or -1) or 1))
           self._autorun_dir = d
         else
@@ -1509,8 +2162,9 @@ function M.update(self, dt, input)
     end
   end
   if (self._slide_recovery_t or 0) > 0 then
-    self._slide_recovery_t = math.max(0, self._slide_recovery_t - dt)
-    if self._slide_recovery_t == 0 then
+    local active, _, offset = Timers.step_window(self, "_slide_recovery_t", dt)
+    if not active then
+      if offset then horizontal_dt = dt + offset end
       self._control_locked = false
       -- after recovery, optionally gate into run if still held
       if self._cfg.slide_to_run and self._cfg.slide_to_run.enabled and self._cfg.slide_to_run.run_after_slide_when_held and input.slide_held and M.dash_allowed() then
@@ -1520,7 +2174,7 @@ function M.update(self, dt, input)
         self._run_gate = true
         -- autorun nudge
         local SL = self._cfg.slide or {}
-        self._autorun_nudge_t = SL.autorun_pulse or 0
+        Timers.start_window(self, "_autorun_nudge_t", SL.autorun_pulse or 0)
         local d = (self.facing ~= 0 and self.facing or (self.vx ~= 0 and (self.vx>0 and 1 or -1) or 1))
         self._autorun_dir = d
       else
@@ -1532,34 +2186,47 @@ function M.update(self, dt, input)
       end
     end
   end
-  if (self._roll_t or 0) > 0 then
-    self._roll_t = math.max(0, self._roll_t - dt)
-    if self._roll_t == 0 then
-      local roll_cfg = self._cfg.roll or {}
-      if roll_cfg.end_speed_mult ~= nil then
-        self.vx = (self.vx or 0) * roll_cfg.end_speed_mult
-      elseif roll_cfg.stop_on_end ~= false then
-        self.vx = 0
-      end
-      if (roll_cfg.cooldown or 0) > 0 then
-        self._roll_cool = math.max(self._roll_cool or 0, roll_cfg.cooldown)
-      end
-      if not ((self._slide_t or 0) > 0 or (self._dash_t or 0) > 0 or (self._backdash_t or 0) > 0 or (self._stun_t or 0) > 0) then
-        self._control_locked = false
-      end
-      pcall(msg.post, msg.url(), C.MSG.ROLL_STATE, { active = false })
-    end
-  end
-  if (self._roll_cool or 0) > 0 then
-    self._roll_cool = math.max(0, self._roll_cool - dt)
-  end
+  local dash_damping, dash_before_exit, dash_held_y, exact_dash_y
   if (self._dash_t or 0) > 0 then
-    self._dash_t = math.max(0, self._dash_t - dt)
-    if self._dash_t == 0 then
-      M.tick_iframes(self, 0)
-      if self._last_dash_dir_y ~= nil then
-        self.vy = self.vy * (self._cfg.air_dash.end_vertical_speed_mult or 0.35)
+    local window = self._movement_windows and self._movement_windows._dash_t
+    local directional = self._last_dash_dir_y ~= nil and not self._dash_vertical_exited
+    local dash_edge = directional and window and window.visible == self._dash_t and window.length - window.elapsed
+    if dash_edge then
+      local h = M.REFERENCE_STEP
+      local edge_on_grid = math.abs(dash_edge - math.floor(dash_edge / h + 0.5) * h) < 1e-7
+      exact_dash_y = math.abs(dt - h) > 1e-9 or not edge_on_grid
+      if exact_dash_y and dash_edge < dt - 1e-12 then
+        dash_damping = self._cfg.air_dash.end_vertical_speed_mult or 0.35
+        dash_before_exit = math.max(0, dash_edge)
+        dash_held_y = self._dash_vy
+        self._dash_vertical_exited = true
       end
+    end
+    local active, travel, offset = Timers.step_window(self, "_dash_t", dt)
+    if active then
+      held_travel = travel
+    else
+      if offset then
+        horizontal_dt = dt + offset
+        local legacy_held_y = not exact_dash_y and not self._dash_vertical_exited and self._dash_vy
+        if legacy_held_y then vertical_dt = horizontal_dt end
+        self._dash_exit_elapsed = horizontal_dt
+        if travel > 0 then
+          if self._control_locked then exit_dx = self.vx * travel end
+          if legacy_held_y then exit_dy = legacy_held_y * travel end
+        end
+      end
+      M.tick_iframes(self, 0)
+      if self._last_dash_dir_y ~= nil and not self._dash_vertical_exited then
+        self._jump_cut_pending = nil
+        if self._dash_vy == nil then
+          dash_damping = self._cfg.air_dash.end_vertical_speed_mult or 0.35
+        else
+          self.vy = self.vy * (self._cfg.air_dash.end_vertical_speed_mult or 0.35)
+          previous_grid = nil
+        end
+      end
+      self._dash_vertical_exited = nil
       self._dash_vy = nil
       self._last_dash_dir_y = nil
       self._control_locked = false
@@ -1574,14 +2241,21 @@ function M.update(self, dt, input)
     self._double_jump_t = math.max(0, self._double_jump_t - dt)
   end
   if (self._backdash_t or 0) > 0 then
-    self._backdash_t = math.max(0, self._backdash_t - dt)
-    if self._backdash_t == 0 then
+    local active, travel = Timers.step_held_speed(self, "_backdash_t", dt)
+    if active then
+      held_travel = travel
+    else
+      if travel > 0 then
+        horizontal_dt = dt - travel
+        if self._control_locked then exit_dx = self.vx * travel end
+      end
       self._control_locked = false
     end
   end
 
   if self._cfg.slide_to_run and self._cfg.slide_to_run.enabled and not M.dash_allowed() then
-    self._run_gate, self._autorun_nudge_t = false, 0
+    self._run_gate = false
+    Timers.start_window(self, "_autorun_nudge_t", 0)
   end
   if self._cfg.slide_to_run and self._cfg.slide_to_run.enabled and self._cfg.slide_to_run.clear_run_on_release and not input.slide_held then
     if self._cfg.debug_movement and self._run_gate then
@@ -1602,7 +2276,22 @@ function M.update(self, dt, input)
   -- Grapple owns velocity through the ordinary collision integrator. Running
   -- normal air steering/gravity afterward used to overwrite every pull.
   validate_grapple(self, input)
-  if Grapple.update(self, dt, input, ACTIONS.grapple, self._cfg.grapple) then return end
+  self._grapple_bias_x, self._grapple_bias_y = bias_x, bias_y
+  local grapple_motion, release_travel, release_dx, release_dy =
+    Grapple.update(self, dt, input, ACTIONS.grapple, self._cfg.grapple)
+  self._grapple_bias_x, self._grapple_bias_y = nil, nil
+  if grapple_motion then return end
+  local cannon_offset = self._launch_fire_offset
+  self._launch_fire_offset = nil
+  if cannon_offset then
+    release_travel, release_dx, release_dy = cannon_offset, 0, 0
+  end
+  release_travel = release_travel or self._zipline_release_travel
+  self._zipline_release_travel = nil
+  if release_travel then
+    horizontal_dt, vertical_dt = dt - release_travel, dt - release_travel
+    exit_dx, exit_dy = release_dx or self.vx * release_travel, release_dy or self.vy * release_travel
+  end
 
   -- Kinematic ledge movement takes priority over wall movement, gravity and
   -- horizontal input. player.script consumes the public transition flags for
@@ -1646,7 +2335,7 @@ function M.update(self, dt, input)
       self._wall_time = 0
       -- start wall coyote to allow late wall jump
       local WJ = self._cfg.wall_climb.wall_jump or {}
-      self._wall_coyote_t = WJ.coyote_time or 0
+      Timers.start_window(self, "_wall_coyote_t", WJ.coyote_time or 0)
       -- continue with normal movement
     else
       -- Require holding toward the wall to remain attached
@@ -1660,7 +2349,7 @@ function M.update(self, dt, input)
           self._on_wall = false
           self._wall_side = 0
           local WJ = self._cfg.wall_climb.wall_jump or {}
-          self._wall_coyote_t = WJ.coyote_time or 0
+          Timers.start_window(self, "_wall_coyote_t", WJ.coyote_time or 0)
           -- fall through to normal movement
         end
       end
@@ -1682,8 +2371,8 @@ function M.update(self, dt, input)
         self._wall_side = 0
         self._wall_time = 0
         self.vx = -side * (self._cfg.wall_climb.detach_push or 220)
-        self._wall_coyote_t = WJ.coyote_time or 0
-        self._wall_reattach_lock_t = self._cfg.wall_climb.reattach_lock or (WJ.reattach_lock or 0.18)
+        Timers.start_window(self, "_wall_coyote_t", WJ.coyote_time or 0)
+        Timers.start_window(self, "_wall_reattach_lock_t", self._cfg.wall_climb.reattach_lock or (WJ.reattach_lock or 0.18))
       end
     end
     
@@ -1701,6 +2390,7 @@ function M.update(self, dt, input)
 
       -- STICK TO THE WALL - no horizontal movement at all
       self.vx = 0
+      self._jump_cut_pending = nil
     
       -- Direct control of vertical movement with left stick
       if math.abs(climb_input) > 0.1 then
@@ -1716,7 +2406,7 @@ function M.update(self, dt, input)
           local WJ = self._cfg.wall_climb.wall_jump or {}
           self._on_wall = false
           self._wall_side = 0
-          self._wall_coyote_t = WJ.coyote_time or 0
+          Timers.start_window(self, "_wall_coyote_t", WJ.coyote_time or 0)
           return  -- Let gravity take over
         end
       else
@@ -1750,7 +2440,7 @@ function M.update(self, dt, input)
       self._on_wall = false
       self._wall_side = 0
       self._wall_time = 0
-      self._wall_coyote_t = WJ.slide_coyote_time or 0
+      Timers.start_window(self, "_wall_coyote_t", WJ.slide_coyote_time or 0.12)
     else
       self._wall_sliding = true
       self.vx = 0
@@ -1758,262 +2448,114 @@ function M.update(self, dt, input)
   end
 
   -- Horizontal
-  -- If sliding/backdashing/air-dashing/rolling with control lock, keep imposed vx
+  local grapple_remaining
+  local frame_dt = dt
+  dt = horizontal_dt or frame_dt
+  -- While an action locks movement, keep its imposed velocity.
   if self._super_jump_rising and (self._cfg.super_jump or {}).lock_horizontal ~= false then
     self.vx = 0
-  elseif self._control_locked and ((self._slide_t or 0) > 0 or (self._dash_t or 0) > 0 or (self._slide_recovery_t or 0) > 0 or (self._backdash_t or 0) > 0 or (self._roll_t or 0) > 0 or self._pound_active or (self._pound_recovery_t or 0) > 0) then
+  elseif self._control_locked and ((self._slide_t or 0) > 0 or (self._dash_t or 0) > 0 or (self._slide_recovery_t or 0) > 0 or (self._backdash_t or 0) > 0 or self._pound_active or (self._pound_recovery_t or 0) > 0) then
     if self.vx ~= 0 then self.facing = Util.sign(self.vx) end
-  elseif (self._stun_t or 0) > 0 then
-    -- During hit-stun: decelerate to zero, ignore input.
-    -- This prevents the player from moving freely during stun.
-    local stun_decel = math.max(0, tonumber(self._hurt_decel) or tonumber(self._cfg.hurt_decel) or self._cfg.decel or 0)
-    local t = 1 - math.exp(-stun_decel * dt)
-    self.vx = Util.lerp(self.vx, 0, t)
-    if math.abs(self.vx) <= (self._cfg.stop_epsilon or 3.0) then self.vx = 0 end
-  elseif not self._on_wall then  -- Don't apply horizontal movement while on wall
+    if held_travel and held_travel ~= frame_dt then self._move_dx_correction = self.vx * (held_travel - frame_dt) end
+  elseif stun_dt and stun_dt >= dt - 1e-12 and stun_dt > 0 then
+    local dx = M.stun_brake(self, dt)
+    if dx ~= self.vx * dt then self._move_dx_correction = dx - self.vx * dt end
+  elseif not self._on_wall or (stun_dt or 0) > 0 then
+    local stun_dx
+    if stun_dt and stun_dt > 0 then
+      stun_dx = M.stun_brake(self, stun_dt)
+      dt = dt - stun_dt
+    end
+    self._stun_brake_step = nil
     local raw = input.move_x or 0
-    -- Apply autorun nudge if active and stick is neutral-ish
-    if (self._autorun_nudge_t or 0) > 0 then
-      self._autorun_nudge_t = math.max(0, self._autorun_nudge_t - dt)
-      if math.abs(raw) < 0.25 then
-        local strength = ((self._cfg.slide and self._cfg.slide.autorun_strength) or 0)
-        raw = math.max(-1, math.min(1, raw + (self._autorun_dir * strength)))
+    local pulse_dt = Timers.consume_pulse(self, "_autorun_nudge_t", dt, frame_dt)
+    local forced = math.min(steering_travel or 0, dt)
+    grapple_remaining = Timers.window_remaining(self, "_grapple_carry_t")
+    local carry_dt
+    if Timers.has_window(self, "_grapple_carry_t") then
+      local _, travel = Timers.tick_deadline(self, "_grapple_carry_t", frame_dt - (release_travel or 0))
+      local tolerance = Timers.reference_frame(frame_dt) and 1e-7 or 1e-12
+      if math.abs(travel - dt) <= tolerance then travel = dt end
+      carry_dt = math.min(dt, travel)
+    end
+    if steering_direction and forced == dt then
+      M.approach_horizontal(self, dt, steering_direction)
+    elseif forced > 0 then
+      M.approach_horizontal(self, forced, steering_direction)
+      local forced_dx = self.vx * forced + (self._move_dx_correction or 0)
+      self._move_dx_correction = nil
+      M.approach_with_pulse(self, dt - forced, raw, pulse_dt - forced)
+      self._move_dx_correction = (self._move_dx_correction or 0) + forced_dx - self.vx * forced
+    elseif launch_steer_dt and launch_steer_dt < dt then
+      M.approach_after_launch_lock(self, dt, launch_steer_dt, launch_steer_x, carry_dt)
+    elseif carry_dt and carry_dt < dt then
+      local carry_dx = 0
+      if carry_dt > 0 then
+        M.approach_with_pulse(self, carry_dt, raw, math.min(pulse_dt, carry_dt), true)
+        carry_dx = self.vx * carry_dt + (self._move_dx_correction or 0)
+        self._move_dx_correction = nil
       end
+      M.approach_with_pulse(self, dt - carry_dt, raw, pulse_dt - carry_dt, false)
+      self._move_dx_correction = (self._move_dx_correction or 0) + carry_dx - self.vx * carry_dt
+    else
+      M.approach_with_pulse(self, dt, raw, pulse_dt, carry_dt and true or nil)
     end
-    if raw ~= 0 then self.facing = Util.sign(raw) end
-    local base = (self._run_gate and (self._cfg.run_speed or 2000) or (self._cfg.walk_speed or 1200))
-    local shaped = shape_walk_speed_by_mode(self, raw)
-    local target_vx = base * shaped * PlayerStats.mult("speed_mult")
-    
-    if self._cfg.debug_movement and (self._run_gate or raw ~= 0) then
-      pstate_log(string.format("%s MOVEMENT: run_gate=%s, base_speed=%.0f, raw=%.3f, shaped=%.3f, target_vx=%.1f", 
-        self._cfg.debug_tag or "[PSTATE]", tostring(self._run_gate), base, raw, shaped, target_vx))
-    end
-
-  -- Choose accel/decel with air control multipliers and turn braking
-  local on_ground = self.grounded
-  local accel = (self._cfg.accel or 18)
-  local decel = (self._cfg.decel or 26)
-  if on_ground then
-    accel = accel * PlayerStats.mult("ground_accel_mult")
-    decel = decel * PlayerStats.mult("ground_decel_mult")
-  else
-    accel = accel * (self._cfg.air_accel_mult or 1.0)
-    decel = decel * (self._cfg.air_decel_mult or 1.0)
+    if not carry_dt then self._grapple_carry_t = math.max(0, grapple_remaining - frame_dt) end
+    if stun_dx then exit_dx = (exit_dx or 0) + stun_dx end
   end
-  local reversing = (target_vx ~= 0 and self.vx ~= 0 and Util.sign(target_vx) ~= Util.sign(self.vx))
-  local turn_brake = (self._cfg.turn_brake_mult or 1.0)
-  if on_ground then turn_brake = turn_brake * PlayerStats.mult("ground_turn_mult") end
-  local slippery_reverse = on_ground and reversing and turn_brake < 0.9999
-  if reversing and not slippery_reverse then decel = decel * turn_brake end
-
-  local stop_epsilon = (self._cfg.stop_epsilon or 3.0)
-  local move_target_vx = target_vx
-  local coasting_reverse = false
-  if slippery_reverse then
-    -- Let slippery surfaces keep the current slide alive until momentum has
-    -- bled down far enough for the new input direction to take over smoothly.
-    local walk_speed = (self._cfg.walk_speed or 1200)
-    local reverse_takeover_speed = math.max(
-      stop_epsilon * 8,
-      walk_speed * (0.08 + (0.20 * turn_brake))
-    )
-    if math.abs(self.vx) > reverse_takeover_speed then
-      move_target_vx = 0
-      coasting_reverse = true
-    end
-  end
-  local accelerating = (math.abs(move_target_vx) > math.abs(self.vx))
-  if coasting_reverse then accelerating = false end
-  local rate = accelerating and accel or decel
-  local carry_rate
-  move_target_vx, carry_rate = Grapple.carry_steering(self, move_target_vx, accelerating,
-    decel, ACTIONS.grapple, self._cfg.grapple)
-  if carry_rate ~= nil then
-    rate = carry_rate
-    accelerating = false
-  end
-  local t = Util.clamp(rate * dt, 0, 1)
-  -- Simple easing shaping for approach: >1 biases toward ease-out
-  if accelerating then
-    local e = (self._cfg.accel_ease_exp or 1.0)
-    if e ~= 1.0 then t = 1 - math.pow(1 - t, e) end
-  else
-    local e = (self._cfg.decel_ease_exp or 1.0)
-    if e ~= 1.0 then t = 1 - math.pow(1 - t, e) end
-  end
-  self.vx = Util.lerp(self.vx, move_target_vx, t)
-  if shaped == 0 and math.abs(self.vx) <= stop_epsilon and (self._grapple_carry_t or 0) <= 0 then self.vx = 0 end
-  self._grapple_carry_t = math.max(0, (self._grapple_carry_t or 0) - dt)
+  if dt ~= frame_dt or exit_dx then
+    self._move_dx_correction = (self._move_dx_correction or 0) + self.vx * (dt - frame_dt) + (exit_dx or 0)
   end
 
-  -- Vertical
-  local base_g = self._cfg.gravity or -1200
-  local g = base_g * (self._gravity_mult or 1.0) * PlayerStats.mult("gravity_mult")
-  -- Water gravity is configured by game_config.player.swim.
-  if self._in_water and (self._cfg.swim and self._cfg.swim.enabled) then
-    g = g * (self._cfg.swim.gravity_mult or 1.0)
+  -- Same-speed contact transitions and skipped gravity updates can
+  -- invalidate the sample even when the numerical velocity did not change.
+  if previous_grid then
+    if not M.same_vertical_sample(self, previous_grid) then previous_grid.left = 0 end
+    self._vertical_grid = previous_grid
   end
-  local release_g = Grapple.release_gravity(self, g, ACTIONS.grapple, self._cfg.grapple)
-  
-  -- Extended jump processing
-  local extended_jump_hang_active = false
-  
-  if not release_g and self._extended_jump_active and self._cfg.extended_jump and self._cfg.extended_jump.enabled then
-    local hang_time = self._cfg.extended_jump.hang_time or 0.15
-    -- Use a reasonable threshold for extended jump detection (when velocity is near zero at apex)
-    local extended_jump_threshold = 100  -- Detect when we're near the peak
-    
-    -- Debug output at apex to see what's happening
-    if self._cfg.debug_movement and math.abs(self.vy) <= extended_jump_threshold then
-      pstate_log(string.format("%s At apex: vy=%.1f, jump_held=%s, bonus_applied=%s, extended_active=%s", 
-        self._cfg.debug_tag or "[PSTATE]", self.vy, tostring(input.jump_held), 
-        tostring(self._extended_jump_bonus_applied), tostring(self._extended_jump_active)))
-    end
-    
-    -- Check if we're at the peak and button is still held
-    if math.abs(self.vy) <= extended_jump_threshold then
-      if input.jump_held and not self._extended_jump_bonus_applied then
-        -- At peak with button held - apply extended jump bonus
-        self.vy = self.vy + self._extended_jump_speed
-        self._extended_jump_bonus_applied = true
-        if self._cfg.debug_movement then
-          pstate_log(string.format("%s Extended jump activated at peak! +%.1f (total vy=%.1f)", 
-            self._cfg.debug_tag or "[PSTATE]", self._extended_jump_speed, self.vy))
-        end
-      end
-      
-      -- Handle hang time at apex (ONLY if button is still held)
-      if input.jump_held then
-        if self._extended_jump_hang_time < hang_time then
-          self._extended_jump_hang_time = self._extended_jump_hang_time + dt
-          g = g * 0.1  -- Very light gravity during hang time
-          extended_jump_hang_active = true
-          if self._cfg.debug_movement and self._extended_jump_hang_time < dt then
-            pstate_log(string.format("%s Extended jump hang time started", self._cfg.debug_tag or "[PSTATE]"))
-          end
-        end
-      end
-    end
-  end
-  
-  -- Grapple release flight lasts only until the apex of the released arc.
-  if self._grapple_flight and self.vy <= 0 then self._grapple_flight = false end
-  if release_g then
-    g = release_g
-  else
-  -- Extra downward gravity when falling
-  if self.vy < 0 then g = g * (self._cfg.fall_gravity_mult or 1.0) end
-  -- Apex hang: lighten gravity around peak (if not in extended jump hang)
-  local apex_th = (self._cfg.apex_threshold_vy or 0)
-  if apex_th > 0 and math.abs(self.vy) <= apex_th and not extended_jump_hang_active then
-    g = g * (self._cfg.apex_gravity_mult or 1.0)
-  end
-  end
-  -- Fast-fall when holding down
-  if input and (input.move_y or 0) < -((self._cfg.fast_fall_threshold or 0.5)) then
-    g = g * (self._cfg.fast_fall_mult or 1.0)
-  end
-  -- Glide: hold jump to slow descent (does not apply during extended jump hang)
-  local debug_glide = glide_debug_enabled()
-  do
-    local GL = self._cfg.glide
-    -- Don't glide during extended jump hang, and check that we're not fast-falling
-    local not_fast_falling = (not input) or ((input.move_y or 0) >= -((self._cfg.fast_fall_threshold or 0.5)))
-
-    -- Debug: show when falling (controlled by debug_config.gameplay.glide)
-    if debug_glide and not self.grounded and self.vy < 0 then
-      local jump_held = input and input.jump_held
-      glide_log(string.format("[GLIDE] Falling: vy=%.1f, jump_held=%s, glide_enabled=%s, not_fast_falling=%s, extended_hang=%s",
-        self.vy, tostring(jump_held), tostring(GL and GL.enabled), tostring(not_fast_falling), tostring(extended_jump_hang_active)))
-    end
-
-    if not self._pound_active and not release_g and GL and GL.enabled and not self.grounded and self.vy < 0 and not_fast_falling and not extended_jump_hang_active then
-      local want = (not GL.require_jump_held) or (input and input.jump_held)
-
-      -- Debug: show glide decision (controlled by debug_config.gameplay.glide)
-      if debug_glide then
-        glide_log(string.format("[GLIDE] Check: want=%s, require_jump_held=%s, jump_held=%s",
-          tostring(want), tostring(GL.require_jump_held), tostring(input and input.jump_held)))
-      end
-
-      if want then
-        g = g * (GL.gravity_mult or 0.22)
-        if debug_glide then
-          glide_log(string.format("[GLIDE] *** ACTIVE *** gravity mult=%.2f", GL.gravity_mult or 0.22))
-        end
-        if GL.max_fall_speed and GL.max_fall_speed > 0 then
-          -- Clamp downward velocity after applying gravity below
-        end
+  local held_y = (self._dash_t or 0) > 0 and not self._dash_vertical_exited and self._dash_vy
+  local dy
+  if dash_damping then
+    local before_exit = math.max(0, dash_before_exit or 0)
+    if before_exit > 0 then
+      if dash_held_y ~= nil then
+        dy = M.update_vertical(self, input, before_exit, jump_hold_remaining, 0, grapple_remaining, dash_held_y)
+        self.vy = dash_held_y
       else
-        if debug_glide then glide_log("[GLIDE] NOT active (want=false)") end
+        dy = M.update_vertical(self, input, before_exit, jump_hold_remaining, 0, grapple_remaining)
       end
     end
+    self._jump_cut_pending = nil
+    self.vy = self.vy * dash_damping
+    self._vertical_grid = nil
+    dy = (dy or 0) + M.update_vertical(self, input, frame_dt - before_exit, jump_hold_remaining, before_exit, grapple_remaining)
+  else
+    local motion_dt = vertical_dt or frame_dt
+    -- A native-rate paused dash can hand back several nanoseconds of
+    -- previously trimmed travel. It still spends one reference decision.
+    local reference_handoff = not cannon_offset and vertical_dt ~= nil and math.abs(frame_dt - M.REFERENCE_STEP) <= 1e-9
+    dy = M.update_vertical(self, input, motion_dt, jump_hold_remaining, frame_dt - motion_dt,
+      grapple_remaining and grapple_remaining + (release_travel or 0), held_y or nil, reference_handoff)
   end
-  if not release_g then
-  -- Early jump release (handled by existing jump_release_gravity_mult) - but not during extended jump,
-  -- and never for the rising arc after letting go of a grapple (that ascent is swing momentum).
-  if self.vy > 0 and input and not input.jump_held and (self._jump_hold_t or 0) <= 0
-    and not self._extended_jump_active and not self._grapple_flight and not self._super_jump_rising then
-    g = g * (self._cfg.jump_release_gravity_mult or 1.0)
-  end
-  end
-  self.vy = self.vy + g * dt
-  M.apply_env_lift(self, g, dt)
-  if self._super_jump_rising and self.vy <= 0 then self._super_jump_rising = false end
-  -- Global max fall speed clamp (terminal velocity)
-  do
-    local maxfall = (CONFIG and CONFIG.physics and CONFIG.physics.max_fall_speed) or (self._cfg.max_fall_speed)
-    if maxfall then
-      -- maxfall expected negative (down)
-      self.vy = math.max(self.vy, maxfall * PlayerStats.mult("max_fall_mult"))
-    end
-  end
-
-  -- Swim: clamp fall speed in water (game_config.player.swim).
-  if self._in_water and (self._cfg.swim and self._cfg.swim.enabled) then
-    local maxfall = self._cfg.swim.max_fall_speed or 0
-    if maxfall > 0 then self.vy = math.max(self.vy, -maxfall) end
-  end
-
-  -- Apply glide max fall speed clamp ONLY when glide is actually active
-  do
-    local GL = self._cfg.glide
-    if not self._pound_active and not release_g and GL and GL.enabled and not self.grounded and self.vy < 0 then
-      -- Only apply speed cap if jump button is being held (glide is active)
-      local glide_active = (not GL.require_jump_held) or (input and input.jump_held)
-      if glide_active and GL.max_fall_speed and GL.max_fall_speed > 0 then
-        self.vy = math.max(self.vy, -GL.max_fall_speed)
-        if debug_glide then
-          glide_log("[GLIDE] *** SPEED CAP APPLIED *** max_fall_speed=" .. GL.max_fall_speed)
-        end
-      end
-    end
-  end
-
-  -- Wall slide fall cap (see the wall slide block above).
-  if self._wall_sliding and self.vy < 0 then
-    local WJ = (self._cfg.wall_climb and self._cfg.wall_climb.wall_jump) or {}
-    local max_fall = tonumber(WJ.slide_fall_speed)
-    local multiplier = self._wall_rule and self._wall_rule.slide_speed
-    if multiplier == 0 then max_fall = 0
-    elseif max_fall and multiplier and multiplier > 0 then max_fall = max_fall * multiplier end
-    if max_fall and (max_fall > 0 or multiplier == 0) then
-      self.vy = math.max(self.vy, -max_fall)
-    end
-  end
-
-  -- Re-assert after every gravity/fall/glide/wall cap, including a flat dash.
-  if (self._dash_t or 0) > 0 and self._dash_vy ~= nil then
-    self.vy = self._dash_vy
+  if held_y then
+    self._jump_cut_pending = nil
+    self.vy = held_y
+    if self._vertical_grid then self._vertical_grid.last_vy = held_y end
+    self._move_dy_correction = not exact_dash_y and held_travel and held_travel ~= frame_dt
+      and held_y * (held_travel - frame_dt) or nil
+  elseif self.vy * frame_dt ~= dy or exit_dy then
+    self._move_dy_correction = dy - self.vy * frame_dt + (exit_dy or 0)
   end
 
   -- If a jump is buffered and we regain a valid jump window (ground or coyote), consume it
   if not self._pound_active and (self._jump_buffer_t or 0) > 0 and (self.grounded or (self._coyote_t or 0) > 0) then
-    self.vy = M.jump_velocity(self, M.ground_jump_speed(self))
+    self._vertical_grid = nil
+    self.vy = M.ground_jump_velocity(self)
+    self._move_dy_correction = nil
+    self._jump_cut_pending = true
     self.grounded = false
-    self._coyote_t = 0
-    self._jump_buffer_t = 0
+    Timers.clear_window(self, "_coyote_t")
+    Timers.clear_window(self, "_jump_buffer_t")
     self._jump_hold_t = self._cfg.jump_min_hold_time or 0
   end
 
@@ -2023,8 +2565,6 @@ function M.update(self, dt, input)
     mode = "Air Dash"
   elseif (self._backdash_t or 0) > 0 then
     mode = "Backdash"
-  elseif (self._roll_t or 0) > 0 then
-    mode = "Roll"
   elseif (self._slide_t or 0) > 0 then
     mode = "Slide"
   elseif (self._slide_recovery_t or 0) > 0 then
@@ -2052,17 +2592,25 @@ end
 -- overpower the attacker-directed kick. A zero axis preserves existing motion.
 function M.apply_knockback(self, kx, ky)
   M.cancel_ground_pound(self)
+  if (kx and kx ~= 0) or (ky and ky ~= 0) then M.interrupt_window_handoffs(self) end
   if kx and kx ~= 0 then self.vx = kx end
-  if ky and ky ~= 0 then self.vy = ky end
+  if ky and ky ~= 0 then
+    self._vertical_grid = nil
+    self.vy = ky
+    self._jump_cut_pending = nil
+  end
 end
 
 -- Lock controls briefly to simulate hit-stun
 function M.apply_stun(self, t)
   local tt = tonumber(t) or 0
   if tt > 0 then
+    M.interrupt_window_handoffs(self)
+    self._wall_jump_steering = nil
     M.cancel_ground_pound(self)
     Grapple.clear(self)
-    self._stun_t = math.max(self._stun_t or 0, tt)
+    Timers.extend_window(self, "_stun_t", tt)
+    self._stun_brake_step = nil
     self._control_locked = true
   end
 end
@@ -2070,9 +2618,15 @@ end
 -- Grant temporary invulnerability (e.g., after a successful parry)
 function M.add_iframes(self, t)
   local tt = tonumber(t) or 0
-  if tt > 0 then
-    self._parry_iframes_t = math.max(self._parry_iframes_t or 0, tt)
+  if tt > (self._parry_iframes_t or 0) then
+    Timers.start_combat_window(self, "_parry_iframes_t", tt)
+    -- Damage messages can arrive back-to-back before the next movement tick.
+    self._movement_iframes, self._invulnerable = true, true
   end
+end
+
+function M.add_damage_iframes(self)
+  Timers.start_combat_window(self, "_damage_iframes_t", self._damage_iframes_duration or 0.8)
 end
 
 return M

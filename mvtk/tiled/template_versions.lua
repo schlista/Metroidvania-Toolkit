@@ -16,10 +16,12 @@
 local M = {}
 
 -- Latest template schema version shipped in this branch.
-M.CURRENT = "2.8.0"
+M.CURRENT = "2.10.0"
 
 -- Versions the runtime accepts during validation. Keep ordered newest-first.
 M.SUPPORTED = {
+    "2.10.0",
+    "2.9.0",
     "2.8.0",
     "2.7.0",
     "2.6.0",

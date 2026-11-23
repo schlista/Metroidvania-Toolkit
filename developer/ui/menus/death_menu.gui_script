@@ -49,7 +49,7 @@ local function open(self)
   print("[DEATH_GUI] Death screen opened - starting 2 second delay")
   self._enabled = true
   self._visible = false
-  self._delay_timer = 2.0  -- 2 second delay
+  require("mvtk.player.timers").start_combat_window(self, "_delay_timer", 2.0)
   self._save_failed = false
   refresh_prompt(self)
   msg.post(".", "enable")
@@ -136,8 +136,7 @@ function update(self, dt)
   if self._enabled and self._prompt_revision ~= DisplayText.revision() then refresh_prompt(self) end
   -- Handle delay timer before showing death screen
   if self._enabled and not self._visible and self._delay_timer > 0 then
-    self._delay_timer = self._delay_timer - dt
-    if self._delay_timer <= 0 then
+    if require("mvtk.player.timers").tick_combat_deadline(self, "_delay_timer", dt) then
       show_screen(self)
     end
   end

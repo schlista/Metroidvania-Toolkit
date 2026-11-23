@@ -1,6 +1,6 @@
 [project]
 title = Metroidvania Toolkit (Defold)
-version = 0.1.0
+version = 0.2.0
 custom_resources = /developer/config, /developer/runtime, /developer/rooms/generated, /developer/assets/tiled/maps, /developer/assets/minimap, /developer/tools
 bundle_resources = /developer/assets/cutscenes
 dependencies#0 = https://github.com/subsoap/defos/archive/refs/tags/v2.8.7.zip

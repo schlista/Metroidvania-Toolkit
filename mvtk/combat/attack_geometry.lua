@@ -91,6 +91,58 @@ function M.point_in_beam(origin, dir, length, width, point)
     return vmath.length(perp) <= half_w
 end
 
+-- Squared distance to the nearest point on or inside the body.
+function M.distance_sq_to_rect(center, rect)
+    local dx = math.max(0, math.abs((rect.x or 0) - (center.x or 0)) - rect.half_w)
+    local dy = math.max(0, math.abs((rect.y or 0) - (center.y or 0)) - rect.half_h)
+    return dx * dx + dy * dy
+end
+
+function M.rect_in_circle(center, radius, rect)
+    local r = tonumber(radius) or 0
+    return M.distance_sq_to_rect(center, rect) <= r * r
+end
+
+function M.rect_in_box(center, half_w, half_h, rect)
+    half_w, half_h = tonumber(half_w) or 0, tonumber(half_h) or 0
+    return half_w >= 0 and half_h >= 0
+       and math.abs((rect.x or 0) - (center.x or 0)) <= half_w + rect.half_w
+       and math.abs((rect.y or 0) - (center.y or 0)) <= half_h + rect.half_h
+end
+
+function M.rect_in_ring(center, inner, outer, rect)
+    inner, outer = math.max(0, tonumber(inner) or 0), tonumber(outer) or 0
+    if outer < inner or M.distance_sq_to_rect(center, rect) > outer * outer then return false end
+    local far_x = math.abs((rect.x or 0) - (center.x or 0)) + rect.half_w
+    local far_y = math.abs((rect.y or 0) - (center.y or 0)) + rect.half_h
+    return far_x * far_x + far_y * far_y >= inner * inner
+end
+
+function M.rect_in_beam(origin, dir, length, width, rect)
+    local half_length = (tonumber(length) or 0) * 0.5
+    local half_width = (tonumber(width) or 0) * 0.5
+    local ux, uy = dir.x or 0, dir.y or 0
+    local magnitude = math.sqrt(ux * ux + uy * uy)
+    if half_length <= 0 or half_width < 0 or magnitude == 0 then return false end
+    if rect.half_w == 0 and rect.half_h == 0 then
+        -- Preserve the legacy endpoint comparisons for directions already
+        -- normalized to vector precision. Only normalize an actual scale.
+        local unit = math.abs(magnitude - 1) <= 2 ^ -22 and dir
+            or vmath.vector3(ux / magnitude, uy / magnitude, 0)
+        return M.point_in_beam(origin, unit, length, width, rect)
+    end
+    ux, uy = ux / magnitude, uy / magnitude
+
+    -- Test the two world axes and the beam's longitudinal and transverse axes.
+    local dx = (rect.x or 0) - (origin.x or 0) - ux * half_length
+    local dy = (rect.y or 0) - (origin.y or 0) - uy * half_length
+    local ax, ay = math.abs(ux), math.abs(uy)
+    return math.abs(dx) <= rect.half_w + half_length * ax + half_width * ay
+       and math.abs(dy) <= rect.half_h + half_length * ay + half_width * ax
+       and math.abs(dx * ux + dy * uy) <= half_length + rect.half_w * ax + rect.half_h * ay
+       and math.abs(dy * ux - dx * uy) <= half_width + rect.half_w * ay + rect.half_h * ax
+end
+
 -- Evenly distribute `count` points on a circle of `radius` around `center`.
 -- Used by summon attacks to place minions.
 function M.ring_positions(center, radius, count)

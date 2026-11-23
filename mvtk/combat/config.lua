@@ -350,10 +350,10 @@ function M.resolve_attack_for_input(intent, ctx)
     local bucket = attack_set[mode] or attack_set.default or {}
 
     if intent == "light" and ctx and ctx.want_down_strike and aerial_enabled and bucket.down_strike then
-        return bucket.down_strike
+        return bucket.down_strike, "down_strike"
     end
     if intent == "light" and ctx and ctx.want_charged and bucket.charged then
-        return bucket.charged
+        return bucket.charged, "charge_attack"
     end
     if ctx and ctx.counter_window and counter_enabled and attack_set.parry and attack_set.parry.counter and (intent == "light" or intent == "heavy") then
         return attack_set.parry.counter

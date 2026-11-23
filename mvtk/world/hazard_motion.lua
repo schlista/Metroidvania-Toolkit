@@ -1,5 +1,6 @@
 -- Per-instance translating trigger motion. Loaded only by moving hazards.
 local Path = require "mvtk.world.kinematic_path"
+local Timers = require "mvtk.player.timers"
 local M = {}
 local Motion = {}
 Motion.__index = Motion
@@ -36,22 +37,30 @@ function Motion:place()
 end
 
 function Motion:step(owner, dt)
-    if require("mvtk.core.pause").get() or owner.base_enabled == false or owner.pattern_active == false then return end
-    local before = self.time
+    local pause = require "mvtk.core.pause"
+    if pause.get() or owner.base_enabled == false or owner.pattern_active == false then return end
     self.time = self.time + math.max(0, dt)
     self:place()
     if self.kind ~= "slam" or dt <= 0 then return end
     local t = self.timings
     local period = t.top + t.warn + t.drop + t.bottom + t.rise
     if period <= 0 then return end
-    if self.first_step and before == 0 then before = -0.000000001 end
-    self.first_step = false
+    local step = Timers.REFERENCE_STEP
+    local scale = Timers.world_scale(dt, pause)
+    local elapsed = self.effect_elapsed + Timers.world_delta(dt, scale) / scale
+    local count = math.floor((elapsed + 1e-12) / step)
+    self.effect_elapsed = math.max(0, elapsed - count * step)
+    if count == 0 then return end
+    local before = self.effect_time
+    self.effect_time = before + count * Timers.binary32(Timers.engine_reference_step() * scale)
+    if self.first_effect and before == 0 then before = -1e-9 end
+    self.first_effect = false
     -- Include crossed boundaries even if one frame skips an entire warning/drop.
-    for cycle = math.max(0, math.floor(before / period)), math.floor(self.time / period) do
+    for cycle = math.max(0, math.floor(before / period)), math.floor(self.effect_time / period) do
         for _, event in ipairs({{at=t.top, sound=self.config.sound_warn},
             {at=t.top + t.warn + t.drop, sound=self.config.sound_crush, impact=true}}) do
             local at = cycle * period + event.at
-            if at > before and at <= self.time then
+            if at > before and at <= self.effect_time then
                 -- Streaming keeps neighbouring rooms running: like every other timer sound
                 -- (prefab_utils.play_sound), a slam is heard, and captioned, only in the player's room.
                 if event.sound and event.sound ~= ""
@@ -77,9 +86,11 @@ function Motion:blocker(position, width, height)
 end
 
 function M.new(owner, origin, config)
+    local start_time = math.max(0, owner.motion_offset or 0)
     local m = setmetatable({kind=owner.motion_type, origin=vmath.vector3(origin), config=config or {},
-        time=math.max(0, owner.motion_offset or 0), wait=math.max(0, owner.motion_wait or 0),
-        mode=owner.motion_loop or "pingpong", speed=owner.motion_speed or 200, first_step=true}, Motion)
+        time=start_time, wait=math.max(0, owner.motion_wait or 0),
+        mode=owner.motion_loop or "pingpong", speed=owner.motion_speed or 200,
+        effect_time=start_time, effect_elapsed=0, first_effect=true}, Motion)
     m.dx, m.dy = owner.motion_distance_x or 0, -(owner.motion_distance_y or 0)
     m.distance = math.sqrt(m.dx * m.dx + m.dy * m.dy)
     m.spec = {motion_type=m.kind, motion_distance_x=m.dx, motion_distance_y=-m.dy}

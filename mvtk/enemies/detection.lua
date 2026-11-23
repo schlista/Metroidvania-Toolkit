@@ -4,7 +4,6 @@
 --
 -- @module detection
 
-local Time = require "mvtk.core.time"
 local C = require "mvtk.core.constants"
 local SurfaceClassifier = require "mvtk.core.surface_classifier"
 
@@ -39,118 +38,104 @@ local function normalize_collision_groups(groups)
     return out
 end
 
--- Cached player information
-local player_data = {
-    position = nil,
-    velocity = nil,
-    last_update = 0,
-    is_alive = true,
-    game_object_id = nil,
-}
+-- The player publishes motion in pixels per game second. Read the root
+-- directly on the draw that uses it, including all decisions on a long draw.
+local player_data = {}
+local player_url = msg.url("main:/collection2/player#player")
 
--- Configuration
-local config = {
-    player_url = msg.url("main:/collection2/player#player"),  -- Default player URL
-    update_frequency = 0.033,  -- Update player data every ~30fps
-}
-
---- Initialize detection system
--- @param player_url Optional custom player URL
-function M.init(player_url)
-    if player_url then
-        config.player_url = player_url
-    end
-
-    -- Request initial player position
-    M.update_player_data()
+local function read_root(url)
+    if not url then return nil end
+    local ok, pos = pcall(go.get_position, url)
+    if ok then return pos end
 end
 
---- Update cached player data
--- Called automatically at intervals, or manually by enemies
-function M.update_player_data()
-    local current_time = Time.gettime()
-
-    -- Throttle updates
-    if current_time - player_data.last_update < config.update_frequency then
-        return
-    end
-
-    local previous_update = player_data.last_update
-    player_data.last_update = current_time
-
-    -- Try to get player game object
-    if not player_data.game_object_id then
-        -- First check explicit config.player_url
-        if config.player_url then
-            local ok = pcall(function()
-                go.get_position(config.player_url)
-            end)
-            if ok then
-                player_data.game_object_id = config.player_url
-            end
-        end
-
-        -- Next check C.URL.PLAYER (set by player_spawner when player is created)
-        if not player_data.game_object_id and C.URL.PLAYER then
-            local success = pcall(function()
-                go.get_position(C.URL.PLAYER)
-            end)
-            if success then
-                player_data.game_object_id = C.URL.PLAYER
-            end
-        end
-    end
-
-    -- Update position
-    if player_data.game_object_id then
-        local success, pos = pcall(function()
-            return go.get_position(player_data.game_object_id)
-        end)
-
-        if success then
-            -- Calculate velocity if we have previous position
-            if player_data.position then
-                local dt = current_time - previous_update
-                if dt > 0 then
-                    player_data.velocity = (pos - player_data.position) / dt
-                end
-            end
-
-            player_data.position = pos
-            player_data.is_alive = true
-        else
-            -- Player might be dead or removed
-            player_data.is_alive = false
-        end
-    end
+function M.init(url)
+    if url then M.set_player_url(url) end
 end
 
---- Get player URL (for damage application)
--- @return Player URL or nil
 function M.get_player_url()
-    M.update_player_data()
-    return player_data.game_object_id or config.player_url
+    if read_root(player_url) then return player_url end
+    return C.URL.PLAYER or player_url
 end
 
---- Get player position
--- @return Player position vector3, or nil if not available
+local function read_player_root()
+    local pos = read_root(player_url)
+    if pos or player_url == C.URL.PLAYER then return pos end
+    return read_root(C.URL.PLAYER)
+end
+
 function M.get_player_position()
-    M.update_player_data()
-    return player_data.position
+    local root = read_player_root()
+    local body = player_data.body
+    if root and body and body.position then
+        local pos = body.position
+        return vmath.vector3(pos.x + body.x, pos.y + body.y, pos.z)
+    end
+    return root
 end
 
---- Get player velocity
--- @return Player velocity vector3, or nil if not available
+M.peek_player_position = M.get_player_position
+
+function M.set_player_velocity(vx, vy)
+    player_data.vx, player_data.vy = vx, vy
+end
+
+--- Publish the player's actual movement floor contact. Nil clears the sample.
+function M.set_player_grounded(grounded)
+    player_data.grounded = grounded
+end
+
+--- Before the player publishes floor contact, treat them as grounded.
+function M.get_player_grounded()
+    return player_data.grounded ~= false
+end
+
+--- Mark a player whose separately positioned collider has yet to publish.
+function M.expect_collision_body()
+    local body = player_data.body
+    if not body or not body.owner and body.half_w then player_data.body = {} end
+end
+
+local function same_player(a, b)
+    return a == b or a and b and a.path and a.path == b.path and a.socket == b.socket
+end
+
+--- Publish local fixture bounds and, for a separate collider, its world origin.
+-- The owning player URL prevents a departing collider from clearing its successor.
+function M.set_player_body(half_w, half_h, offset_x, offset_y, position, owner)
+    if owner then
+        if not same_player(owner, player_url) then return end
+        if not half_w and not (player_data.body and player_data.body.owner) then return end
+    end
+    player_data.body = half_w and {
+        half_w = half_w, half_h = half_h, x = offset_x or 0, y = offset_y or 0,
+        position = position, owner = owner,
+    } or owner and {owner = owner}
+end
+
+--- Read the published hurtbox and the current movement root.
+function M.get_published_player_body()
+    local body = player_data.body
+    if not body or not body.half_w then return nil end
+    local root = body.position and read_player_root() or M.get_player_position()
+    if not root then return nil end
+    local pos = body.position or root
+    return {x = pos.x + body.x, y = pos.y + body.y, half_w = body.half_w, half_h = body.half_h,
+        root_x = root.x, root_y = root.y, animated = body.position ~= nil or nil}
+end
+
+function M.get_player_body()
+    if player_data.body then return M.get_published_player_body() end
+    local pos = M.get_player_position()
+    return pos and {x = pos.x, y = pos.y, half_w = 0, half_h = 0, root_x = pos.x, root_y = pos.y}
+end
+
 function M.get_player_velocity()
-    M.update_player_data()
-    return player_data.velocity
+    if player_data.vx ~= nil then return vmath.vector3(player_data.vx, player_data.vy, 0) end
 end
 
---- Check if player is alive
--- @return true if player is alive and trackable
 function M.is_player_alive()
-    M.update_player_data()
-    return player_data.is_alive
+    return M.get_player_position() ~= nil
 end
 
 --- Get distance to player from position
@@ -312,46 +297,28 @@ function M.can_detect_player(pos, detection_range, require_los, require_same_lev
     return true
 end
 
---- Predict where player will be after time
--- @param pos Current enemy position (for reference)
--- @param time_ahead How far ahead to predict (seconds)
--- @return Predicted player position, or current position if velocity unavailable
-function M.predict_player_position(pos, time_ahead)
-    local player_pos = M.get_player_position()
-    if not player_pos then
-        return nil
+--- Lead a shot from the live player position. The first argument remains
+--- the caller's position for compatibility with existing behavior actions.
+function M.predict_player_position(_, time_ahead)
+    local pos = M.get_player_position()
+    if not pos then return nil end
+    local velocity = M.get_player_velocity()
+    return velocity and pos + velocity * time_ahead or pos
+end
+
+--- Replace the player binding on spawn.
+function M.set_player_url(url)
+    if player_url ~= url then
+        if player_data.body and player_data.body.owner and not same_player(player_url, url) then
+            player_data.body = nil
+        end
+        M.set_player_velocity(nil, nil)
+        player_url = url
     end
-
-    local player_vel = M.get_player_velocity()
-    if not player_vel then
-        return player_pos
-    end
-
-    -- Predict future position
-    return player_pos + player_vel * time_ahead
 end
 
---- Set custom player URL
--- @param player_url URL or path to player game object
-function M.set_player_url(player_url)
-    config.player_url = player_url
-    player_data.game_object_id = nil  -- Force re-search
-end
-
---- Manual position update (for performance optimization)
--- Enemies can call this once per frame instead of each behavior module calling individually
-function M.tick()
-    M.update_player_data()
-end
-
---- Reset cached player data
--- Call this when player respawns or level changes
 function M.reset()
-    player_data.position = nil
-    player_data.velocity = nil
-    player_data.last_update = 0
-    player_data.is_alive = true
-    player_data.game_object_id = nil
+    player_data = {}
 end
 
 return M

@@ -10,6 +10,24 @@
 --   ability_pickup_starts_unlocked   warning  pickup deletes itself on a new game
 --   boss_without_arena               info     boss starts when the player enters its room
 --                                             (the whole room is the fight area)
+--   boss_body_outside_arena          warning  placed collision body crosses the arena edge
+--   boss_body_too_large_for_arena    warning  no position can fit the collision body in the arena
+--   boss_moveset_unknown             error    phase names no configured moveset
+--   boss_moveset_pattern_unknown     error    moveset entry names no attack pattern
+--   boss_moveset_invalid             error    scheduler rejects the moveset
+--   boss_moveset_dead_zone           warning  no attack covers a range the phase cannot close
+--   boss_moveset_height_dead_zone    warning  missing attack reach from a different floor
+--   boss_attack_needs_ground         warning  an airborne phase uses a floor attack
+--   boss_dive_needs_air              warning  a grounded phase uses a dive
+--   boss_attack_status_unknown       warning  attack names no configured status
+--   boss_attack_tracking_lock_invalid warning tracking beam has invalid inherited lock time
+--   boss_transition_hazard_unknown   warning  phase names no configured hazard type
+--   boss_attack_hazard_unknown       warning  attack definition names no placed Hazard id
+--   boss_pulse_hazard_unknown        warning  attack names a hazard outside its arena
+--   boss_pulse_without_arena         warning  attack has no arena to pulse
+--   boss_pulse_hazard_unreachable    warning  no reachable attack or phase can pulse a hazard
+--   boss_attack_arena_fit            warning  attack geometry cannot fit its arena or room
+--   boss_ground_motion_fields_off    info     authored movement fields require Ground motion
 --   gate_energy_unaffordable         warning  energy cost above the player's max energy
 --   gate_energy_off                  error/warning  energy gate while energy starts off
 --   energy_container_while_off       warning  container enables energy that starts off
@@ -28,6 +46,8 @@
 --   return_zone_inside_hazard        warning  return marker overlaps a hazard
 --   hazard_instant_kill_overrides_return info authored kill overrides return default
 --   hazard_lethal_damage_mode        info     lethal damage resolves to kill
+--   hazard_pulse_phases_ignored      warning  Active phases does not control this hazard
+--   hazard_pulse_no_arena            warning  pulse-only hazard has no arena to pulse it
 --   lore_id_blank                    warning  blank lore identity cannot persist
 --   chest_inline_contents_unregistered error  chest contents not in the generated lookup
 --   pickup_art_missing               warning  authored pickup type has no catalog image
@@ -310,7 +330,10 @@ local function check_catalogs(index, cfg, issue)
     for _, row in ipairs(cfg.usage or {}) do
         local kind = catalog_type_aliases[row.type] or row.type
         local key = kind .. ":" .. row.property .. ":" .. row.enum
-        if cfg.catalogs[row.enum] and not ability_references[row.property] and not seen[key] then
+        -- The boss phase check uses the same moveset table as summon reachability.
+        if cfg.catalogs[row.enum] and not (row.enum == "boss_movesets" and cfg.boss_movesets)
+            and row.enum ~= "boss_teleport_anchors" -- Validated with the creator-facing field name below.
+            and not ability_references[row.property] and not seen[key] then
             seen[key] = true
             usage[kind] = usage[kind] or {}
             usage[kind][#usage[kind]+1] = row
@@ -393,42 +416,731 @@ end
 
 -- Only attacks reachable from a placed boss are checked. Authored attack lists
 -- replace preset lists, just as the runtime boss setup does.
+local function boss_attacks(value)
+    if type(value) == "table" then return value end
+    local ids = {}
+    for token in tostring(value or ""):gmatch("[^,]+") do
+        local id = trim(token)
+        if id ~= "" then ids[#ids + 1] = id end
+    end
+    return ids
+end
+
+local function check_boss_locomotion(index, cfg, issue)
+    local anchors = require "mvtk.bosses.moving_attack_defaults"
+    local objects = index.objects or {}
+    local types = cfg.boss_types or {}
+    local defaults = cfg.boss_defaults or {}
+    local air = { hover = true, flying_patrol = true, wall_crawl = true }
+    local function preset_name(props)
+        local name = trim(props.boss_preset)
+        if name == "" or name == "none" then name = trim(props.boss_type) end
+        return name == "none" and "" or name
+    end
+    local function preset_for(props)
+        return types[preset_name(props)] or types.default_boss or {}
+    end
+    local function linked(phase, boss)
+        if phase.type ~= "boss_phase" or phase.visible == false or boss.type ~= "boss"
+            or boss.visible == false or phase.room ~= boss.room then return false end
+        local p, b = phase.properties or {}, boss.properties or {}
+        local arena = trim(p.arena_id)
+        if arena ~= "" and arena ~= trim(b.arena_id) then return false end
+        local target, id = trim(p.boss_id), trim(b.boss_id)
+        if id == "" then id = trim(b.boss_tag) end
+        if target ~= "" then return target == id end
+        local kind = preset_name(p)
+        return kind == "" or kind == preset_name(b)
+    end
+    local function uses_teleport(phase, props)
+        local profile = trim(props.movement_profile)
+        if profile ~= "" then return profile == "teleport" end
+        local matched = false
+        for _, boss in ipairs(objects) do
+            if linked(phase, boss) then
+                matched = true
+                if preset_for(boss.properties or {}).movement_profile == "teleport" then return true end
+            end
+        end
+        return not matched and preset_for(props).movement_profile == "teleport"
+    end
+    local function label(kind, object)
+        return kind .. " object " .. tostring(object.object_id) .. " in room '" .. tostring(object.room) .. "'"
+    end
+    local function check_ground_profile(boss, source, profile)
+        if air[profile] then
+            issue("info", "boss_ground_motion_airborne", source, "ground_motion",
+                label("Boss", boss) .. " has Ground motion on, which does not apply to the " .. profile .. " phase.",
+                "Choose a grounded Movement profile if this phase should follow the floor.")
+        end
+    end
+    for _, o in ipairs(objects) do
+        local p = o.properties or {}
+        if o.type == "boss_phase" and o.visible ~= false then
+            local names, invalid = boss_attacks(p.teleport_anchors), {}
+            for _, name in ipairs(names) do
+                if not anchors.is_anchor(name) and not invalid[name] then
+                    invalid[name] = true
+                    issue("error", "boss_teleport_anchor_unknown", o, "teleport_anchors",
+                        label("Boss Phase", o) .. " has an unknown Teleport anchors value '" .. name .. "'.",
+                        "Choose a listed value under Movement > Teleport anchors.")
+                end
+            end
+            local has_anchors = #names > 0
+            local has_interval = (tonumber(p.teleport_interval) or 0) ~= 0
+            if (has_anchors or has_interval) and not uses_teleport(o, p) then
+                local field = has_anchors and "Teleport anchors" or "Teleport interval"
+                if has_anchors and has_interval then field = field .. " and Teleport interval" end
+                issue("info", "boss_teleport_fields_unused", o, has_anchors and "teleport_anchors" or "teleport_interval",
+                    label("Boss Phase", o) .. " sets " .. field .. ", which only applies to the Teleport movement profile.",
+                    "Choose Teleport under Movement profile, or clear these fields.")
+            end
+        elseif o.type == "boss" and o.visible ~= false then
+            if (tonumber(p.feet_offset) or 0) < 0 then
+                issue("error", "boss_feet_offset_negative", o, "feet_offset",
+                    label("Boss", o) .. " has a Feet offset below 0.",
+                    "Enter a positive distance in pixels, or set Feet offset to 0 to inherit or measure it.")
+            end
+            local preset = preset_for(p)
+            local inherited = preset.ground_motion
+            if inherited == nil then inherited = defaults.ground_motion end
+            if p.ground_motion == "On" or (p.ground_motion ~= "Off" and inherited == true) then
+                local matched = false
+                for _, marker in ipairs(objects) do
+                    if linked(marker, o) then
+                        matched = true
+                        local profile = trim((marker.properties or {}).movement_profile)
+                        check_ground_profile(o, marker, profile ~= "" and profile or preset.movement_profile)
+                    end
+                end
+                if not matched then
+                    if not preset.phases or #preset.phases == 0 then
+                        check_ground_profile(o, o, preset.movement_profile)
+                    end
+                    for _, phase in ipairs(preset.phases or {}) do
+                        check_ground_profile(o, o, phase.movement_profile or preset.movement_profile)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function boss_moveset_name(value)
+    local name = trim(value)
+    if name ~= "" and name:lower() ~= "none" then return name end
+end
+
+local function check_boss_phase_movesets(index, cfg, issue)
+    for _, o in ipairs(index.objects or {}) do
+        if o.type == "boss_phase" and o.visible ~= false then
+            local p = o.properties or {}
+            local name = boss_moveset_name(p.moveset)
+            if name then
+                if cfg.boss_movesets and cfg.boss_movesets[name] == nil then
+                    issue("error", "boss_moveset_unknown", o, "moveset",
+                        "Room '" .. tostring(o.room) .. "', Boss Phase object " .. tostring(o.object_id)
+                            .. " uses unknown moveset '" .. name .. "'.",
+                        "Choose a listed Moveset under Attack sequence or add it to developer/config/boss_movesets.lua.")
+                end
+                if #boss_attacks(p.attacks) > 0 then
+                    issue("warning", "boss_moveset_overrides_attacks", o, "moveset",
+                        "Moveset '" .. name .. "' wins over the Attacks list for this Boss Phase.",
+                        "Clear Attacks to use the moveset, or set Moveset to none to use Attacks.")
+                end
+            end
+        end
+    end
+end
+
+local boss_id_value = boss_moveset_name
+
+local function boss_object_position(object)
+    local raw = object.raw or {}
+    local x = (tonumber(raw.x) or 0) + (object.layer_offset_x or 0)
+    local y = -(tonumber(raw.y) or 0) - (object.layer_offset_y or 0)
+    if raw.point or raw.shape == "point"
+        or (tonumber(raw.width) or 0) <= 0 and (tonumber(raw.height) or 0) <= 0 then
+        local offsets = require("developer.config.tiled_object_config").y_offsets
+        y = y + (offsets[object.type] or offsets.default or 0)
+    end
+    return x, y
+end
+
+local function check_boss_arena_body(object, preset, defaults, arena, report)
+    local p = object.properties or {}
+    local on = preset.ground_motion
+    if on == nil then on = defaults.ground_motion end
+    if p.ground_motion == "On" or p.ground_motion ~= "Off" and on == true then return end
+    if not arena or not arena.placed or not arena.width or not arena.height then return end
+
+    local Motion = require "mvtk.bosses.boss_motion"
+    local sx, sy = Motion.config_scale(preset.size, defaults)
+    local body = Motion.collision_body(sx, sy)
+    local x, y = boss_object_position(object)
+    local label = string.format("Boss '%s' (object %s) in room '%s'",
+        boss_id_value(p.boss_id) or object.name or "", tostring(object.object_id), object.room)
+    if body.half_width * 2 > arena.width or body.half_height * 2 > arena.height then
+        report("warning", "boss_body_too_large_for_arena", object, "arena_id",
+            label .. " cannot fit inside Boss Arena '" .. arena.id .. "'. It will be centered on each axis that is too small.",
+            "Enlarge the Boss Arena in Tiled or reduce this boss type's Size.")
+    elseif x - body.half_width < arena.x or x + body.half_width > arena.x + arena.width
+        or y + body.half_height > arena.y or y - body.half_height < arena.y - arena.height then
+        report("warning", "boss_body_outside_arena", object, "arena_id",
+            label .. " starts with part of its collision body outside Boss Arena '" .. arena.id .. "'.",
+            "Move the Boss farther inside the Boss Arena in Tiled or resize the arena to fit.")
+    end
+end
+
+local function check_boss_attack_authoring(index, cfg, issue)
+    if not cfg.boss_attack_patterns or not cfg.boss_movesets then return end
+    local Scheduler = require "mvtk.bosses.attack_scheduler"
+    local Scale = require "mvtk.bosses.attack_scale"
+    local Schema = require "mvtk.bosses.attack_pattern_schema"
+    local Confinement = require "mvtk.bosses.boss_confinement"
+    local Util = require "mvtk.core.util"
+    local schedule_defaults = require "mvtk.bosses.attack_schedule_defaults"
+    local types, defaults = cfg.boss_types or {}, cfg.boss_defaults or {}
+    local patterns = cfg.boss_attack_patterns
+    local effects = cfg.status_effects and (cfg.status_effects.effects or {})
+    local configured = cfg.boss_arenas or {}
+    configured = configured.arenas or configured
+    local arenas, bosses, markers, hazards = {}, {}, {}, {}
+    local used_presets, linked_markers, seen = {}, {}, {}
+
+    local function report(severity, code, object, property, message, fix)
+        local key = code .. ":" .. property .. ":" .. message
+        seen[object] = seen[object] or {}
+        if seen[object][key] then return end
+        seen[object][key] = true
+        issue(severity, code, object, property, message, fix)
+    end
+    local function room_arena(room, id)
+        if not id then return nil end
+        local placed = arenas[room] and arenas[room][id]
+        if placed then return placed end
+        local spec = configured[id]
+        if type(spec) ~= "table" then return nil end
+        local rect = Confinement.rect_from_arena_bounds(spec.bounds)
+        arenas[room] = arenas[room] or {}
+        local arena = {id = id, width = rect and rect.max_x - rect.min_x,
+            height = rect and rect.max_y - rect.min_y, hazards = {}}
+        arenas[room][id] = arena
+        return arena
+    end
+    local function identity(props)
+        return boss_id_value(props.boss_id) or boss_id_value(props.boss_tag)
+    end
+    local function preset_name(props)
+        return boss_id_value(props.boss_preset) or boss_id_value(props.boss_type)
+    end
+    for _, object in ipairs(index.objects or {}) do
+        if object.visible ~= false and object.top_level ~= false then
+            local p = object.properties or {}
+            if object.type == "boss_arena" then
+                local id = boss_id_value(p.arena_id) or "arena_" .. object.room
+                local raw = object.raw or {}
+                local width, height = tonumber(raw.width), tonumber(raw.height)
+                local map = object.map
+                if map then
+                    local tw = tonumber(map.tilewidth)
+                    local th = tonumber(map.tileheight) or tw
+                    local Proto = require "mvtk.editor.proto_emit"
+                    width, height = Proto.resolve_rect_size_pixels(width, height, tw, th)
+                end
+                local x, y = boss_object_position(object)
+                arenas[object.room] = arenas[object.room] or {}
+                arenas[object.room][id] = {id = id, placed = true,
+                    width = width and width > 0 and width or nil,
+                    height = height and height > 0 and height or nil,
+                    x = x, y = y, hazards = {}}
+            elseif object.type == "boss" then
+                local name = preset_name(p)
+                local preset = types[name] or {}
+                local arena_id = boss_id_value(p.arena_id)
+                    or boss_id_value(preset.arena_id)
+                    or (object.room and Util.to_bool(p.arena_lock, true) and "arena_" .. object.room)
+                    or boss_id_value(preset.arena)
+                bosses[#bosses + 1] = {object = object, props = p, name = name, id = identity(p), arena_id = arena_id}
+            elseif object.type == "boss_phase" then
+                markers[#markers + 1] = object
+            elseif object.type == "hazard" then
+                hazards[#hazards + 1] = object
+            end
+        end
+    end
+    for _, boss in ipairs(bosses) do
+        boss.arena = room_arena(boss.object.room, boss.arena_id)
+    end
+    local pulse_only, hazard_ids = {}, {}
+    for _, object in ipairs(hazards) do
+        local p = object.properties or {}
+        local raw_id = p.hazard_id or object.name or ("hazard_" .. object.room .. "_" .. object.object_id)
+        if raw_id ~= "" then hazard_ids[raw_id] = true end
+        local id, owner = boss_id_value(p.arena_id), boss_id_value(p.boss_id)
+        local arena = room_arena(object.room, id)
+        if not id and owner then
+            for _, boss in ipairs(bosses) do
+                if boss.object.room == object.room and boss.id == owner and boss.arena then
+                    arena = boss.arena
+                    break
+                end
+            end
+        end
+        if arena and not boss_id_value(p.level_mode) then
+            local hazard = {id = raw_id, kind = boss_id_value(p.hazard_type) or "spikes"}
+            arena.hazards[#arena.hazards + 1] = hazard
+            if trim(p.active_phases):lower() == "none" then
+                hazard.pulse_only = true
+                pulse_only[#pulse_only + 1] = {hazard = hazard, object = object}
+            end
+        end
+    end
+
+    -- Check definitions even when the project has no Boss that uses them.
+    local function inspect_hazard_ids(where, path, label, block)
+        for _, id in ipairs(boss_attacks(type(block) == "table" and block.hazard_ids)) do
+            if type(id) == "string" and not hazard_ids[id] then
+                report("warning", "boss_attack_hazard_unknown", where, path,
+                    label .. " names unknown hazard id '" .. id .. "' in hazard_pulse.hazard_ids.",
+                    "Place a Hazard with this Hazard id in the Boss Arena, or correct hazard_pulse.hazard_ids.")
+            end
+        end
+    end
+    local function inspect_hazard_blocks(where, path, label, node)
+        if type(node) ~= "table" then return end
+        inspect_hazard_ids(where, path .. ".hazard_pulse.hazard_ids", label, node.hazard_pulse)
+        for slot, step in ipairs(type(node.combo) == "table" and node.combo or {}) do
+            inspect_hazard_blocks(where, path .. ".combo." .. slot, label, step)
+        end
+        local reposition = type(node.reposition) == "table" and node.reposition
+        if reposition and reposition.then_overrides then
+            inspect_hazard_blocks(where, path .. ".reposition.then_overrides", label, reposition.then_overrides)
+        end
+    end
+    local framework_source = {file = "mvtk/bosses/patterns/attack_patterns.lua"}
+    local pattern_source = {file = "developer/config/attack_patterns.lua"}
+    for name, pattern in pairs(patterns) do
+        local where = (cfg.creator_boss_patterns or {})[name] and pattern_source or framework_source
+        inspect_hazard_blocks(where, name, "Attack '" .. name .. "'", pattern)
+    end
+    local moveset_source = {file = "developer/config/boss_movesets.lua"}
+    for name, moveset in pairs(cfg.boss_movesets) do
+        for slot, entry in ipairs(type(moveset) == "table" and type(moveset.entries) == "table" and moveset.entries or {}) do
+            if type(entry) == "table" then
+                inspect_hazard_blocks(moveset_source, name .. ".entries." .. slot .. ".overrides",
+                    "Moveset '" .. name .. "' attack '" .. tostring(entry.attack) .. "'", entry.overrides)
+            end
+        end
+    end
+    inspect_hazard_ids({file = "developer/config/boss_defaults.lua"}, "default_hazard_pulse.hazard_ids",
+        "Boss defaults", defaults.default_hazard_pulse)
+
+    local function inspect_phase(where, prefix, subject, phase, preset, placement, arena, checks)
+        if type(phase) ~= "table" then return end
+        local profile = boss_id_value(phase.movement_profile) or preset.movement_profile or "ground_chase"
+        local is_air = profile == "hover" or profile == "flying_patrol"
+        local on = placement.ground_motion
+        if on ~= "On" and on ~= "Off" then
+            local inherited = preset.ground_motion
+            if inherited == nil then inherited = defaults.ground_motion end
+            on = inherited == true and "On" or "Off"
+        end
+        if checks.ground_fields and on == "Off" then
+            for _, field in ipairs({"jump_height", "teleport_anchors"}) do
+                local set = field == "jump_height" and (tonumber(phase.jump_height) or 0) > 0
+                    or field == "teleport_anchors" and #boss_attacks(phase.teleport_anchors) > 0
+                if set then
+                    local label = field == "jump_height" and "Jump height" or "Teleport anchors"
+                    report("info", "boss_ground_motion_fields_off", where, prefix .. field,
+                        subject .. " sets " .. label .. " while Ground motion is off.",
+                        "Turn on Ground motion on the Boss to use this field, or clear " .. label .. ".")
+                end
+            end
+        end
+
+        local transition = type(phase.transition) == "table" and phase.transition or {}
+        local hazard_field = prefix .. (where.type == "boss_phase" and "transition_spawn_hazards" or "transition.spawn_hazards")
+        local transition_kind = trim(phase.transition_type or phase.transition_kind or transition.type):lower()
+        for _, hazard_type in ipairs(boss_attacks(phase.transition_spawn_hazards or transition.spawn_hazards)) do
+            if cfg.hazard_types and (hazard_type == "settings" or not cfg.hazard_types[hazard_type]) then
+                report("warning", "boss_transition_hazard_unknown", where, hazard_field,
+                    subject .. " names unknown hazard type '" .. tostring(hazard_type) .. "' in Spawn hazards.",
+                    "Choose a hazard type from developer/config/hazard_types.lua, or correct Spawn hazards.")
+            elseif arena and checks.transition then
+                if transition_kind == "rage" or transition_kind == "desperation" or transition_kind == "power_up"
+                    or transition_kind == "malfunction" or transition_kind == "shield" then
+                    for _, hazard in ipairs(arena.hazards) do
+                        if hazard.pulse_only and hazard.kind == hazard_type then hazard.reachable = true end
+                    end
+                end
+            end
+        end
+
+        local name = boss_moveset_name(phase.moveset)
+        local property = prefix .. (name and "moveset" or phase.attack_property or "attacks")
+        local moveset = name and cfg.boss_movesets[name]
+        if name and moveset == nil then
+            if checks.assignment and where.type ~= "boss_phase" then
+                report("error", "boss_moveset_unknown", where, property, subject .. " uses unknown moveset '" .. name .. "'.",
+                    "Use a name from developer/config/boss_movesets.lua or clear Moveset to use the Attacks list.")
+            end
+            return
+        end
+        if name then
+            local errors = Scheduler.validate(name, moveset, patterns, function(message, code)
+                if checks.assignment then
+                    report("error", code == "unknown_pattern" and "boss_moveset_pattern_unknown" or "boss_moveset_invalid",
+                        where, property, subject .. " cannot use " .. message .. ".",
+                        "Fix that entry or setting in developer/config/boss_movesets.lua, or choose another Moveset.")
+                end
+            end)
+            if #errors > 0 then return end
+        end
+
+        local boss_config = Util.merge(preset, placement)
+        local map = checks.map
+        local width = arena and arena.width
+            or map and (tonumber(map.width) or 0) * (tonumber(map.tilewidth) or 0)
+        local height = arena and arena.height
+            or map and (tonumber(map.height) or 0) * (tonumber(map.tileheight) or 0)
+        local body
+        if width and width > 0 then
+            local Motion = require "mvtk.bosses.boss_motion"
+            body = Motion.collision_body(Motion.config_scale(preset.size, defaults))
+        end
+        local function fit_failure(pattern)
+            if not body then return end
+            return Schema.arena_fit_failure(pattern, defaults, width,
+                on == "Off" and height and height > 0 and height or nil, body.half_width, body.half_height)
+        end
+        local function scaled(attack, overrides)
+            local base = patterns[attack]
+            if type(base) ~= "table" then return nil end
+            local pattern = Scale.for_boss(base, boss_config, phase,
+                (cfg.creator_boss_patterns or {})[attack], tonumber((cfg.tile_settings or {}).width))
+            return Util.deep_merge(pattern, overrides)
+        end
+        local function usable_pattern(attack, overrides)
+            local pattern = scaled(attack, overrides)
+            local resolved = pattern and Schema.resolve(pattern, defaults, nil, effects)
+            if resolved and Schema.effective_options(resolved, defaults, effects) then return resolved end
+        end
+        if not name then
+            local key = trim(phase.behavior):lower()
+            if not schedule_defaults.behaviors[key] then key = "random" end
+            local authored = (cfg.boss_behaviors or {})[key]
+            local weights = Util.merge(schedule_defaults.behaviors[key], type(authored) == "table" and authored or nil)
+            moveset = Scheduler.implicit(boss_attacks(phase.attacks), weights, usable_pattern,
+                {attack_range = phase.attack_range or preset.attack_range or defaults.attack_range,
+                    defaults = defaults, effects = effects})
+        end
+        if checks.range then
+            local function usable(entry)
+                local pattern = usable_pattern(entry.attack, entry.overrides)
+                return pattern and not fit_failure(pattern)
+            end
+            local warning = Scheduler.coverage_warning(subject .. " using " .. (name or "the Attacks list"),
+                moveset, profile, arena and arena.width, phase.leash_radius, usable)
+            if warning then
+                report("warning", "boss_moveset_dead_zone", where, property, warning,
+                    "Give this phase an attack or gap closer that can reach across the missing distance band.")
+            end
+
+            local height_limits, has_floor, has_unrestricted = {}, false, false
+            for _, entry in ipairs(moveset.entries) do
+                local pattern = usable_pattern(entry.attack, entry.overrides)
+                if pattern and not fit_failure(pattern) then
+                    local height, settings = Schema.floor_height_limit(pattern, defaults, effects)
+                    if height then
+                        has_floor = true
+                        -- A terrain leap can reach a raised platform before it slams.
+                        if on == "On" and pattern.type == "leap" then height = height + settings.height end
+                        if pattern.type == "dive" then height = height + settings.rise end
+                        if pattern.aoe and pattern.aoe.target == "player" and on == "On" then
+                            height = math.huge
+                        end
+                        height_limits[entry] = height
+                    else
+                        has_unrestricted = true
+                        height_limits[entry] = math.huge
+                    end
+                end
+            end
+            if has_floor and not has_unrestricted then
+                local tracks_height
+                for _, height in pairs(height_limits) do
+                    if height == math.huge then tracks_height = true; break end
+                end
+                if not tracks_height then
+                    report("warning", "boss_moveset_height_dead_zone", where, property,
+                        subject .. " has only floor attacks. It will wait if the player stays above their reach or on a lower floor.",
+                        "Add an attack that can reach players at other heights, or keep the fight on one floor.")
+                end
+            elseif has_floor and arena and arena.height then
+                local high_warning = Scheduler.coverage_warning(subject .. " using " .. (name or "the Attacks list"),
+                    moveset, profile, arena.width, phase.leash_radius,
+                    function(entry) return (height_limits[entry] or -1) >= arena.height end)
+                if high_warning and high_warning ~= warning then
+                    report("warning", "boss_moveset_height_dead_zone", where, property,
+                        high_warning .. " when the player is above the floor attacks' reach.",
+                        "Check raised platforms in this arena and give this phase an attack that reaches them.")
+                end
+            end
+        end
+
+        local function inspect_pattern(raw, attack, visiting)
+            if type(raw) ~= "table" then return end
+            local pattern = Schema.resolve(Util.deep_copy(raw), defaults, nil, effects) or raw
+            if type(pattern) ~= "table" then return end
+            local kind = pattern.type
+            local attack_label = subject .. " uses attack '" .. attack .. "'"
+            local _, fit = fit_failure(pattern)
+            if fit then
+                report("warning", "boss_attack_arena_fit", where, property, attack_label .. ", which cannot fit: " .. fit .. ".",
+                    "Enlarge the Boss Arena or room, reduce the safe gap or boss Size, or choose an attack that fits.")
+            end
+            if checks.assignment then
+                local aoe = type(pattern.aoe) == "table" and pattern.aoe or {}
+                if is_air and (kind == "leap" or aoe.ground_only == true or pattern.ground_only == true) then
+                    report("warning", "boss_attack_needs_ground", where, property,
+                        attack_label .. ", which needs the floor, on a phase that hovers or flies.",
+                        "Choose an attack that works in the air or assign a grounded Movement profile to the phase.")
+                elseif kind == "dive" and not is_air then
+                    report("warning", "boss_dive_needs_air", where, property, attack_label .. ", a dive, on a phase that stays out of the air.",
+                        "Choose Hover or Flying patrol under Movement profile, or replace the dive.")
+                end
+                local function check_status(options)
+                    if type(options) ~= "table" or not effects then return end
+                    for _, field in ipairs({"status", "status_id", "status_effect"}) do
+                        local id = field == "status" and options[field] or boss_id_value(options[field])
+                        if id and not effects[id] then
+                            report("warning", "boss_attack_status_unknown", where, property,
+                                attack_label .. ", which names unknown status '" .. tostring(id) .. "'.",
+                                "Choose a status from developer/config/status_effects.lua or clear the attack's status.")
+                        end
+                    end
+                end
+                check_status(raw)
+                check_status(raw[raw.type])
+                check_status(pattern)
+                check_status(pattern[kind])
+                if (kind == "zone" or kind == "ground_wave")
+                    and (type(pattern[kind]) ~= "table" or pattern[kind].status == nil) then
+                    check_status(defaults["default_" .. kind])
+                end
+                if kind == "beam" and type(pattern.beam) == "table" and pattern.beam.track_time then
+                    local _, err = Schema.tracking_beam_windup(pattern, defaults)
+                    if err then
+                        report("warning", "boss_attack_tracking_lock_invalid", where, property,
+                            attack_label .. " but " .. err .. ".",
+                            "Set a positive beam.lock_time or default_tracking_beam_lock_time in boss_defaults.lua.")
+                    end
+                end
+            end
+            if kind == "hazard_pulse" and checks.pulses then
+                if not arena then
+                    report("warning", "boss_pulse_without_arena", where, property, attack_label .. ", but the boss has no arena to pulse.",
+                        "Link the Boss to a Boss Arena, or choose an attack that works without one.")
+                else
+                    local settings = Schema.hazard_pulse_options(pattern, defaults)
+                    if settings then
+                        local ids = settings.hazard_ids or {}
+                        if #ids == 0 then
+                            for _, hazard in ipairs(arena.hazards) do hazard.reachable = true end
+                        end
+                        for _, id in ipairs(ids) do
+                            local found = false
+                            for _, hazard in ipairs(arena.hazards) do
+                                if hazard.id == id then hazard.reachable, found = true, true end
+                            end
+                            if not found then
+                                report("warning", "boss_pulse_hazard_unknown", where, property,
+                                    attack_label .. ", which names hazard '" .. id .. "' missing from arena '" .. arena.id
+                                        .. "' in hazard_pulse.hazard_ids.",
+                                    "Link a placed Hazard with this Hazard id to the Boss Arena, or change hazard_pulse.hazard_ids.")
+                            end
+                        end
+                    end
+                end
+            end
+
+            local function visit_child(child, options, replace_fields)
+                if not child or visiting[child] then return end
+                local child_pattern = scaled(child, not replace_fields and options or nil)
+                if not child_pattern then return end
+                if replace_fields then
+                    for key, value in pairs(options) do
+                        if key ~= "pattern" then child_pattern[key] = Util.deep_copy(value) end
+                    end
+                end
+                visiting[child] = true
+                inspect_pattern(child_pattern, child, visiting)
+                visiting[child] = nil
+            end
+            if kind == "combo" and type(pattern.combo) == "table" then
+                for _, step in ipairs(pattern.combo) do
+                    if type(step) == "table" then
+                        if step.pattern then visit_child(step.pattern, step, true)
+                        else inspect_pattern(step, attack, visiting) end
+                    end
+                end
+            elseif kind == "reposition" and type(pattern.reposition) == "table" then
+                visit_child(pattern.reposition["then"], pattern.reposition.then_overrides)
+            end
+        end
+        for _, entry in ipairs(moveset.entries) do
+            local pattern = scaled(entry.attack, entry.overrides)
+            if pattern then
+                -- Report unknown status even when schema validation prevents the cast.
+                inspect_pattern(pattern, entry.attack, {[entry.attack] = true})
+            end
+        end
+    end
+
+    local type_source = {file = "developer/config/boss_types.lua"}
+    local function type_phase(preset_name, phase, slot, preset, placement, arena, checks)
+        inspect_phase(type_source, preset_name .. ".phases." .. slot .. ".",
+            "Boss type '" .. preset_name .. "' phase " .. slot, phase, preset, placement, arena, checks)
+    end
+    local function label(object)
+        return "Boss Phase object " .. object.object_id .. " in room '" .. object.room .. "'"
+    end
+    for _, boss in ipairs(bosses) do
+        local where, p = boss.object, boss.props
+        local preset = types[boss.name] or types.default_boss or {}
+        check_boss_arena_body(where, preset, defaults, boss.arena, report)
+        local fallback, matching = boss_attacks(p.attack_pattern_ids), {}
+        for _, marker in ipairs(markers) do
+            local def = marker.properties or {}
+            local target, arena_id, kind = identity(def), boss_id_value(def.arena_id), preset_name(def)
+            if marker.room == where.room and (not arena_id or arena_id == boss_id_value(p.arena_id))
+                and ((target and target == boss.id) or (not target and (not kind or kind == boss.name))) then
+                matching[#matching + 1] = marker
+                linked_markers[marker] = true
+            end
+        end
+        table.sort(matching, function(a, b)
+            local ai, bi = tonumber((a.properties or {}).phase) or 1, tonumber((b.properties or {}).phase) or 1
+            if ai ~= bi then return ai < bi end
+            return a.object_id < b.object_id
+        end)
+        local preset_phases = preset.phases or {}
+        for slot, marker in ipairs(matching) do
+            local phase = Util.merge(marker.properties)
+            local inherited = types[boss.name] and preset_phases[math.min(slot, #preset_phases)]
+            local transition = inherited and inherited.transition
+            local kind = trim(phase.transition_type or phase.transition_kind)
+            if type(transition) == "table" and (kind == "" or kind == transition.type) then
+                phase.transition = transition
+                local hazards = boss_attacks(phase.transition_spawn_hazards)
+                phase.transition_spawn_hazards = #hazards > 0 and hazards or nil
+            end
+            phase.attacks = boss_attacks(phase.attacks)
+            local attack_range = tonumber(phase.attack_range)
+            phase.attack_range = attack_range and attack_range > 0 and attack_range or nil
+            if not boss_moveset_name(phase.moveset) and #phase.attacks == 0 then
+                phase.attacks = fallback
+                if #fallback == 0 and inherited then
+                    phase.attacks, phase.moveset = inherited.attacks, inherited.moveset
+                end
+            end
+            inspect_phase(marker, "", label(marker) .. " (phase " .. slot .. " of Boss '"
+                    .. (boss.id or boss.name or tostring(where.object_id)) .. "')", phase, preset, p, boss.arena,
+                {assignment = true, ground_fields = true, range = true, pulses = true, transition = slot > 1, map = where.map})
+        end
+        if #matching == 0 and #fallback > 0 then
+            inspect_phase(where, "", "Boss object " .. where.object_id .. " in room '" .. where.room .. "' phase 1",
+                {attacks = fallback, attack_property = "attack_pattern_ids"}, preset, p, boss.arena,
+                {assignment = true, range = true, pulses = true, map = where.map})
+        elseif #matching == 0 then
+            local name = types[boss.name] and boss.name or "default_boss"
+            used_presets[name] = true
+            for slot, phase in ipairs(preset_phases) do
+                type_phase(name, phase, slot, preset, p, boss.arena,
+                    {ground_fields = true, range = true, pulses = true, transition = slot > 1, map = where.map})
+            end
+        end
+    end
+    for _, marker in ipairs(markers) do
+        if not linked_markers[marker] then
+            local def = marker.properties or {}
+            local preset = types[preset_name(def)] or {}
+            -- An unlinked phase has no effective Ground motion or arena to pulse.
+            inspect_phase(marker, "", label(marker), def, preset, {}, nil, {assignment = true})
+        end
+    end
+    local names = {}
+    for name in pairs(types) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local preset = types[name]
+        if type(preset) == "table" then
+            for slot, phase in ipairs(preset.phases or {}) do
+                local unplaced = not used_presets[name]
+                type_phase(name, phase, slot, preset, {}, nil,
+                    {assignment = true, ground_fields = unplaced, range = unplaced})
+            end
+        end
+    end
+    for _, record in ipairs(pulse_only) do
+        if not record.hazard.reachable then
+            report("warning", "boss_pulse_hazard_unreachable", record.object, "active_phases",
+                "Pulse-only Hazard '" .. record.hazard.id .. "' has no boss attack or phase change in its arena that can turn it on.",
+                "Add this Hazard id to an arena boss's pulse attack, pick its type under Spawn hazards, or give it an active phase.")
+        end
+    end
+end
+
 local function check_boss_summons(index, cfg, issue)
     if not cfg.boss_attack_patterns or not cfg.enemy_types then return end
     local objects, seen = index.objects or {}, {}
     local skins = (cfg.enemy_skins or {}).skins or {}
-    local function attacks(value)
-        if type(value) == "table" then return value end
-        local ids = {}
-        for token in tostring(value or ""):gmatch("[^,]+") do
-            local id = trim(token)
-            if id ~= "" then ids[#ids + 1] = id end
+    local function inspect_attack(o, preset, name, moveset, overrides)
+        local pattern = cfg.boss_attack_patterns[name]
+        if type(pattern) ~= "table" then return end
+        if type(overrides) == "table" then
+            local Util = require "mvtk.core.util"
+            pattern = Util.deep_merge(Util.deep_copy(pattern), overrides)
         end
-        return ids
+        local summon = pattern.type == "summon" and pattern.summon
+        if type(summon) ~= "table" then return end
+
+        local property = moveset and "moveset" or "attacks"
+        local description = "Boss preset '" .. preset .. "', attack '" .. name .. "'"
+        if moveset then description = description .. " in moveset '" .. moveset .. "'" end
+        local kind = summon.skin or summon.enemy_type or "slime"
+        local key = preset .. ":" .. name .. ":" .. tostring(kind)
+        if not cfg.enemy_types[kind] and not skins[kind] and not seen[key] then
+            seen[key] = true
+            local source = "developer/config/attack_patterns.lua"
+            if moveset then source = "developer/config/boss_movesets.lua or " .. source end
+            issue("warning", "boss_summon_type_unknown", o, property,
+                description .. " summons missing enemy type '" .. tostring(kind) .. "'; it spawns nothing.",
+                "Point the summon at an existing enemy type or synced skin in " .. source
+                    .. ", then run Project > Prepare & Check.")
+        end
+        local archetype_key = key .. ":archetype:" .. tostring(summon.enemy_type)
+        if summon.skin and summon.enemy_type and not cfg.enemy_types[summon.enemy_type]
+            and not seen[archetype_key] then
+            seen[archetype_key] = true
+            issue("warning", "boss_summon_type_unknown", o, property,
+                description .. " summons missing archetype '"
+                    .. tostring(summon.enemy_type) .. "'; its art uses fallback stats.",
+                "Choose an existing enemy_types.lua key for summon.enemy_type, then run Project > Prepare & Check.")
+        end
     end
     local function inspect(o, preset, names)
         for _, name in ipairs(names) do
-            local pattern = cfg.boss_attack_patterns[name]
-            local summon = type(pattern) == "table" and pattern.type == "summon" and pattern.summon
-            if type(summon) == "table" then
-                local kind = summon.skin or summon.enemy_type or "slime"
-                local key = preset .. ":" .. name
-                if not cfg.enemy_types[kind] and not skins[kind] and not seen[key] then
-                    seen[key] = true
-                    issue("warning", "boss_summon_type_unknown", o, "attacks",
-                        "Boss preset '" .. preset .. "', attack '" .. name .. "' summons missing enemy type '"
-                            .. tostring(kind) .. "'; it spawns nothing.",
-                        "Point the summon at an existing enemy type or synced skin in developer/config/attack_patterns.lua, "
-                            .. "then run Project > Prepare & Check.")
-                end
-                if summon.skin and summon.enemy_type and not cfg.enemy_types[summon.enemy_type]
-                    and not seen[key .. ":archetype"] then
-                    seen[key .. ":archetype"] = true
-                    issue("warning", "boss_summon_type_unknown", o, "attacks",
-                        "Boss preset '" .. preset .. "', attack '" .. name .. "' summons missing archetype '"
-                            .. tostring(summon.enemy_type) .. "'; its art uses fallback stats.",
-                        "Choose an existing enemy_types.lua key for summon.enemy_type, then run Project > Prepare & Check.")
-                end
+            inspect_attack(o, preset, name)
+        end
+    end
+    local function inspect_moveset(o, preset, name)
+        local moveset = (cfg.boss_movesets or {})[name]
+        if type(moveset) ~= "table" or type(moveset.entries) ~= "table" then return end
+        for _, entry in ipairs(moveset.entries) do
+            if type(entry) == "table" and type(entry.attack) == "string" then
+                inspect_attack(o, preset, entry.attack, name, entry.overrides)
             end
         end
     end
@@ -436,7 +1148,7 @@ local function check_boss_summons(index, cfg, issue)
         if o.type == "boss" and o.visible ~= false and (not cfg.published_rooms or cfg.published_rooms[o.room]) then
             local p = o.properties or {}
             local preset = trim(p.boss_type)
-            local fallback, matched = attacks(p.attack_pattern_ids), false
+            local fallback, matched = boss_attacks(p.attack_pattern_ids), false
             for _, marker in ipairs(objects) do
                 if marker.type == "boss_phase" and marker.visible ~= false then
                     local m = marker.properties or {}
@@ -444,8 +1156,11 @@ local function check_boss_summons(index, cfg, issue)
                     if marker.room == o.room and (id == "" or id == trim(p.boss_id))
                         and (arena == "" or arena == trim(p.arena_id)) and (kind == "" or kind == preset) then
                         matched = true
-                        local names = attacks(m.attacks)
-                        inspect(o, preset, #names > 0 and names or fallback)
+                        local names = boss_attacks(m.attacks)
+                        local moveset = boss_moveset_name(m.moveset)
+                        if #names > 0 then inspect(o, preset, names)
+                        elseif not moveset then inspect(o, preset, fallback) end
+                        if moveset then inspect_moveset(marker, preset, moveset) end
                     end
                 end
             end
@@ -453,7 +1168,11 @@ local function check_boss_summons(index, cfg, issue)
                 if #fallback > 0 then inspect(o, preset, fallback)
                 else
                     local config = (cfg.boss_types or {})[preset] or {}
-                    for _, entry in ipairs(config.phases or {}) do inspect(o, preset, attacks(entry.attacks)) end
+                    for _, entry in ipairs(config.phases or {}) do
+                        inspect(o, preset, boss_attacks(entry.attacks))
+                        local moveset = boss_moveset_name(entry.moveset)
+                        if moveset then inspect_moveset(o, preset, moveset) end
+                    end
                 end
             end
         end
@@ -769,6 +1488,61 @@ local function check_arena_phase_hazards(cfg, issue)
         for _, phase in ipairs(phase_ids) do
             issue("warning", "config_arena_hazards_unsupported", where, "arenas." .. id .. ".phases." .. phase,
                 "Arena '" .. id .. "' phase " .. phase .. " lists hazards or platforms, which spawn nothing in play.", fix)
+        end
+    end
+end
+
+local function check_hazard_pulse_links(index, cfg, issue)
+    local objects = index.objects or {}
+    local optional = require("hooks.core.bake_kit").opt
+    local boss_rooms, arena_rooms, placed_arenas, bosses = {}, {}, {}, {}
+    local configured = cfg.boss_arenas or {}
+    configured = configured.arenas or configured
+    for _, o in ipairs(objects) do
+        if o.room and o.visible ~= false and o.top_level ~= false then
+            local p = o.properties or {}
+            if o.type == "boss_arena" then
+                local id = trim(p.arena_id)
+                placed_arenas[id ~= "" and id or "arena_" .. o.room] = true
+            elseif o.type == "boss" then
+                bosses[#bosses + 1] = o
+                -- Native references have already been resolved by the index.
+                local id = o.relationship_ids and o.relationship_ids.boss_id
+                if id then boss_rooms[id] = o.room end
+                for _, key in ipairs({"boss_id", "boss_tag"}) do
+                    local tag = trim(p[key])
+                    if tag ~= "" then boss_rooms[tag] = o.room end
+                end
+            end
+        end
+    end
+    -- A baked Arena Lock can start a fight. That fight can activate a
+    -- registered or configured arena when the placed boss names its ID.
+    for _, o in ipairs(bosses) do
+        local id = trim((o.properties or {}).arena_id)
+        if id ~= "" and (placed_arenas[id] or type(configured[id]) == "table") then
+            arena_rooms[o.room] = true
+        end
+    end
+    for _, o in ipairs(objects) do
+        local p = o.properties or {}
+        if o.type == "hazard" and o.visible ~= false and o.top_level ~= false
+            and trim(p.active_phases):lower() == "none" then
+            local arena_id, boss_id = optional(p.arena_id), optional(p.boss_id)
+            local mode = trim(p.level_mode)
+            if mode ~= "" and mode ~= "none" then
+                issue("warning", "hazard_pulse_phases_ignored", o, "active_phases",
+                    "Active phases = none has no effect on a Level hazard. Its Level controls still apply.",
+                    "Clear Active phases, or turn off Level mode and link the Hazard to a Boss Arena.")
+            elseif arena_id == "" and boss_id == "" then
+                issue("warning", "hazard_pulse_phases_ignored", o, "active_phases",
+                    "Active phases = none has no effect without an arena or boss link. The hazard stays under its existing controls.",
+                    "Link the Hazard to a Boss Arena or clear Active phases.")
+            elseif arena_id == "" and not arena_rooms[boss_rooms[trim(boss_id)]] then
+                issue("warning", "hazard_pulse_no_arena", o, "active_phases",
+                    "This pulse-only Hazard follows a Boss, but its fight has no arena to pulse it. The hazard cannot turn on.",
+                    "Link the Hazard to a Boss Arena or give it an active phase.")
+            end
         end
     end
 end
@@ -2259,6 +3033,10 @@ function M.validate(index, cfg)
     check_positional_ambience(index or {}, cfg, issue)
     check_hazard_immunities(cfg, issue)
     check_hazard_returns(index or {}, cfg, issue)
+    check_hazard_pulse_links(index or {}, cfg, issue)
+    check_boss_phase_movesets(index or {}, cfg, issue)
+    check_boss_attack_authoring(index or {}, cfg, issue)
+    check_boss_locomotion(index or {}, cfg, issue)
     check_boss_summons(index or {}, cfg, issue)
     check_boss_groups(index or {}, cfg, issue)
     check_sequence_gates(index or {}, cfg, issue)

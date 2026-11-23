@@ -19,6 +19,9 @@ local C = require "mvtk.core.constants"
 local PassengerCarrier = require "mvtk.prefabs.passenger_carrier"
 local ToggleMessages = require "mvtk.prefabs.toggle_messages"
 local FrameClock = require "mvtk.core.frame_clock"
+local Timeline = require "mvtk.world.platform_timeline"
+local Timers = require "mvtk.player.timers"
+local Pause = require "mvtk.core.pause"
 
 local function ease_in_out(t)
     return t < 0.5 and 2 * t * t or 1 - math.pow(-2 * t + 2, 2) / 2
@@ -30,15 +33,6 @@ local function move_to(self, target_pos)
     self.last_pos = v3(target_pos)
 
     self.passenger_carrier:apply_delta(delta.x, delta.y)
-end
-
-local function start_wait(self)
-    if (self.wait or 0) > 0 then
-        self.waiting = true
-        timer.delay(self.wait, false, function()
-            self.waiting = false
-        end)
-    end
 end
 
 local function apply_enabled(self, enabled)
@@ -55,30 +49,21 @@ function init(self)
 end
 
 function update(self, dt)
-    if self._room_hidden then return end
-    dt = FrameClock.snap(dt)
-    if not self.enabled or self.waiting then
+    local scale = Timers.world_scale(dt, Pause)
+    if self._room_hidden or not self.enabled then
+        Timeline.age_wait(self, Timers.world_delta(dt, scale), scale)
         return
     end
 
+    dt = FrameClock.snap(dt)
     local dur = math.max(0.0001, self.duration or 2.0)
-    if self.loop_mode == "loop" then
-        self.t = self.t + dt
-        if self.t >= dur then
-            self.t = self.t - dur
-        end
-    else
-        self.t = self.t + dt * (self.dir or 1)
-        if self.t >= dur then
-            self.t = dur
-            self.dir = -1
-            start_wait(self)
-        elseif self.t <= 0 then
-            self.t = 0
-            self.dir = 1
-            start_wait(self)
-        end
+    local mode = self.loop_mode == "loop" and "wrap_sub" or "pingpong"
+    if dt == 0 and mode == "pingpong" and self.t == 0 and not self.waiting then
+        -- The rail's original endpoint check also ran on a stopped update.
+        Timeline.wait(self, self.wait, scale)
     end
+    local moved = Timeline.step(self, dt, dur, mode, self.wait, scale)
+    if not moved then return end
 
     local t01 = self.t / dur
     if self.loop_mode == "loop" then
@@ -107,7 +92,7 @@ function on_message(self, message_id, message, sender)
     elseif message_id == hash("reset") then
         self.t = 0
         self.dir = 1
-        self.waiting = false
+        Timeline.reset(self)
         move_to(self, self.start)
     end
 end

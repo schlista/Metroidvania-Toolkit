@@ -338,6 +338,8 @@ M.BOSS = {
     max_health = 120,            -- Optional stat override
     defense = 2,                 -- Optional stat override
     damage_resistance = 0.9,     -- Multiplier applied to all incoming boss damage
+    ground_motion = "type_default", -- On or Off overrides the boss type, while Type default follows the boss type or the default in boss_defaults.lua.
+    feet_offset = 0,             -- A positive distance in pixels from the boss centre down to its feet overrides the boss type, while 0 uses the boss type, then boss_defaults.lua, then measures the placement.
     -- Combat: -1 inherits preset/defaults; threshold 0 switches stagger off.
     stagger_threshold = -1,     -- Accepted pressure needed to knock the boss down; scales with boss health.
     stagger_time = -1,          -- Seconds the stagger punish window lasts.
@@ -429,11 +431,16 @@ M.BOSS_PHASE = {
     health_min = 0.25,          -- Use -1 / -1 to auto-distribute
     health_max = 0.60,
     attacks = "root_spike,poison_cloud",
+    moveset = "none",            -- Choose a named attack list from boss_movesets.lua. A selection other than none overrides Attacks.
+    telegraph_scale = 1,         -- Multiplier for every attack warning in this phase. A value of 0 or less uses normal timing.
+    cooldown_scale = 1,          -- Multiplier for every attack cooldown in this phase. A value of 0 or less uses normal timing.
     attack_interval_min = 1.5,
     attack_interval_max = 3.0,
     behavior = "aggressive",     -- boss_behaviors enum: aggressive/cautious/defensive/etc.
     speed_multiplier = 1.2,
     damage_multiplier = 1.3,
+    teleport_interval = 0,      -- A positive number of seconds between movement blinks overrides the boss type, while 0 uses the boss type's interval or the default in boss_defaults.lua.
+    teleport_anchors = "",      -- Select destinations to override the boss type's anchors, or leave empty to use the boss type's anchors or the list in boss_defaults.lua.
     stagger_immune = false,     -- Attack sequence: prevents stagger for this boss phase; later boss phases reset it.
 
     transition_type = "rage",   -- boss_transition_types enum; aliases like power_up/final_form are accepted
@@ -444,7 +451,7 @@ M.BOSS_PHASE = {
     transition_camera_duration = 0.8,
     transition_flash = true,
     transition_arena_darkness = false,
-    transition_spawn_hazards = "spikes",
+    transition_spawn_hazards = "spikes", -- Rage and desperation briefly pulse arena hazards of this type with Active phases set to none. No matching hazards means no effect.
     transition_new_music = "none",
 }
 
@@ -597,9 +604,9 @@ M.HAZARD = {
     -- Link to Arena (optional)
     arena_id = "",                -- arena.arena_id; blank means unlinked unless boss_id is set.
     boss_id = "",                 -- arena.boss_id; follows one named live boss, stops at its defeat.
-    active_phases = "",           -- arena.active_phases; comma-separated boss indices; empty = whole fight.
+    active_phases = "",           -- arena.active_phases. List boss phase indices, leave empty for the whole fight, or use none for pulse attacks and rage-family transitions whose Spawn hazards matches this type.
     hide_when_inactive = true,    -- arena.hide_when_inactive; hides only for the arena gate.
-    warn_time = 0,                -- arena.warn_time; harmless pause-aware blink before activation.
+    warn_time = 0,                -- arena.warn_time; harmless pause-aware blink before phase activation. Pulses set their own blink.
     boss_ref = 0,                -- Top-level Boss object link; resolves boss_id.
     arena_ref = 0,               -- Top-level Boss Arena object link; resolves arena_id.
 

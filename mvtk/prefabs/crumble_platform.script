@@ -25,6 +25,8 @@ go.property("sound_respawn", "platform_respawn")
 
 local Debug = require "developer.config.debug_config"
 local FrameClock = require "mvtk.core.frame_clock"
+local Timers = require "mvtk.player.timers"
+local Pause = require "mvtk.core.pause"
 local raw_print = print
 local CRUMBLE_LOG_ENABLED = (Debug.global and Debug.global.enable) or
     (Debug.rooms and Debug.rooms.loading) or
@@ -484,7 +486,7 @@ do_crumble = function(self)
     if self.respawn_delay > 0 then
         print(string.format("[CRUMBLE] Scheduling respawn in %.1fs", self.respawn_delay))
 
-        timer.delay(self.respawn_delay, false, function()
+        Timers.schedule_native(self, self.respawn_delay, function()
             if not self or not self.my_url then
                 print("[CRUMBLE] ERROR: Cannot respawn - self or my_url is nil")
                 return
@@ -559,7 +561,7 @@ do_crumble = function(self)
             Util.post_component_enabled(self.collision_url, true)
             
             -- Copy tiles from room again (they were just restored)
-            timer.delay(0.1, false, function()
+            Timers.schedule_native(self, 0.1, function()
                 if not self then return end
                 local success = copy_tiles_from_room(self)
                 if success then
@@ -598,7 +600,7 @@ start_crumble = function(self)
     -- Play warning sound
     PU.play_sound(self.sound_warning, { room_id = self.room_id })
     
-    timer.delay(self.crumble_delay, false, function()
+    Timers.schedule_native(self, self.crumble_delay, function()
         print("[CRUMBLE] ===== CRUMBLE DELAY COMPLETE - EXECUTING do_crumble() =====")
         do_crumble(self)
     end)
@@ -630,6 +632,8 @@ end
 
 function init(self)
     pcall(go.update_world_transform)
+    local collision_id = self.collision_url.path or msg.url(".").path
+    require("mvtk.enemies.patrol_obstacles").track(collision_id, SurfaceClassifier.GROUPS.SOLID, self)
     -- Use world positions so comparisons remain valid across streamed collections
     self.original_pos = go.get_world_position()
     self.is_crumbling = false
@@ -682,6 +686,7 @@ function init(self)
 end
 
 function update(self, dt)
+    Timers.tick_native(self, dt, Timers.world_scale(dt, Pause))
     dt = FrameClock.snap(dt)
     -- If we have a pending delete, delete now (only if no respawn)
     if self.pending_delete and self.respawn_delay <= 0 then

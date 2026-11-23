@@ -553,6 +553,7 @@ local function apply_body_scale(self)
   k = k * (self.elite and (ELITE_CONFIG.scale_mult or 1.2) or 1)
   k = k * (self._champion_scale_mult or 1)
   self._body_scale = b.x * k
+  self._patrol_shape_scale = k
   go.set_scale(vmath.vector3(b.x * k, b.y * k, b.z))
   self._ledge = LedgeGuard.settings(cfg, EnemyDefaults, TileSettings, self._body_scale)
 end
@@ -912,9 +913,42 @@ local function resolve_patrol_waypoints(self)
 end
 
 local function build_patrol_route_pattern()
+  local Terrain = require "mvtk.enemies.patrol_terrain"
+  local arrival_distance = 2
+  local function toward(self, target, dt, move)
+    local dx, dy = target.x - self.pos.x, target.y - self.pos.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len == 0 then return 0, 0, dx end
+    local speed = (self.speed or 80) * (self._speed_mult or 1.0) * (self._elite_speed_mult or 1.0)
+    -- Preserve steps that already land inside the authored route's arrival
+    -- radius. A step that would miss beyond it ends on the waypoint instead.
+    local actual_dt = dt * (move or 1)
+    if actual_dt > 0 and speed * actual_dt > len + arrival_distance then
+      speed = len / actual_dt
+      dt = actual_dt
+    end
+    local vx, vy = (dx / len) * speed, (dy / len) * speed
+    if dt <= 0 then return vx, vy, dx end
+    local can_fall = self._grounded_movement and EnemyGroundPhysics.can_fall(self)
+    local ground_step = can_fall and not self._airborne and not self._forced_airborne and vy <= 0
+    local x, y = vx, Terrain.limit(self, "y", vy, dt)
+    if ground_step then
+      -- The shared ground pass distinguishes a wall from a climbable riser.
+      if Terrain.wall(self, "x", vx > 0 and 1 or -1, dt) then x = 0 end
+    else
+      x = Terrain.limit(self, "x", vx, dt)
+    end
+    if Terrain.at_room_edge(self, "x", vx) or (not can_fall and LedgeGuard.blocks(self, vx, dt)) then x = 0 end
+    if Terrain.at_room_edge(self, "y", vy) then y = 0 end
+    -- Keep steering along an open axis while there is useful travel there.
+    -- The route already treats two pixels as reaching a waypoint.
+    local blocked = (vx ~= 0 and x == 0 and (y == 0 or math.abs(dy) <= arrival_distance))
+      or (vy ~= 0 and y == 0 and (x == 0 or math.abs(dx) <= arrival_distance))
+    return x, y, dx, blocked, ground_step
+  end
   return {
     name = "@patrol_route",
-    update = function(self, dt)
+    update = function(self, dt, move)
       local waypoints = resolve_patrol_waypoints(self)
       if not waypoints or #waypoints < 2 then
         return
@@ -927,7 +961,7 @@ local function build_patrol_route_pattern()
       local dy = (target.y or 0) - (self.pos.y or 0)
       local dist_sq = dx * dx + dy * dy
 
-      if dist_sq <= 4 then
+      if dist_sq <= arrival_distance ^ 2 then
         local next_index = self._patrol_index + self._patrol_dir
         if next_index < 1 or next_index > #waypoints then
           self._patrol_dir = -self._patrol_dir
@@ -941,14 +975,25 @@ local function build_patrol_route_pattern()
       end
 
       if dist_sq > 0 then
-        local len = math.sqrt(dist_sq)
-        local speed = (self.speed or 80)
-          * (self._speed_mult or 1.0)
-          * (self._elite_speed_mult or 1.0)
-        self.vel.x = (dx / len) * speed
-        self.vel.y = (dy / len) * speed
-        if dx ~= 0 then
-          self.facing = (dx >= 0) and 1 or -1
+        local vx, vy, face_x, blocked, ground_step = toward(self, target, dt, move)
+        if blocked then
+          local back = self._patrol_index - self._patrol_dir
+          local direction = -self._patrol_dir
+          if not waypoints[back] then back, direction = self._patrol_index + self._patrol_dir, self._patrol_dir end
+          local previous = waypoints[back]
+          if previous then
+            local back_x, back_y = previous.x - self.pos.x, previous.y - self.pos.y
+            if back_x * back_x + back_y * back_y > arrival_distance ^ 2 then
+              vx, vy, face_x, blocked, ground_step = toward(self, previous, dt, move)
+              if not blocked then self._patrol_index, self._patrol_dir = back, direction end
+            end
+          end
+          if blocked then vx, vy, face_x = 0, 0, 0 end
+        end
+        self.vel.x, self.vel.y = vx, vy
+        self._patrol_vx, self._patrol_vy, self._patrol_sway_y = ground_step and self.vel.x or nil, nil, nil
+        if face_x ~= 0 then
+          self.facing = (face_x >= 0) and 1 or -1
           set_enemy_hflip(self)
         end
       end
@@ -1759,43 +1804,12 @@ local function end_enemy_death(self)
   else go.delete(".") end
 end
 
-function update(self, dt)
-  if self._dormant or (self._room_asleep and not self._dying) then return end
-  if Util.actor_probe then Util.actor_probe(self, go.get_id(), go.get_world_position()) end
-  if Pause and Pause.get and Pause.get() then return end
-  local timescale = (Pause and (Pause.dt_scale or Pause.scale) and (Pause.dt_scale or Pause.scale)()) or 1.0
-  dt = FrameClock.snap(dt) * timescale
-
-  if self._dying then
-    if self._delete_after_death_t then
-      self._delete_after_death_t = self._delete_after_death_t - dt
-      if self._delete_after_death_t <= 0 then
-        end_enemy_death(self)
-      end
-    end
-    return
-  end
-
-  self._debug_update_count = (self._debug_update_count or 0) + 1
-
-  if self._debug_update_count == 5 then
-    local pat_names = {}
-    for i, pat in ipairs(self.patterns or {}) do
-      pat_names[i] = pat.update and "has_update" or "NO_update"
-    end
-    print(string.format("[ENEMY] update#5 id=%s patterns=%d [%s] speed=%s stunned=%.2f",
-      tostring(go.get_id()), #(self.patterns or {}),
-      table.concat(pat_names, ","),
-      tostring(self.speed), self.stunned_t or 0))
-  end
-
+do
+local function decide(self, dt, status, step_end)
   -- Update ally alert cooldown
   if self._alert_cooldown and self._alert_cooldown > 0 then
     self._alert_cooldown = self._alert_cooldown - dt
   end
-
-  -- Advance i-frame timer & hurt flash
-  Invulnerability.update(self, dt)
 
   -- Decay per-target contact damage cooldowns to prevent touch stunlock.
   if self._contact_damage_timers and next(self._contact_damage_timers) then
@@ -1840,8 +1854,12 @@ function update(self, dt)
     end
   end
 
-  local StatusEffects = require "mvtk.combat.status_effects"
-  local frozen = StatusEffects.stops(go.get_id())
+  local frozen, move
+  if step_end and status.enemy_motion then
+    frozen, move = status.enemy_motion(go.get_id(), step_end, dt)
+  else
+    frozen = status.stops(go.get_id())
+  end
   if frozen or (self.stunned_t or 0) > 0 then
     if frozen then self.vel.x, self.vel.y = 0, 0 end
     self.stunned_t = math.max(0, self.stunned_t - dt)
@@ -1854,29 +1872,43 @@ function update(self, dt)
     for _, pat in ipairs(self.patterns) do
       if not self._ambush_hidden and pat.name ~= "ambush" and pat.update
         and not ((self._leash_returning or (self._leash_cooldown or 0) > 0)
-          and (pat.role == "attack" or pat.role == "hybrid")) then pat.update(self, dt) end
+          and (pat.role == "attack" or pat.role == "hybrid")) then
+        if pat.name == "@patrol_route" then
+          move = move or status.move_multiplier(go.get_id())
+          pat.update(self, dt, move)
+        else
+          pat.update(self, dt)
+        end
+      end
     end
     require("mvtk.enemies.enemy_leash").update(self, dt)
     -- passive poise recovery
     self.poise = math.max(0, self.poise - (self.poise_recover_per_s or 1) * dt)
   end
-  -- A parry push: the mean speed of a linear slow-down over this step, so it covers its distance exactly.
+  return frozen, move
+end
+
+local function push_velocity(self, dt, frozen, commit)
   local push = self._push
-  if push then
-    if frozen or push.t <= 0 then
-      self._push = nil
-      if (self.stunned_t or 0) > 0 then self.vel.x = 0 end
-    else
-      local step = math.min(dt, push.t)
-      self.vel.x = dt > 0 and push.vx * (push.t - step / 2) / push.total * step / dt or 0
-      push.t = push.t - step
-    end
+  if not push then return end
+  if frozen or push.t <= 0 then
+    if commit then self._push = nil end
+    if (self.stunned_t or 0) > 0 then return 0 end
+    return
   end
-  local move = StatusEffects.move_multiplier(go.get_id())
-  self.vel.x, self.vel.y = self.vel.x * move, self.vel.y * move
+  -- Average the linear decay over the time that still belongs to the push.
+  local step = math.min(dt, push.t)
+  local speed = dt > 0 and push.vx * (push.t - step / 2) / push.total * step / dt or 0
+  if commit then push.t = push.t - step end
+  return speed
+end
+
+local function choose_terrain_motion(self, dt, patrol_x, patrol_y, patrol_sway)
   local ground
   if self._swim_movement then
-    require("mvtk.enemies.patterns.roster_patterns")._helpers.constrain_swim(self, dt)
+    local Swim = require("mvtk.enemies.patterns.roster_patterns")._helpers
+    Swim.constrain_swim(self, dt)
+    Swim.swim_terrain(self, dt, patrol_x, patrol_y)
     ground = true
   elseif self._ambush_hidden then
     -- Hidden movement owns the whole frame, including the shared falling and
@@ -1884,24 +1916,20 @@ function update(self, dt)
     self.vel.x, self.vel.y = 0, 0
     ground = true
   else
-    ground = EnemyGroundPhysics.apply(self, dt)
+    ground = require("mvtk.enemies.patrol_terrain").apply(self, dt, patrol_x, patrol_y, patrol_sway)
   end
-  if ground == "fall_out" then
-    msg.post(".", hash("mvtk_fall_out"))
-  elseif ground == nil then
-    LedgeGuard.apply(self, dt)
-  end
-  local anim_vx = self.vel.x or 0
-  local anim_vy = self.vel.y or 0
-  update_locomotion_animation(self, anim_vx, anim_vy)
-  self.pos.x = self.pos.x + self.vel.x * dt
-  self.pos.y = self.pos.y + self.vel.y * dt
+  return ground == "fall_out"
+end
+
+local function integrate(self, dt, end_x, end_y)
+  self.pos.x = end_x or (self.pos.x + self.vel.x * dt)
+  self.pos.y = end_y or (self.pos.y + self.vel.y * dt)
 
   -- Keep horizontal confinement during falls; airborne actors may cross the
   -- vertical bounds to land below or report a bottomless-pit defeat.
   local bounds = self._room_bounds
   if bounds then
-    local margin = 16
+    local margin = require("mvtk.enemies.patrol_terrain").ROOM_MARGIN
     if self.pos.x < bounds.min_x + margin then
       self.pos.x = bounds.min_x + margin
       self.vel.x = 0
@@ -1919,14 +1947,161 @@ function update(self, dt)
       end
     end
   end
+end
 
+local function publish(self)
   go.set_position(self.pos)
   local mgr = get_enemy_manager()
   if mgr and mgr.set_enemy_position and self.spawn_id then
     mgr.set_enemy_position(self.spawn_id, self.pos)
   end
+end
+
+local function start_decision(self, dt, status, direct, step_end)
+  local champion_origin = not direct and self._champion and v3(self.pos) or nil
+  self.vel.x, self.vel.y = self._pending_decision_vx or 0, self._pending_decision_vy or 0
+  self._pending_decision_vx, self._pending_decision_vy = nil, nil
+  self._patrol_vx, self._patrol_vy = nil, nil
+  self._patrol_sway_y = nil
+  local frozen, move = decide(self, dt, status, step_end)
+  local vx, vy = self.vel.x, self.vel.y
+  move = move or status.move_multiplier(go.get_id())
+  local push = push_velocity(self, dt, frozen, direct)
+  local intended_x, intended_y = (push or vx) * move, vy * move
+  self.vel.x, self.vel.y = intended_x, intended_y
+  local patrol = push == nil and (self._leash_cooldown or 0) <= 0
+  local fall_out = choose_terrain_motion(self, dt,
+    patrol and intended_x ~= 0 and vx == self._patrol_vx,
+    patrol and intended_y ~= 0 and vy == self._patrol_vy,
+    patrol and vx == self._patrol_vx and vy == self._patrol_sway_y)
+  if direct then return fall_out end
+
+  local motion = self._decision_motion or {}
+  self._decision_motion = motion
+  motion.vx, motion.vy = vx, vy
+  motion.block_x, motion.block_y = self.vel.x ~= intended_x, self.vel.y ~= intended_y
+  motion.terrain_vx, motion.terrain_vy = self.vel.x, self.vel.y
+  motion.fall_out, motion.dt = fall_out, dt
+  motion.champion_origin, motion.push_owned = champion_origin, push ~= nil
+  motion.supported = self._grounded_movement and not self._airborne and not self._ignores_terrain
+    and (motion.block_y or EnemyGroundPhysics.can_fall(self))
+  motion.start_x, motion.start_y = self.pos.x, self.pos.y
+  motion.reference_x, motion.reference_y = self.pos.x + self.vel.x * dt, self.pos.y
+  motion.reference_drop = self.vel.y * dt
+  motion.actual_x, motion.actual_y = self.pos.x, self.pos.y
+  motion.travel_time = 0
+end
+
+local function move_piece(self, dt, finishing, status, step_end, step_dt)
+  local motion = self._decision_motion
+  local external_x = self.pos.x ~= motion.actual_x
+  local external_y = self.pos.y ~= motion.actual_y
+  if motion.support_offset then
+    self.pos.y = self.pos.y - motion.support_offset
+    motion.support_offset = nil
+  end
+  local frozen, move
+  if status.enemy_motion then
+    frozen, move = status.enemy_motion(go.get_id(), step_end, step_dt)
+  else
+    frozen, move = status.stops(go.get_id()), status.move_multiplier(go.get_id())
+  end
+  local push = push_velocity(self, dt, frozen, true)
+  local vx = push or (motion.push_owned and 0 or motion.vx)
+  self.vel.x = motion.block_x and motion.terrain_vx or vx * move
+  self.vel.y = motion.block_y and motion.terrain_vy or motion.vy * move
+  local landed = self._airborne
+    and EnemyGroundPhysics.land_live(self, dt, motion.reference_x, motion.reference_y, motion.reference_drop)
+  if external_x or self.vel.x ~= motion.terrain_vx then motion.start_x = nil end
+  if external_y or self.vel.y ~= motion.terrain_vy then motion.start_y = nil end
+  motion.travel_time = motion.travel_time + dt
+  local end_x, end_y
+  if finishing and math.abs(motion.travel_time - motion.dt) <= 1e-8 then
+    -- Reconstruct the reference endpoint with the same operation as the
+    -- native frame. Per-piece rounding can otherwise cross a strict AI bound.
+    if motion.start_x then end_x = motion.start_x + self.vel.x * motion.dt end
+    if motion.start_y then end_y = motion.start_y + self.vel.y * motion.dt end
+  end
+  integrate(self, dt, end_x, end_y)
+  if landed then
+    motion.block_y, motion.terrain_vy = true, 0
+    motion.supported, motion.fall_out = true, false
+  end
+  if dt > 0 and motion.supported and not finishing then
+    motion.support_offset = EnemyGroundPhysics.follow_support(self)
+  end
+  if motion.fall_out then motion.live_fall_out = EnemyGroundPhysics.confirm_fall_out(self) end
+  motion.actual_x, motion.actual_y = self.pos.x, self.pos.y
+end
+
+function update(self, dt)
+  if self._terrain_fix_x then self._terrain_fix_x, self._terrain_fix_y = nil, nil end
+  if self._dormant or (self._room_asleep and not self._dying) then return end
+  if Util.actor_probe then Util.actor_probe(self, go.get_id(), go.get_world_position()) end
+  if Pause and Pause.get and Pause.get() then return end
+  local Clock = require "mvtk.enemies.decision_clock"
+  local raw_dt, motion_dt, decision_dt, reference = Clock.frame(dt, Pause, FrameClock.snap)
+  if self._dying then
+    if self._delete_after_death_t then
+      local Timers = require "mvtk.player.timers"
+      if not Timers.has_window(self, "_delete_after_death_t") then
+        Timers.start_window(self, "_delete_after_death_t", self._delete_after_death_t, false)
+      end
+      if Timers.tick_deadline(self, "_delete_after_death_t", motion_dt) then
+        end_enemy_death(self)
+      end
+    end
+    return
+  end
+  local left = Clock.left(self)
+
+  self._debug_update_count = (self._debug_update_count or 0) + 1
+
+  if self._debug_update_count == 5 then
+    local pat_names = {}
+    for i, pat in ipairs(self.patterns or {}) do
+      pat_names[i] = pat.update and "has_update" or "NO_update"
+    end
+    print(string.format("[ENEMY] update#5 id=%s patterns=%d [%s] speed=%s stunned=%.2f",
+      tostring(go.get_id()), #(self.patterns or {}),
+      table.concat(pat_names, ","),
+      tostring(self.speed), self.stunned_t or 0))
+  end
+
+  local status = require "mvtk.combat.status_effects"
+  self._pending_decision_vx = (self._pending_decision_vx or 0) + self.vel.x
+  self._pending_decision_vy = (self._pending_decision_vy or 0) + self.vel.y
+  Invulnerability.update(self, motion_dt)
+  if reference and left == 0 then
+    -- Preserve the saved single-update order and actual engine delta.
+    if start_decision(self, decision_dt, status, true) then msg.post(".", hash("mvtk_fall_out")) end
+    update_locomotion_animation(self, self.vel.x, self.vel.y)
+    integrate(self, motion_dt)
+    publish(self)
+    self.vel.x, self.vel.y = 0, 0
+    if self._champion then self._champion:update(self, decision_dt) end
+    return
+  end
+
+  local scale, offset = motion_dt / raw_dt, 0
+  while raw_dt > 0 do
+    local due, span
+    due, span, left, raw_dt = Clock.piece(left, raw_dt)
+    offset = offset + span
+    local step_end = offset + left
+    if due then start_decision(self, decision_dt, status, false, step_end) end
+    move_piece(self, span * scale, left == 0, status, step_end, decision_dt)
+    local motion = self._decision_motion
+    local fall_out = left == 0 and motion.fall_out and motion.live_fall_out
+    if fall_out then msg.post(".", hash("mvtk_fall_out")) end
+    if raw_dt == 0 or fall_out then update_locomotion_animation(self, self.vel.x, self.vel.y) end
+    if left == 0 or raw_dt == 0 then publish(self) end
+    if left == 0 and self._champion then self._champion:update(self, motion.dt, motion.champion_origin) end
+    if fall_out then break end
+  end
+  self._decision_left = left
   self.vel.x, self.vel.y = 0, 0
-  if self._champion then self._champion:update(self, dt) end
+end
 end
 
 function final(self)
@@ -1965,6 +2140,7 @@ end
 local function begin_enemy_death(self)
   if self._dying then return end
   self._dying = true
+  require("mvtk.enemies.decision_clock").reset(self)
   require("mvtk.combat.status_effects").clear(go.get_id())
   if self._audio and self._audio.death then
     Audio.sfx(self._audio.death)
@@ -1987,6 +2163,7 @@ local function revive_enemy(self)
   self._delete_after_death_t, self._anim_locked = nil, false
   self._anim_lock_state, self._current_loop_anim = nil, nil
   self._dormant, self._dormant_after_death = nil, nil
+  require("mvtk.enemies.decision_clock").reset(self)
   Invulnerability.clear(self)
   require("mvtk.combat.status_effects").clear(go.get_id())
   self._contact_damage_timers = {}
@@ -2258,9 +2435,16 @@ function on_message(self, message_id, message, sender)
         local normal = message.normal
         local depth = message.distance or 0
         if normal and depth > 0 then
-          self.pos.x = self.pos.x + normal.x * depth
-          self.pos.y = self.pos.y + normal.y * depth
-          go.set_position(self.pos)
+          -- Every point reports the full overlap. Subtract the part already
+          -- resolved in this update along the new contact's normal.
+          local applied_x, applied_y = self._terrain_fix_x or 0, self._terrain_fix_y or 0
+          local remaining = depth - (applied_x * normal.x + applied_y * normal.y)
+          if remaining > 0 then
+            local dx, dy = normal.x * remaining, normal.y * remaining
+            self._terrain_fix_x, self._terrain_fix_y = applied_x + dx, applied_y + dy
+            self.pos.x, self.pos.y = self.pos.x + dx, self.pos.y + dy
+            go.set_position(self.pos)
+          end
           -- Cancel velocity into the wall
           local dot = self.vel.x * normal.x + self.vel.y * normal.y
           if dot < 0 then
